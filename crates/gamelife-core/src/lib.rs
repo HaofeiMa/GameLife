@@ -9,6 +9,7 @@ pub mod policy;
 pub mod time;
 pub mod types;
 pub mod url;
+pub mod weekly;
 
 pub use capture::{CaptureStatus, capture_on_resume, schedule_capture};
 pub use r#const::*;
@@ -23,3 +24,4 @@ pub use policy::{
 pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
 pub use url::strip_url_query_fragment;
+pub use weekly::sum_activity;
