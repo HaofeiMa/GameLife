@@ -1,3 +1,4 @@
+pub mod capture;
 pub mod r#const;
 pub mod format;
 pub mod heartbeat;
@@ -8,6 +9,7 @@ pub mod time;
 pub mod types;
 pub mod url;
 
+pub use capture::{CaptureStatus, capture_on_resume, schedule_capture};
 pub use r#const::*;
 pub use format::format_estimated_minutes;
 pub use heartbeat::heartbeat_unobserved;
