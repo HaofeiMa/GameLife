@@ -263,11 +263,10 @@ fn upgrade_verified_core(input: JudgeInput<'_>, spans: &[Span]) -> i64 {
                     if !app_matches_context(&sample.app, context_app) {
                         continue;
                     }
-                    if matches!(
-                        span.kind,
-                        SpanKind::Observed(Hint::Unsure | Hint::UnsureReading)
-                    ) {
-                        total += span.end - span.start;
+                    if let SpanKind::Observed(hint) = span.kind {
+                        if is_verified_upgrade_hint(hint) {
+                            total += span.end - span.start;
+                        }
                     }
                 }
                 total
@@ -278,14 +277,18 @@ fn upgrade_verified_core(input: JudgeInput<'_>, spans: &[Span]) -> i64 {
     }
 }
 
+fn is_verified_upgrade_hint(hint: Hint) -> bool {
+    matches!(hint, Hint::Unsure | Hint::UnsureReading)
+        && !matches!(hint, Hint::Side | Hint::Distraction | Hint::Away)
+}
+
 fn upgrade_all_unsure(_samples: &[Sample], spans: &[Span]) -> i64 {
     let mut total = 0_i64;
     for span in spans {
-        if matches!(
-            span.kind,
-            SpanKind::Observed(Hint::Unsure | Hint::UnsureReading)
-        ) {
-            total += span.end - span.start;
+        if let SpanKind::Observed(hint) = span.kind {
+            if is_verified_upgrade_hint(hint) {
+                total += span.end - span.start;
+            }
         }
     }
     total
@@ -517,5 +520,136 @@ mod tests {
             "7m side must appear in activity.side, got {}",
             out.activity.side
         );
+    }
+
+    #[test]
+    fn vision_context_mismatch_with_strong_core_is_pending() {
+        let mut samples = grid("Cursor", "main.tex", 0, 20, 15, 2);
+        samples.extend(grid("WeChat", "chat", 300, 20, 15, 2));
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "paper".into(),
+                keywords: vec!["main.tex".into()],
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Captured,
+            vision: Some(VisionResult {
+                wants_core: true,
+                confidence: 0.9,
+                context_app: Some("WeChat".into()),
+            }),
+            manual_core: None,
+        });
+        assert!(out.pending);
+        assert_eq!(out.dominant, Dominant::PendingReview);
+        assert_eq!(out.credited_core_seconds, 0);
+    }
+
+    #[test]
+    fn gray_zone_missed_capture_is_pending() {
+        let samples = grid("Isaac Sim", "robot", 0, 30, 15, 2);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "robot".into(),
+                keywords: vec!["robot".into()],
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Missed,
+            vision: None,
+            manual_core: None,
+        });
+        assert!(out.pending);
+        assert_eq!(out.dominant, Dominant::PendingReview);
+        assert_eq!(out.credited_core_seconds, 0);
+    }
+
+    #[test]
+    fn manual_core_true_credits_unsure_without_vision() {
+        let samples = grid("Isaac Sim", "robot", 0, 40, 15, 2);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "robot".into(),
+                keywords: vec!["robot".into()],
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Captured,
+            vision: None,
+            manual_core: Some(true),
+        });
+        assert!(!out.pending);
+        assert!(out.credited_core_seconds > 60);
+    }
+
+    #[test]
+    fn manual_core_false_zeroes_credit_keeps_activity() {
+        let mut samples = grid("Isaac Sim", "robot", 0, 20, 15, 2);
+        samples.extend(grid("GameLife", "Today", 300, 20, 15, 2));
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "robot".into(),
+                keywords: vec!["robot".into()],
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Captured,
+            vision: None,
+            manual_core: Some(false),
+        });
+        assert_eq!(out.credited_core_seconds, 0);
+        assert!(out.activity.side > 0);
+    }
+
+    #[test]
+    fn empty_quests_forces_zero_credit_no_auto_core_research() {
+        let samples = grid("Cursor", "main.tex", 0, 58, 15, 2);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[],
+            policy: &pol(),
+            capture: CaptureStatus::Scheduled,
+            vision: None,
+            manual_core: None,
+        });
+        assert_eq!(out.credited_core_seconds, 0);
+        assert_ne!(out.dominant, Dominant::CoreResearch);
+    }
+
+    #[test]
+    fn manual_core_does_not_upgrade_side_or_distraction_spans() {
+        let mut samples = grid("Isaac Sim", "robot", 0, 10, 15, 2);
+        samples.extend(grid("Safari", "bilibili watch", 150, 10, 15, 2));
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "robot".into(),
+                keywords: vec!["robot".into()],
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Captured,
+            vision: None,
+            manual_core: Some(true),
+        });
+        assert!(
+            out.credited_core_seconds < 200,
+            "distraction spans must not be verified, got {}",
+            out.credited_core_seconds
+        );
+        assert!(out.credited_core_seconds >= 100);
+        assert!(out.activity.distraction >= 100);
     }
 }
