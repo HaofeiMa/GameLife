@@ -132,6 +132,20 @@ mod imp {
             Some(url)
         }
     }
+
+    pub fn accessibility_granted() -> bool {
+        extern "C" {
+            fn AXIsProcessTrusted() -> bool;
+        }
+        unsafe { AXIsProcessTrusted() }
+    }
+
+    pub fn screen_recording_granted() -> bool {
+        extern "C" {
+            fn CGPreflightScreenCaptureAccess() -> bool;
+        }
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -159,6 +173,14 @@ mod imp {
     pub fn capture_frontmost_window(_path: &std::path::Path) -> Result<(), ()> {
         Err(())
     }
+
+    pub fn accessibility_granted() -> bool {
+        true
+    }
+
+    pub fn screen_recording_granted() -> bool {
+        true
+    }
 }
 
 pub fn frontmost_app() -> Result<(String, String), ()> {
@@ -183,4 +205,16 @@ pub fn optional_browser_url() -> Option<String> {
 
 pub fn capture_frontmost_window(path: &std::path::Path) -> Result<(), ()> {
     imp::capture_frontmost_window(path)
+}
+
+pub fn accessibility_granted() -> bool {
+    imp::accessibility_granted()
+}
+
+pub fn screen_recording_granted() -> bool {
+    imp::screen_recording_granted()
+}
+
+pub fn observation_available() -> bool {
+    accessibility_granted() && screen_recording_granted()
 }

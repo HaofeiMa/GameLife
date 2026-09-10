@@ -1,5 +1,3 @@
-use std::fs;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Datelike, NaiveDate};
@@ -13,14 +11,15 @@ use gamelife_core::{
 use gamelife_core::shop::{Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
 
+use crate::config::{load_settings, retention_from_str, save_settings as write_settings_file, AppSettings};
 use crate::db::{migrate, open, redeem as db_redeem};
 use crate::db_error::DbOpError;
 use crate::keychain::{get_openai_api_key, set_openai_api_key};
+use crate::macos;
 use crate::sampler::PauseControl;
 use crate::scheduler::{
-    app_support_dir, day_str_for_ts, default_screenshot_retention, list_freeze_candidates,
-    load_quests_for_day, review_pending_slot, sampling_allowed, streak_from_db,
-    ScreenshotRetention,
+    day_str_for_ts, default_screenshot_retention, list_freeze_candidates, load_quests_for_day,
+    review_pending_slot, sampling_allowed, streak_from_db,
 };
 
 fn now_secs() -> i64 {
@@ -114,67 +113,6 @@ pub struct WishView {
     pub kind: String,
     pub price: i64,
     pub duration_minutes: Option<i64>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct AppSettings {
-    pub screenshot_retention: String,
-    pub sample_keep_days: i64,
-    pub login_at_startup: bool,
-    pub trusted_apps: Vec<String>,
-    pub distraction_rules: Vec<String>,
-    pub side_project_rules: Vec<String>,
-    pub reading_apps: Vec<String>,
-    pub never_capture_apps: Vec<String>,
-}
-
-fn config_path() -> Option<PathBuf> {
-    app_support_dir().map(|d| d.join("config.json"))
-}
-
-fn default_settings() -> AppSettings {
-    AppSettings {
-        screenshot_retention: "none".into(),
-        sample_keep_days: 7,
-        login_at_startup: true,
-        trusted_apps: vec![],
-        distraction_rules: vec![],
-        side_project_rules: vec![],
-        reading_apps: vec![],
-        never_capture_apps: vec![],
-    }
-}
-
-fn load_settings() -> AppSettings {
-    let path = config_path();
-    let Some(path) = path else {
-        return default_settings();
-    };
-    if let Ok(data) = fs::read_to_string(&path) {
-        if let Ok(s) = serde_json::from_str(&data) {
-            return s;
-        }
-    }
-    default_settings()
-}
-
-fn save_settings_file(settings: &AppSettings) -> Result<(), String> {
-    let dir = app_support_dir().ok_or_else(|| "home dir".to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
-    let path = dir.join("config.json");
-    let json = serde_json::to_string_pretty(settings).map_err(|e| format!("json: {e}"))?;
-    fs::write(path, json).map_err(|e| format!("write config: {e}"))?;
-    Ok(())
-}
-
-fn retention_from_str(s: &str) -> ScreenshotRetention {
-    match s {
-        "24h" => ScreenshotRetention::Hours24,
-        "3d" => ScreenshotRetention::Days3,
-        "14d" => ScreenshotRetention::Days14,
-        _ => ScreenshotRetention::None,
-    }
 }
 
 #[derive(Deserialize, Default)]
@@ -485,28 +423,51 @@ pub fn review_slot(day: String, slot_start: i64, category: String) -> Result<(),
     with_db(|conn| review_pending_slot(conn, &day, slot_start, &category, retention))
 }
 
+pub fn report_misclassification_db(
+    conn: &Connection,
+    day: &str,
+    slot_start: i64,
+    note: &str,
+    ts: i64,
+) -> Result<(), DbOpError> {
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM slots WHERE day = ?1 AND slot_start = ?2",
+            params![day, slot_start],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(crate::db_error::map_rusqlite)?;
+    let status = status.ok_or_else(|| DbOpError::Fatal("slot missing".into()))?;
+    if status != "final" && status != "unknown" {
+        return Err(DbOpError::Fatal("slot not final".into()));
+    }
+    conn.execute(
+        "INSERT INTO misclassification_reports (day, slot_start, note, ts) VALUES (?1, ?2, ?3, ?4)",
+        params![day, slot_start, note, ts],
+    )
+    .map_err(crate::db_error::map_rusqlite)?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn report_misclassification(day: String, slot_start: i64, note: String) -> Result<(), String> {
-    with_db(|conn| {
-        let status: Option<String> = conn
-            .query_row(
-                "SELECT status FROM slots WHERE day = ?1 AND slot_start = ?2",
-                params![day, slot_start],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(crate::db_error::map_rusqlite)?;
-        let status = status.ok_or_else(|| DbOpError::Fatal("slot missing".into()))?;
-        if status != "final" && status != "unknown" {
-            return Err(DbOpError::Fatal("slot not final".into()));
-        }
-        conn.execute(
-            "INSERT INTO misclassification_reports (day, slot_start, note, ts) VALUES (?1, ?2, ?3, ?4)",
-            params![day, slot_start, note, now_secs()],
-        )
-        .map_err(crate::db_error::map_rusqlite)?;
-        Ok(())
-    })
+    with_db(|conn| report_misclassification_db(conn, &day, slot_start, &note, now_secs()))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionStatus {
+    pub accessibility: bool,
+    pub screen_recording: bool,
+}
+
+#[tauri::command]
+pub fn get_permission_status() -> PermissionStatus {
+    PermissionStatus {
+        accessibility: macos::accessibility_granted(),
+        screen_recording: macos::screen_recording_granted(),
+    }
 }
 
 #[tauri::command]
@@ -570,7 +531,7 @@ pub fn get_settings() -> Result<AppSettings, String> {
 
 #[tauri::command]
 pub fn save_settings(settings: AppSettings) -> Result<(), String> {
-    save_settings_file(&settings)?;
+    write_settings_file(&settings)?;
     with_db(|conn| {
         let json = serde_json::json!({
             "trusted_apps": settings.trusted_apps,
@@ -597,4 +558,47 @@ pub fn set_api_key(key: String) -> Result<(), String> {
 #[tauri::command]
 pub fn has_api_key() -> Result<bool, String> {
     Ok(get_openai_api_key().is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{insert_ledger, migrate};
+
+    #[test]
+    fn report_misclassification_does_not_change_ledger_sum() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let slot_start = 1_700_000_000i64;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, credited_core_seconds, observed_seconds)
+             VALUES (?1, ?2, 'final', 900, 900)",
+            params![day, slot_start],
+        )
+        .unwrap();
+        insert_ledger(&conn, "validated_coin:2026-09-10:1", day, 5, 10).unwrap();
+        insert_ledger(&conn, "validated_coin:2026-09-10:2", day, 3, 0).unwrap();
+        let sum_before: i64 = conn
+            .query_row("SELECT COALESCE(SUM(coin_delta), 0) FROM ledger", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(sum_before, 8);
+
+        report_misclassification_db(&conn, day, slot_start, "wrong category", 99).unwrap();
+
+        let sum_after: i64 = conn
+            .query_row("SELECT COALESCE(SUM(coin_delta), 0) FROM ledger", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(sum_after, sum_before);
+        let reports: i64 = conn
+            .query_row("SELECT COUNT(*) FROM misclassification_reports", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(reports, 1);
+    }
 }

@@ -9,11 +9,12 @@ use rusqlite::Connection;
 
 use gamelife_core::{SAMPLE_INTERVAL_SECS, slot_start, strip_url_query_fragment};
 
+use crate::config::{load_settings, retention_from_str};
 use crate::db::{migrate, open, write_heartbeat};
 use crate::db_error::DbOpError;
 use crate::scheduler::{
-    day_str_for_ts, default_screenshot_retention, ensure_slot, maybe_finalize_previous_slot,
-    midnight_tick, purge_expired_screenshots, sampling_allowed, slot_rng, startup_from_heartbeat,
+    add_unobserved_secs, day_str_for_ts, ensure_slot, maybe_finalize_previous_slot, midnight_tick,
+    purge_expired_screenshots, purge_old_samples, sampling_allowed, slot_rng, startup_from_heartbeat,
     start_of_local_day, tick_capture,
 };
 
@@ -31,6 +32,9 @@ pub trait SampleSource: Send + Sync {
     fn secure_input_on(&self) -> bool;
     fn optional_browser_url(&self) -> Option<String>;
     fn paused(&self) -> bool;
+    fn observation_available(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone)]
@@ -98,6 +102,10 @@ impl SampleSource for MacSampleSource {
     fn paused(&self) -> bool {
         self.paused.load(Ordering::Relaxed)
     }
+
+    fn observation_available(&self) -> bool {
+        crate::macos::observation_available()
+    }
 }
 
 pub struct FakeSampleSource {
@@ -108,6 +116,7 @@ pub struct FakeSampleSource {
     pub locked: bool,
     pub secure: bool,
     pub paused: bool,
+    pub observation_available: bool,
 }
 
 impl SampleSource for FakeSampleSource {
@@ -133,6 +142,10 @@ impl SampleSource for FakeSampleSource {
 
     fn paused(&self) -> bool {
         self.paused
+    }
+
+    fn observation_available(&self) -> bool {
+        self.observation_available
     }
 }
 
@@ -183,12 +196,13 @@ pub fn sample_once(
     if !sampling_allowed(conn, &day)? {
         return Ok(());
     }
+    let settings = load_settings();
+    let retention = retention_from_str(&settings.screenshot_retention);
     let today_start = start_of_local_day(ts);
     if ts >= today_start {
-        midnight_tick(conn, ts, default_screenshot_retention())?;
+        midnight_tick(conn, ts, retention)?;
     }
     let ss = slot_start(ts);
-    let retention = default_screenshot_retention();
     maybe_finalize_previous_slot(
         conn,
         state.last_day.as_deref(),
@@ -199,6 +213,14 @@ pub fn sample_once(
     )?;
     let rng = slot_rng(&day, ss);
     ensure_slot(conn, &day, ss, rng)?;
+
+    if !source.observation_available() {
+        add_unobserved_secs(conn, &day, ss, SAMPLE_INTERVAL_SECS as i64, rng)?;
+        write_heartbeat(conn)?;
+        state.last_day = Some(day);
+        state.last_slot = Some(ss);
+        return Ok(());
+    }
 
     let locked = source.screen_locked();
     let paused = source.paused();
@@ -248,7 +270,12 @@ pub fn run_sampler_loop(db_path: PathBuf, source: &dyn SampleSource) {
     if let Err(e) = startup_from_heartbeat(&conn, now) {
         eprintln!("sampler: startup heartbeat fill failed: {e:?}");
     }
-    purge_expired_screenshots(default_screenshot_retention(), now);
+    let settings = load_settings();
+    let retention = retention_from_str(&settings.screenshot_retention);
+    purge_expired_screenshots(retention, now);
+    if let Err(e) = purge_old_samples(&conn, settings.sample_keep_days, now) {
+        eprintln!("sampler: purge_old_samples failed: {e:?}");
+    }
     let mut state = SamplerState::default();
     let interval = Duration::from_secs(SAMPLE_INTERVAL_SECS);
     loop {
@@ -271,6 +298,7 @@ pub fn start_sampler_thread(db_path: PathBuf, paused: Arc<AtomicBool>) -> thread
 mod tests {
     use super::*;
     use crate::db::migrate;
+    use crate::scheduler::day_str_for_ts;
     use rusqlite::Connection;
 
     #[test]
@@ -285,6 +313,7 @@ mod tests {
             locked: false,
             secure: false,
             paused: false,
+            observation_available: true,
         };
         let ts = 1_700_000_000i64;
         let mut state = SamplerState::default();
@@ -321,6 +350,7 @@ mod tests {
             locked: false,
             secure: false,
             paused: false,
+            observation_available: true,
         };
         let ts = 1_700_000_015i64;
         let mut state = SamplerState::default();
@@ -334,6 +364,45 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM heartbeat WHERE id = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(heartbeat_rows, 1);
+    }
+
+    #[test]
+    fn missing_permission_records_unobserved_not_sample() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let source = FakeSampleSource {
+            app: "Cursor".into(),
+            title: "lib.rs".into(),
+            url: None,
+            idle: 600,
+            locked: false,
+            secure: false,
+            paused: false,
+            observation_available: false,
+        };
+        let ts = 1_700_000_000i64;
+        let mut state = SamplerState::default();
+        sample_once(&mut conn, &source, ts, &mut state).unwrap();
+        let samples: i64 = conn
+            .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(samples, 0);
+        let unobs: i64 = conn
+            .query_row(
+                "SELECT json_extract(activity_json, '$.unobserved') FROM slots WHERE day = ?1",
+                [day_str_for_ts(ts)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unobs, SAMPLE_INTERVAL_SECS as i64);
+        let away: i64 = conn
+            .query_row(
+                "SELECT json_extract(activity_json, '$.away') FROM slots WHERE day = ?1",
+                [day_str_for_ts(ts)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(away, 0);
     }
 
     #[test]

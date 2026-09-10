@@ -128,3 +128,12 @@ export function setApiKey(key: string): Promise<void> {
 export function hasApiKey(): Promise<boolean> {
   return invoke("has_api_key");
 }
+
+export interface PermissionStatus {
+  accessibility: boolean;
+  screenRecording: boolean;
+}
+
+export function getPermissionStatus(): Promise<PermissionStatus> {
+  return invoke("get_permission_status");
+}

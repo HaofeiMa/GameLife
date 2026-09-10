@@ -53,6 +53,18 @@ pub fn is_screenshot_expired(mtime: i64, now: i64, retention: ScreenshotRetentio
     retention_ttl_secs(retention).is_some_and(|ttl| now - mtime > ttl)
 }
 
+/// Delete `samples` rows older than `keep_days` (default 7 in settings).
+pub fn purge_old_samples(conn: &Connection, keep_days: i64, now: i64) -> Result<u64, DbOpError> {
+    if keep_days <= 0 {
+        return Ok(0);
+    }
+    let cutoff = now - keep_days * 86400;
+    let deleted = conn
+        .execute("DELETE FROM samples WHERE ts < ?1", params![cutoff])
+        .map_err(map_rusqlite)?;
+    Ok(deleted as u64)
+}
+
 pub fn purge_expired_screenshots(retention: ScreenshotRetention, now: i64) {
     let Some(ttl) = retention_ttl_secs(retention) else {
         return;
@@ -322,7 +334,7 @@ fn slot_is_final(conn: &Connection, day: &str, slot_start_ts: i64) -> Result<boo
     Ok(matches!(status.as_deref(), Some("final" | "unknown")))
 }
 
-fn add_unobserved_secs(
+pub fn add_unobserved_secs(
     conn: &Connection,
     day: &str,
     slot_start_ts: i64,
@@ -1920,5 +1932,30 @@ mod tests {
             .unwrap();
         assert!(settled > 0);
         assert!(!sampling_allowed(&conn, day).unwrap());
+    }
+
+    #[test]
+    fn purge_old_samples_removes_rows_before_cutoff() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let now = 1_700_000_000i64;
+        let old = now - 10 * 86400;
+        let recent = now - 2 * 86400;
+        conn.execute(
+            "INSERT INTO samples (ts, day, idle_seconds, locked, paused) VALUES (?1, '2026-09-01', 0, 0, 0)",
+            params![old],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO samples (ts, day, idle_seconds, locked, paused) VALUES (?1, '2026-09-09', 0, 0, 0)",
+            params![recent],
+        )
+        .unwrap();
+        let deleted = purge_old_samples(&conn, 7, now).unwrap();
+        assert_eq!(deleted, 1);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

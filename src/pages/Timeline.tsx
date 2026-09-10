@@ -6,6 +6,7 @@ import {
   type TodaySlot,
   type TodayView,
 } from "../lib/api";
+import { PermissionBanner } from "../components/PermissionBanner";
 import { formatEstimatedMinutes } from "../lib/format";
 
 const REVIEW_CATEGORIES = [
@@ -116,6 +117,7 @@ export function Timeline() {
 
   return (
     <div className="page">
+      <PermissionBanner />
       <h2>时间轴</h2>
       <p className="muted">估计有效主线合计 {formatEstimatedMinutes(data.creditedSeconds)}</p>
       {data.slots.length === 0 && <p className="muted">暂无槽记录</p>}

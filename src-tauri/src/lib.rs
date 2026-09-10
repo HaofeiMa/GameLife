@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod config;
 pub mod db;
 pub mod db_error;
 pub mod keychain;
@@ -20,8 +21,8 @@ pub use resolve::resolve_slot;
 use sampler::PauseControl;
 
 use commands::{
-    end_today, freeze, get_settings, get_today, get_week, has_api_key, redeem,
-    report_misclassification, review_slot, save_settings, set_api_key, set_quests,
+    end_today, freeze, get_permission_status, get_settings, get_today, get_week, has_api_key,
+    redeem, report_misclassification, review_slot, save_settings, set_api_key, set_quests,
 };
 
 use tauri::{
@@ -62,6 +63,7 @@ pub fn run() {
             save_settings,
             set_api_key,
             has_api_key,
+            get_permission_status,
         ])
         .setup(|app| {
             let pause = PauseControl::new();

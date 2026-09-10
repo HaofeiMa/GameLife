@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PermissionBanner } from "../components/PermissionBanner";
 import {
   BUILTIN_NEVER_CAPTURE,
   getSettings,
@@ -44,6 +45,7 @@ export function Settings() {
   return (
     <div className="page">
       <h2>设置</h2>
+      <PermissionBanner />
       <p className="muted">采样间隔固定 15s，此处不提供调节。</p>
 
       <section>
@@ -71,7 +73,7 @@ export function Settings() {
             <option value="14d">14 天</option>
           </select>
         </label>
-        <p className="muted">截图保留策略尚未持久化到采样器（Task 20）。</p>
+        <p className="muted">过期截图由采样器按此策略自动清理。</p>
       </section>
 
       <section>
@@ -88,7 +90,7 @@ export function Settings() {
             }
           />
         </label>
-        <p className="muted">purge 功能占位，尚未生效。</p>
+        <p className="muted">超过保留天数的样本行由采样器启动时自动清理（默认 7 天）。</p>
       </section>
 
       <section>
@@ -101,7 +103,7 @@ export function Settings() {
               setSettings({ ...settings, loginAtStartup: e.target.checked })
             }
           />
-          登录时启动
+          登录时启动（默认开启）
         </label>
       </section>
 
