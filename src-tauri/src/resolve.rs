@@ -15,30 +15,24 @@ pub fn resolve_slot(
     credited_before: i64,
     early_coins: i64,
 ) -> Result<(), DbOpError> {
-    if let Some(status) = conn
-        .query_row(
-            "SELECT status FROM slots WHERE day=?1 AND slot_start=?2",
-            params![day, slot_start],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(map_rusqlite)?
-    {
-        if status == "final" || status == "unknown" {
-            return Ok(());
-        }
+    let tx = conn.transaction().map_err(map_rusqlite)?;
+
+    if slot_is_immutable(&tx, day, slot_start)? {
+        tx.commit().map_err(map_rusqlite)?;
+        return Ok(());
     }
 
     if output.pending {
-        let tx = conn.transaction().map_err(map_rusqlite)?;
         upsert_slot(&tx, day, slot_start, output, "pending_review", 0)?;
         tx.commit().map_err(map_rusqlite)?;
         return Ok(());
     }
 
     let credited = output.credited_core_seconds;
-    let tx = conn.transaction().map_err(map_rusqlite)?;
-    upsert_slot(&tx, day, slot_start, output, "final", credited)?;
+    if !upsert_slot(&tx, day, slot_start, output, "final", credited)? {
+        tx.commit().map_err(map_rusqlite)?;
+        return Ok(());
+    }
 
     let after = credited_before + credited;
     for ev in tick_keys_for_credited(day, credited_before, after) {
@@ -62,6 +56,18 @@ pub fn resolve_slot(
     Ok(())
 }
 
+fn slot_is_immutable(conn: &Connection, day: &str, slot_start: i64) -> Result<bool, DbOpError> {
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM slots WHERE day=?1 AND slot_start=?2",
+            params![day, slot_start],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    Ok(matches!(status.as_deref(), Some("final" | "unknown")))
+}
+
 fn upsert_slot(
     conn: &Connection,
     day: &str,
@@ -69,9 +75,10 @@ fn upsert_slot(
     output: &JudgeOutput,
     status: &str,
     credited: i64,
-) -> Result<(), DbOpError> {
-    conn.execute(
-        "INSERT INTO slots (day, slot_start, category, status, activity_json, credited_core_seconds, observed_seconds, used_vision)
+) -> Result<bool, DbOpError> {
+    let n = conn
+        .execute(
+            "INSERT INTO slots (day, slot_start, category, status, activity_json, credited_core_seconds, observed_seconds, used_vision)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
          ON CONFLICT(day, slot_start) DO UPDATE SET
            category=excluded.category,
@@ -79,20 +86,21 @@ fn upsert_slot(
            activity_json=excluded.activity_json,
            credited_core_seconds=excluded.credited_core_seconds,
            observed_seconds=excluded.observed_seconds,
-           used_vision=excluded.used_vision",
-        params![
-            day,
-            slot_start,
-            dominant_category(output.dominant),
-            status,
-            activity_json(&output.activity),
-            credited,
-            output.observed_seconds,
-            output.used_vision as i64,
-        ],
-    )
-    .map_err(map_rusqlite)?;
-    Ok(())
+           used_vision=excluded.used_vision
+         WHERE slots.status NOT IN ('final', 'unknown')",
+            params![
+                day,
+                slot_start,
+                dominant_category(output.dominant),
+                status,
+                activity_json(&output.activity),
+                credited,
+                output.observed_seconds,
+                output.used_vision as i64,
+            ],
+        )
+        .map_err(map_rusqlite)?;
+    Ok(n > 0)
 }
 
 fn dominant_category(d: Dominant) -> &'static str {
@@ -165,6 +173,7 @@ mod tests {
         assert_eq!(count1, 1);
     }
 
+    /// Pre-existing `final` slot: resolve is a no-op (guarded inside tx; UPSERT WHERE skips overwrite).
     #[test]
     fn final_slot_rejects_higher_credited() {
         let mut conn = Connection::open_in_memory().unwrap();
