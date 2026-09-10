@@ -24,6 +24,37 @@ pub trait SampleSource: Send + Sync {
     fn paused(&self) -> bool;
 }
 
+#[derive(Clone)]
+pub struct PauseControl {
+    paused: Arc<AtomicBool>,
+}
+
+impl PauseControl {
+    pub fn new() -> Self {
+        Self {
+            paused: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn paused_flag(&self) -> Arc<AtomicBool> {
+        self.paused.clone()
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    /// Pause sampling/capture for `secs`, then auto-clear.
+    pub fn pause_for(&self, secs: u64) {
+        self.paused.store(true, Ordering::Relaxed);
+        let flag = self.paused.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(secs));
+            flag.store(false, Ordering::Relaxed);
+        });
+    }
+}
+
 pub struct MacSampleSource {
     paused: Arc<AtomicBool>,
 }
@@ -235,5 +266,47 @@ mod tests {
             .query_row("SELECT ts FROM heartbeat WHERE id = 1", [], |r| r.get(0))
             .unwrap();
         assert!(hb > 0);
+    }
+
+    /// Step 4 substitute: one FakeSampleSource tick must persist sample + heartbeat rows.
+    #[test]
+    fn fake_source_one_sampling_tick_persists_sample_and_heartbeat() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let samples_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(samples_before, 0);
+
+        let source = FakeSampleSource {
+            app: "Safari".into(),
+            title: "Example".into(),
+            url: None,
+            idle: 0,
+            locked: false,
+            secure: false,
+            paused: false,
+        };
+        let ts = 1_700_000_015i64;
+        sample_once(&conn, &source, ts).unwrap();
+
+        let samples_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(samples_after, 1);
+        let heartbeat_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM heartbeat WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(heartbeat_rows, 1);
+    }
+
+    #[test]
+    fn pause_control_sets_flag_and_can_clear() {
+        let pc = PauseControl::new();
+        assert!(!pc.is_paused());
+        pc.paused_flag().store(true, Ordering::Relaxed);
+        assert!(pc.is_paused());
+        pc.paused_flag().store(false, Ordering::Relaxed);
+        assert!(!pc.is_paused());
     }
 }

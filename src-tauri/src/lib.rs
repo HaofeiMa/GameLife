@@ -13,8 +13,7 @@ pub use scheduler::ensure_slot;
 pub use db_error::{map_rusqlite, DbOpError};
 pub use resolve::resolve_slot;
 
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use sampler::PauseControl;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -42,13 +41,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let paused = Arc::new(AtomicBool::new(false));
+            let pause = PauseControl::new();
             if let Some(db_path) = app_db_path() {
                 if let Some(parent) = db_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                sampler::start_sampler_thread(db_path, paused.clone());
+                sampler::start_sampler_thread(db_path, pause.paused_flag());
             }
+            app.manage(pause);
 
             let open_i = MenuItem::with_id(app, "open", "打开", true, None::<&str>)?;
             let pause_30_i =
@@ -82,7 +82,21 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_main_window(app),
-                    "pause_30" | "pause_60" | "pause_90" => {}
+                    "pause_30" => {
+                        if let Some(pause) = app.try_state::<PauseControl>() {
+                            pause.pause_for(30 * 60);
+                        }
+                    }
+                    "pause_60" => {
+                        if let Some(pause) = app.try_state::<PauseControl>() {
+                            pause.pause_for(60 * 60);
+                        }
+                    }
+                    "pause_90" => {
+                        if let Some(pause) = app.try_state::<PauseControl>() {
+                            pause.pause_for(90 * 60);
+                        }
+                    }
                     "end_day" => {
                         app.dialog()
                             .message("结束今天功能尚未实现。")

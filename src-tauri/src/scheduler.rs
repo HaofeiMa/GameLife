@@ -335,6 +335,29 @@ mod tests {
     }
 
     #[test]
+    fn tick_capture_skips_when_paused() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status)
+             VALUES (?1, ?2, 100, 'Scheduled')",
+            params![day, ss],
+        )
+        .unwrap();
+        tick_capture(&conn, day, ss, 100, "Cursor", false, false, true).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "Skipped");
+    }
+
+    #[test]
     fn tick_capture_skips_never_capture_app() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
