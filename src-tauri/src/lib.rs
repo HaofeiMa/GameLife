@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod db;
 pub mod db_error;
 pub mod keychain;
@@ -16,6 +17,8 @@ pub use db_error::{map_rusqlite, DbOpError};
 pub use resolve::resolve_slot;
 
 use sampler::PauseControl;
+
+use commands::{end_today_cmd, freeze_cmd};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -42,6 +45,7 @@ fn write_quit_heartbeat() {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![end_today_cmd, freeze_cmd])
         .setup(|app| {
             let pause = PauseControl::new();
             if let Some(db_path) = app_db_path() {
@@ -101,10 +105,16 @@ pub fn run() {
                     }
                     "end_day" => {
                         app.dialog()
-                            .message("结束今天功能尚未实现。")
+                            .message("确定结束今天？当前槽将立即结算，后续不再采样。")
                             .title("结束今天")
-                            .kind(MessageDialogKind::Info)
-                            .show(|_| {});
+                            .kind(MessageDialogKind::Warning)
+                            .show(move |confirmed| {
+                                if confirmed {
+                                    if let Err(err) = crate::commands::run_end_today() {
+                                        eprintln!("end_today failed: {err}");
+                                    }
+                                }
+                            });
                     }
                     "quit" => {
                         write_quit_heartbeat();

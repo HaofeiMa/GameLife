@@ -13,7 +13,8 @@ use crate::db::{migrate, open, write_heartbeat};
 use crate::db_error::DbOpError;
 use crate::scheduler::{
     day_str_for_ts, default_screenshot_retention, ensure_slot, maybe_finalize_previous_slot,
-    purge_expired_screenshots, slot_rng, startup_from_heartbeat, tick_capture,
+    midnight_tick, purge_expired_screenshots, sampling_allowed, slot_rng, startup_from_heartbeat,
+    start_of_local_day, tick_capture,
 };
 
 /// Tracks the last sampled slot so we can finalize on boundary crossing.
@@ -179,6 +180,13 @@ pub fn sample_once(
     state: &mut SamplerState,
 ) -> Result<(), DbOpError> {
     let day = day_str_for_ts(ts);
+    if !sampling_allowed(conn, &day)? {
+        return Ok(());
+    }
+    let today_start = start_of_local_day(ts);
+    if ts >= today_start {
+        midnight_tick(conn, ts, default_screenshot_retention())?;
+    }
     let ss = slot_start(ts);
     let retention = default_screenshot_retention();
     maybe_finalize_previous_slot(

@@ -1,14 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{Local, TimeZone};
+use chrono::{Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 
 use gamelife_core::{
-    builtin_never_capture, builtin_side_project_rules, capture_on_resume, heartbeat_unobserved,
-    hint_sample, judge_slot, schedule_capture, slot_end_exclusive, slot_start, spans_for_slot,
-    CaptureStatus, JudgeInput, Policy, Quest, Sample,
+    builtin_never_capture, builtin_side_project_rules, can_use_freeze, capture_on_resume,
+    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, schedule_capture,
+    slot_end_exclusive, slot_start, spans_for_slot, CaptureStatus, JudgeInput, Policy, Quest,
+    Sample, CHEST_SECS,
 };
 use gamelife_core::types::Hint;
 use gamelife_core::judge::VisionResult;
@@ -744,6 +745,269 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
+pub fn start_of_local_day(ts: i64) -> i64 {
+    let dt = Local.timestamp_opt(ts, 0).single().unwrap();
+    let date = dt.date_naive();
+    Local
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+        .unwrap()
+        .timestamp()
+}
+
+pub fn yesterday_str_for_ts(now: i64) -> String {
+    let today_start = start_of_local_day(now);
+    day_str_for_ts(today_start - 1)
+}
+
+fn parse_day(day: &str) -> Result<NaiveDate, DbOpError> {
+    NaiveDate::parse_from_str(day, "%Y-%m-%d")
+        .map_err(|e| DbOpError::Fatal(format!("day parse: {e}")))
+}
+
+fn next_weekday(date: NaiveDate) -> NaiveDate {
+    let mut d = date.succ_opt().expect("date");
+    while !is_weekday(d) {
+        d = d.succ_opt().expect("date");
+    }
+    d
+}
+
+fn day_is_settled(conn: &Connection, day: &str) -> Result<bool, DbOpError> {
+    let settled: Option<i64> = conn
+        .query_row(
+            "SELECT settled_at FROM days WHERE day = ?1",
+            params![day],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    Ok(settled.is_some())
+}
+
+fn day_total_credited(conn: &Connection, day: &str) -> Result<i64, DbOpError> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(credited_core_seconds), 0) FROM slots
+         WHERE day = ?1 AND status = 'final'",
+        params![day],
+        |r| r.get(0),
+    )
+    .map_err(map_rusqlite)
+}
+
+fn convert_pending_to_unknown(conn: &Connection, day: &str) -> Result<(), DbOpError> {
+    conn.execute(
+        "UPDATE slots SET status = 'unknown', category = 'unknown'
+         WHERE day = ?1 AND status = 'pending_review'",
+        params![day],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+fn slot_status(
+    conn: &Connection,
+    day: &str,
+    slot_start_ts: i64,
+) -> Result<Option<String>, DbOpError> {
+    Ok(conn
+        .query_row(
+            "SELECT status FROM slots WHERE day = ?1 AND slot_start = ?2",
+            params![day, slot_start_ts],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?
+        .flatten())
+}
+
+fn finalize_yesterday_last_slot(
+    conn: &mut Connection,
+    yesterday: &str,
+    day_end: i64,
+    retention: ScreenshotRetention,
+) -> Result<(), DbOpError> {
+    let last_ss = slot_start(day_end - 1);
+    if slot_is_final(conn, yesterday, last_ss)? {
+        return Ok(());
+    }
+    if slot_status(conn, yesterday, last_ss)? == Some("pending_review".into()) {
+        return Ok(());
+    }
+    let credited_before = credited_before_slot(conn, yesterday, last_ss)?;
+    finalize_slot_end(
+        conn,
+        yesterday,
+        last_ss,
+        day_end,
+        retention,
+        credited_before,
+        0,
+    )
+}
+
+/// Settle a calendar day: pending→unknown, compute outcome, idempotent.
+pub fn settle_day(conn: &mut Connection, day: &str, settled_at: i64) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    if day_is_settled(conn, day)? {
+        return Ok(());
+    }
+    convert_pending_to_unknown(conn, day)?;
+    let credited = day_total_credited(conn, day)?;
+    let outcome = if credited >= i64::try_from(CHEST_SECS).unwrap_or(i64::MAX) {
+        "completed"
+    } else {
+        "failed"
+    };
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT outcome FROM days WHERE day = ?1",
+            params![day],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    let final_outcome = if existing.as_deref() == Some("protected") {
+        "protected"
+    } else {
+        outcome
+    };
+    conn.execute(
+        "INSERT INTO days (day, settled_at, outcome) VALUES (?1, ?2, ?3)
+         ON CONFLICT(day) DO UPDATE SET settled_at = excluded.settled_at, outcome = excluded.outcome
+         WHERE days.settled_at IS NULL",
+        params![day, settled_at, final_outcome],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+/// At local 00:00:00 resolve yesterday's last slot; at 00:00:05+ settle yesterday.
+pub fn midnight_tick(
+    conn: &mut Connection,
+    now: i64,
+    retention: ScreenshotRetention,
+) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let today_start = start_of_local_day(now);
+    let yesterday = yesterday_str_for_ts(now);
+    finalize_yesterday_last_slot(conn, &yesterday, today_start, retention)?;
+    if now >= today_start + 5 {
+        settle_day(conn, &yesterday, now)?;
+    }
+    Ok(())
+}
+
+fn load_freeze_dates(conn: &Connection) -> Result<Vec<NaiveDate>, DbOpError> {
+    let mut stmt = conn
+        .prepare("SELECT protected_date FROM freeze_uses ORDER BY protected_date")
+        .map_err(map_rusqlite)?;
+    let rows = stmt
+        .query_map([], |r| {
+            let s: String = r.get(0)?;
+            NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|e| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+            })
+        })
+        .map_err(map_rusqlite)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
+}
+
+fn next_weekday_settled(conn: &Connection, after: NaiveDate) -> Result<bool, DbOpError> {
+    let next = next_weekday(after);
+    let day = next.format("%Y-%m-%d").to_string();
+    let settled: Option<i64> = conn
+        .query_row(
+            "SELECT settled_at FROM days WHERE day = ?1",
+            params![day],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    Ok(settled.is_some())
+}
+
+/// Freeze a failed settled day; quota by protected_date's calendar month.
+pub fn freeze_day(
+    conn: &mut Connection,
+    protected_date: &str,
+    _now: i64,
+) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let protected = parse_day(protected_date)?;
+    if !day_is_settled(conn, protected_date)? {
+        return Err(DbOpError::Fatal("day not settled".into()));
+    }
+    let outcome: Option<String> = conn
+        .query_row(
+            "SELECT outcome FROM days WHERE day = ?1",
+            params![protected_date],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    match outcome.as_deref() {
+        Some("failed") => {}
+        Some("protected") => return Ok(()),
+        _ => return Err(DbOpError::Fatal("cannot freeze".into())),
+    }
+    if next_weekday_settled(conn, protected)? {
+        return Err(DbOpError::Fatal("freeze window closed".into()));
+    }
+    let used = load_freeze_dates(conn)?;
+    if !can_use_freeze(&used, protected) {
+        return Err(DbOpError::Fatal("freeze quota".into()));
+    }
+    let tx = conn.transaction().map_err(map_rusqlite)?;
+    tx.execute(
+        "INSERT INTO freeze_uses (protected_date) VALUES (?1)",
+        params![protected_date],
+    )
+    .map_err(map_rusqlite)?;
+    tx.execute(
+        "UPDATE days SET outcome = 'protected' WHERE day = ?1",
+        params![protected_date],
+    )
+    .map_err(map_rusqlite)?;
+    tx.commit().map_err(map_rusqlite)?;
+    Ok(())
+}
+
+fn mark_scheduled_capture_missed(
+    conn: &Connection,
+    day: &str,
+    slot_start_ts: i64,
+) -> Result<(), DbOpError> {
+    conn.execute(
+        "UPDATE slots SET capture_status = 'Missed'
+         WHERE day = ?1 AND slot_start = ?2 AND capture_status = 'Scheduled'",
+        params![day, slot_start_ts],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+/// End today: half slot, missed capture, resolve, stop sampling via settle.
+pub fn end_today(
+    conn: &mut Connection,
+    now: i64,
+    retention: ScreenshotRetention,
+) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let day = day_str_for_ts(now);
+    if day_is_settled(conn, &day)? {
+        return Ok(());
+    }
+    let ss = gamelife_core::slot_start(now);
+    mark_scheduled_capture_missed(conn, &day, ss)?;
+    let credited_before = credited_before_slot(conn, &day, ss)?;
+    finalize_slot_end(conn, &day, ss, now, retention, credited_before, 0)?;
+    settle_day(conn, &day, now)
+}
+
+pub fn sampling_allowed(conn: &Connection, day: &str) -> Result<bool, DbOpError> {
+    Ok(!day_is_settled(conn, day)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1190,5 +1454,112 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "pending_review");
+    }
+
+    fn day_start_ts(day: &str) -> i64 {
+        use chrono::NaiveDate;
+        let d = NaiveDate::parse_from_str(day, "%Y-%m-%d").unwrap();
+        Local
+            .from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap())
+            .unwrap()
+            .timestamp()
+    }
+
+    #[test]
+    fn midnight_resolves_last_slot_and_settles_day() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let yesterday = "2026-09-09";
+        let today_start = day_start_ts("2026-09-10");
+        let last_ss = slot_start(today_start - 1);
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, credited_core_seconds, observed_seconds, used_vision, activity_json)
+             VALUES (?1, ?2, 'pending_review', 0, 600, 1, '{\"core\":0,\"support\":0,\"admin\":0,\"side\":0,\"distraction\":0,\"away\":0,\"unobserved\":600}')",
+            params![yesterday, last_ss],
+        )
+        .unwrap();
+
+        midnight_tick(
+            &mut conn,
+            today_start + 5,
+            ScreenshotRetention::None,
+        )
+        .unwrap();
+
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![yesterday, last_ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "unknown");
+        let settled_at: i64 = conn
+            .query_row(
+                "SELECT settled_at FROM days WHERE day = ?1",
+                params![yesterday],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(settled_at > 0);
+
+        let outcome_before: String = conn
+            .query_row(
+                "SELECT outcome FROM days WHERE day = ?1",
+                params![yesterday],
+                |r| r.get(0),
+            )
+            .unwrap();
+        settle_day(&mut conn, yesterday, today_start + 10).unwrap();
+        let outcome_after: String = conn
+            .query_row(
+                "SELECT outcome FROM days WHERE day = ?1",
+                params![yesterday],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outcome_before, outcome_after);
+        assert_eq!(outcome_after, "failed");
+    }
+
+    #[test]
+    fn freeze_march_31_from_april_1_uses_march_quota() {
+        use chrono::NaiveDate;
+        use gamelife_core::{can_use_freeze, freeze_month_key, freeze_quota_used};
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let protected = "2026-03-31";
+        let now = day_start_ts("2026-04-01") + 3600;
+        conn.execute(
+            "INSERT INTO days (day, settled_at, outcome) VALUES (?1, ?2, 'failed')",
+            params![protected, now - 100],
+        )
+        .unwrap();
+
+        freeze_day(&mut conn, protected, now).unwrap();
+
+        let row: String = conn
+            .query_row(
+                "SELECT protected_date FROM freeze_uses",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(row, "2026-03-31");
+        let outcome: String = conn
+            .query_row(
+                "SELECT outcome FROM days WHERE day = ?1",
+                params![protected],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outcome, "protected");
+
+        let d = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+        let used = vec![d];
+        assert_eq!(freeze_month_key(d), "2026-03");
+        assert_eq!(freeze_quota_used(&used, "2026-03"), 1);
+        assert!(!can_use_freeze(&used, d));
     }
 }
