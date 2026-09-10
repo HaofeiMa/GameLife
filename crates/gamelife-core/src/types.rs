@@ -1,3 +1,32 @@
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sample {
+    pub ts: i64,
+    pub app: String,
+    pub window_title: String,
+    pub url: Option<String>,
+    pub path: Option<String>,
+    pub idle_seconds: i64,
+    pub screen_locked: bool,
+    pub paused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Quest {
+    pub text: String,
+    pub keywords: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hint {
+    Away,
+    Distraction,
+    Side,
+    CoreCandidate,
+    CoreReading,
+    UnsureReading,
+    Unsure,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivitySeconds {
     pub core: i64,
