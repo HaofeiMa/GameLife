@@ -8,6 +8,7 @@ pub mod judge;
 pub mod ledger;
 pub mod observe;
 pub mod policy;
+pub mod shop;
 pub mod streak;
 pub mod time;
 pub mod types;
@@ -25,6 +26,9 @@ pub use ledger::{RewardEvent, admin_xp_key, support_xp_key, tick_keys_for_credit
 pub use observe::{Span, SpanKind, observed_seconds, spans_for_slot};
 pub use policy::{
     Policy, builtin_never_capture, builtin_side_project_rules, never_capture_removable,
+};
+pub use shop::{
+    RedeemError, Wish, WishKind, validate_redeem, xp_shop_unlocked,
 };
 pub use streak::{
     DayOutcome, FREEZE_PER_MONTH, can_use_freeze, freeze_month_key, freeze_quota_used,
