@@ -206,6 +206,22 @@ mod tests {
         insert_ledger(&conn, "validated_coin:2026-09-10:1", "2026-09-10", 1, 0).unwrap();
     }
 
+    #[test]
+    fn write_heartbeat_upserts_row_id_one() {
+        let conn = Connection::open_in_memory().unwrap();
+        write_heartbeat(&conn).unwrap();
+        let ts: i64 = conn
+            .query_row("SELECT ts FROM heartbeat WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(ts > 0);
+
+        write_heartbeat(&conn).unwrap();
+        let ts2: i64 = conn
+            .query_row("SELECT ts FROM heartbeat WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(ts2 >= ts);
+    }
+
     fn xp_sum(conn: &Connection, day: &str) -> i64 {
         conn.query_row(
             "SELECT COALESCE(SUM(xp_delta),0) FROM ledger WHERE day=?1",

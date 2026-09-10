@@ -57,9 +57,12 @@ pub fn run() {
                 ],
             )?;
 
-            let icon = app.default_window_icon().cloned();
+            let icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or("missing default window icon")?;
             let _tray = TrayIconBuilder::new()
-                .icon(icon.unwrap())
+                .icon(icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
