@@ -107,4 +107,27 @@ mod tests {
             .unwrap_err();
         assert!(matches!(e, DbOpError::AlreadyApplied));
     }
+
+    #[test]
+    fn notnull_violation_is_fatal_not_already_applied() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let e = conn
+            .execute(
+                "INSERT INTO ledger (reward_event_key, day, ts, coin_delta, xp_delta) VALUES (?1, NULL, 1, 1, 0)",
+                params!["k"],
+            )
+            .unwrap_err();
+        let mapped = map_rusqlite(e);
+        assert!(matches!(mapped, DbOpError::Fatal(_)));
+    }
+
+    #[test]
+    fn open_temp_file_is_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gamelife.db");
+        let conn = open(&path).unwrap();
+        migrate(&conn).unwrap();
+        insert_ledger(&conn, "validated_coin:2026-09-10:1", "2026-09-10", 1, 0).unwrap();
+    }
 }
