@@ -1,0 +1,6 @@
+[package]
+name = "gamelife-core"
+edition = "2021"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

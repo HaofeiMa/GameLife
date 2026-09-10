@@ -1,0 +1,11 @@
+pub const SAMPLE_INTERVAL_SECS: u64 = 15;
+pub const SLOT_SECS: u64 = 900;
+pub const MAX_GAP_SECS: u64 = 30;
+pub const GOLD_DAY_SECS: u64 = 28800;
+pub const CHEST_SECS: u64 = 21600;
+pub const XP_SHOP_UNLOCK_SECS: u64 = 3600;
+pub const COIN_TICK_SECS: u64 = 900;
+pub const XP_TICK_SECS: u64 = 90;
+pub const MAX_COIN_TICKS: u64 = 32;
+pub const MAX_XP_TICKS: u64 = 320;
+pub const READING_BRIDGE_SECS: u64 = 300;
