@@ -26,6 +26,8 @@ export interface TodayView {
   gold: ChestGold;
   streak: number;
   atRisk: boolean;
+  freezeCandidates: string[];
+  defaultFreezeDate: string | null;
   firstCoreLabel: string | null;
   slots: TodaySlot[];
   goldDay: boolean;

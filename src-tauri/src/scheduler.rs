@@ -985,6 +985,54 @@ fn next_weekday_settled(conn: &Connection, after: NaiveDate) -> Result<bool, DbO
     Ok(settled.is_some())
 }
 
+/// Whether a settled failed day is still inside the freeze window with quota remaining.
+pub fn freeze_eligible(conn: &Connection, protected_date: &str) -> Result<bool, DbOpError> {
+    migrate(conn)?;
+    let protected = parse_day(protected_date)?;
+    if !day_is_settled(conn, protected_date)? {
+        return Ok(false);
+    }
+    let outcome: Option<String> = conn
+        .query_row(
+            "SELECT outcome FROM days WHERE day = ?1",
+            params![protected_date],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    if outcome.as_deref() != Some("failed") {
+        return Ok(false);
+    }
+    if next_weekday_settled(conn, protected)? {
+        return Ok(false);
+    }
+    let used = load_freeze_dates(conn)?;
+    Ok(can_use_freeze(&used, protected))
+}
+
+/// Newest-first failed settled days that can still be frozen.
+pub fn list_freeze_candidates(conn: &Connection) -> Result<Vec<String>, DbOpError> {
+    migrate(conn)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT day FROM days
+             WHERE settled_at IS NOT NULL AND outcome = 'failed'
+             ORDER BY day DESC",
+        )
+        .map_err(map_rusqlite)?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(map_rusqlite)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let day = row.map_err(map_rusqlite)?;
+        if freeze_eligible(conn, &day)? {
+            out.push(day);
+        }
+    }
+    Ok(out)
+}
+
 /// Freeze a failed settled day; quota by protected_date's calendar month.
 pub fn freeze_day(
     conn: &mut Connection,

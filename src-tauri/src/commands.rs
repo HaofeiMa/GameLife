@@ -18,8 +18,8 @@ use crate::db_error::DbOpError;
 use crate::keychain::{get_openai_api_key, set_openai_api_key};
 use crate::sampler::PauseControl;
 use crate::scheduler::{
-    app_support_dir, day_str_for_ts, default_screenshot_retention, load_quests_for_day,
-    review_pending_slot, sampling_allowed, streak_from_db,
+    app_support_dir, day_str_for_ts, default_screenshot_retention, list_freeze_candidates,
+    load_quests_for_day, review_pending_slot, sampling_allowed, streak_from_db,
     ScreenshotRetention,
 };
 
@@ -82,6 +82,8 @@ pub struct TodayView {
     pub gold: ChestGold,
     pub streak: u32,
     pub at_risk: bool,
+    pub freeze_candidates: Vec<String>,
+    pub default_freeze_date: Option<String>,
     pub first_core_label: Option<String>,
     pub slots: Vec<TodaySlot>,
     pub gold_day: bool,
@@ -289,6 +291,8 @@ fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
         });
     }
     let gold_day = credited_seconds >= i64::try_from(GOLD_DAY_SECS).unwrap_or(28800);
+    let freeze_candidates = list_freeze_candidates(conn)?;
+    let default_freeze_date = freeze_candidates.first().cloned();
     Ok(TodayView {
         day: day.to_string(),
         quests: quest_texts,
@@ -309,6 +313,8 @@ fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
         },
         streak,
         at_risk,
+        freeze_candidates,
+        default_freeze_date,
         first_core_label,
         slots,
         gold_day,
