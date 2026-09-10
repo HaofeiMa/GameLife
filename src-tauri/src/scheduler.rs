@@ -12,7 +12,7 @@ use gamelife_core::{
     JudgeInput, Policy, Quest, Sample, CHEST_SECS,
 };
 use gamelife_core::types::Hint;
-use gamelife_core::judge::VisionResult;
+use gamelife_core::judge::{Dominant, JudgeOutput, VisionResult};
 use gamelife_core::observe::SpanKind;
 use gamelife_core::types::ActivitySeconds;
 
@@ -829,7 +829,7 @@ fn load_settled_days_newest_first(conn: &Connection) -> Result<Vec<(NaiveDate, D
     Ok(days)
 }
 
-fn streak_from_db(conn: &Connection) -> Result<u32, DbOpError> {
+pub fn streak_from_db(conn: &Connection) -> Result<u32, DbOpError> {
     Ok(recompute_streak(&load_settled_days_newest_first(conn)?))
 }
 
@@ -1068,6 +1068,92 @@ pub fn end_today(
 
 pub fn sampling_allowed(conn: &Connection, day: &str) -> Result<bool, DbOpError> {
     Ok(!day_is_settled(conn, day)?)
+}
+
+fn category_to_dominant(category: &str) -> Dominant {
+    match category {
+        "core_research" => Dominant::CoreResearch,
+        "research_support" => Dominant::ResearchSupport,
+        "admin" => Dominant::Admin,
+        "side_project" => Dominant::SideProject,
+        "distraction" => Dominant::Distraction,
+        "break_away" => Dominant::BreakAway,
+        _ => Dominant::Unknown,
+    }
+}
+
+/// Human review of a pending slot; economically final slots stay final via resolve_slot guard.
+pub fn review_pending_slot(
+    conn: &mut Connection,
+    day: &str,
+    slot_start: i64,
+    category: &str,
+    retention: ScreenshotRetention,
+) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let status = slot_status(conn, day, slot_start)?;
+    if status.as_deref() != Some("pending_review") {
+        return Err(DbOpError::Fatal("slot not pending".into()));
+    }
+    let slot_end = slot_end_exclusive(slot_start);
+    let samples = load_samples_for_slot(conn, day, slot_start, slot_end)?;
+    let policy = load_policy(conn)?;
+    let quests = load_quests_for_day(conn, day)?;
+    let capture_status_str: Option<String> = conn
+        .query_row(
+            "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
+            params![day, slot_start],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    let capture = capture_status_str
+        .as_deref()
+        .map(capture_status_from_str)
+        .unwrap_or(CaptureStatus::Scheduled);
+    let credited_before = credited_before_slot(conn, day, slot_start)?;
+    let output = if category == "core_research" {
+        let mut judged = judge_slot(JudgeInput {
+            slot_start,
+            slot_end,
+            samples: &samples,
+            quests: &quests,
+            policy: &policy,
+            capture,
+            vision: None,
+            manual_core: Some(true),
+        });
+        judged.pending = false;
+        judged
+    } else {
+        let judged = judge_slot(JudgeInput {
+            slot_start,
+            slot_end,
+            samples: &samples,
+            quests: &quests,
+            policy: &policy,
+            capture,
+            vision: None,
+            manual_core: None,
+        });
+        JudgeOutput {
+            dominant: category_to_dominant(category),
+            activity: judged.activity,
+            credited_core_seconds: 0,
+            observed_seconds: judged.observed_seconds,
+            used_vision: false,
+            pending: false,
+        }
+    };
+    resolve_slot(conn, day, slot_start, &output, credited_before, 0)?;
+    if let Some(path) = samples
+        .iter()
+        .rev()
+        .find_map(|s| s.path.as_deref().map(PathBuf::from))
+    {
+        apply_screenshot_retention(&path, retention);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

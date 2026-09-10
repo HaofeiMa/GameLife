@@ -9,16 +9,20 @@ pub mod scheduler;
 pub mod vision;
 
 pub use db::{
-    app_db_path, insert_ledger, migrate, open, redeem, write_heartbeat,
+    app_db_path, insert_ledger, migrate, open, write_heartbeat,
     write_heartbeat_at_default_path,
 };
+pub use db::redeem as db_redeem;
 pub use scheduler::ensure_slot;
 pub use db_error::{map_rusqlite, DbOpError};
 pub use resolve::resolve_slot;
 
 use sampler::PauseControl;
 
-use commands::{end_today_cmd, freeze_cmd};
+use commands::{
+    end_today, freeze, get_settings, get_today, get_week, has_api_key, redeem,
+    report_misclassification, review_slot, save_settings, set_api_key, set_quests,
+};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -45,7 +49,20 @@ fn write_quit_heartbeat() {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![end_today_cmd, freeze_cmd])
+        .invoke_handler(tauri::generate_handler![
+            end_today,
+            freeze,
+            get_today,
+            get_week,
+            set_quests,
+            review_slot,
+            report_misclassification,
+            redeem,
+            get_settings,
+            save_settings,
+            set_api_key,
+            has_api_key,
+        ])
         .setup(|app| {
             let pause = PauseControl::new();
             if let Some(db_path) = app_db_path() {
