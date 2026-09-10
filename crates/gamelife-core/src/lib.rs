@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod early_start;
 pub mod r#const;
 pub mod format;
 pub mod heartbeat;
@@ -13,6 +14,7 @@ pub mod url;
 pub mod weekly;
 
 pub use capture::{CaptureStatus, capture_on_resume, schedule_capture};
+pub use early_start::{early_start_anchor, early_start_coins_for_local_secs};
 pub use r#const::*;
 pub use format::format_estimated_minutes;
 pub use heartbeat::heartbeat_unobserved;
