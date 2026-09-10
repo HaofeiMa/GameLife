@@ -954,6 +954,7 @@ dependencies = [
 name = "gamelife"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "gamelife-core",
  "rusqlite",
  "serde",

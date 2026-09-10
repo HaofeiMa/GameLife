@@ -1,13 +1,20 @@
 pub mod db;
 pub mod db_error;
+pub mod macos;
 pub mod resolve;
+pub mod sampler;
+pub mod scheduler;
 
 pub use db::{
     app_db_path, insert_ledger, migrate, open, redeem, write_heartbeat,
     write_heartbeat_at_default_path,
 };
+pub use scheduler::ensure_slot;
 pub use db_error::{map_rusqlite, DbOpError};
 pub use resolve::resolve_slot;
+
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -35,6 +42,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            let paused = Arc::new(AtomicBool::new(false));
+            if let Some(db_path) = app_db_path() {
+                if let Some(parent) = db_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                sampler::start_sampler_thread(db_path, paused.clone());
+            }
+
             let open_i = MenuItem::with_id(app, "open", "打开", true, None::<&str>)?;
             let pause_30_i =
                 MenuItem::with_id(app, "pause_30", "暂停 30", true, None::<&str>)?;
