@@ -7,16 +7,16 @@ use serde::Deserialize;
 
 use gamelife_core::{
     builtin_never_capture, builtin_side_project_rules, can_use_freeze, capture_on_resume,
-    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, schedule_capture,
-    slot_end_exclusive, slot_start, spans_for_slot, CaptureStatus, JudgeInput, Policy, Quest,
-    Sample, CHEST_SECS,
+    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, new_milestones, recompute_streak,
+    schedule_capture, slot_end_exclusive, slot_start, spans_for_slot, CaptureStatus, DayOutcome,
+    JudgeInput, Policy, Quest, Sample, CHEST_SECS,
 };
 use gamelife_core::types::Hint;
 use gamelife_core::judge::VisionResult;
 use gamelife_core::observe::SpanKind;
 use gamelife_core::types::ActivitySeconds;
 
-use crate::db::migrate;
+use crate::db::{insert_ledger, migrate};
 use crate::db_error::{map_rusqlite, DbOpError};
 use crate::resolve::resolve_slot;
 use crate::vision;
@@ -773,15 +773,14 @@ fn next_weekday(date: NaiveDate) -> NaiveDate {
 }
 
 fn day_is_settled(conn: &Connection, day: &str) -> Result<bool, DbOpError> {
-    let settled: Option<i64> = conn
+    let count: i64 = conn
         .query_row(
-            "SELECT settled_at FROM days WHERE day = ?1",
+            "SELECT COUNT(*) FROM days WHERE day = ?1 AND settled_at IS NOT NULL",
             params![day],
             |r| r.get(0),
         )
-        .optional()
         .map_err(map_rusqlite)?;
-    Ok(settled.is_some())
+    Ok(count > 0)
 }
 
 fn day_total_credited(conn: &Connection, day: &str) -> Result<i64, DbOpError> {
@@ -792,6 +791,63 @@ fn day_total_credited(conn: &Connection, day: &str) -> Result<i64, DbOpError> {
         |r| r.get(0),
     )
     .map_err(map_rusqlite)
+}
+
+fn outcome_from_str(s: &str) -> Option<DayOutcome> {
+    match s {
+        "completed" => Some(DayOutcome::Completed),
+        "protected" => Some(DayOutcome::Protected),
+        "failed" => Some(DayOutcome::Failed),
+        _ => None,
+    }
+}
+
+fn load_settled_days_newest_first(conn: &Connection) -> Result<Vec<(NaiveDate, DayOutcome)>, DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT day, outcome FROM days
+             WHERE settled_at IS NOT NULL AND outcome IS NOT NULL
+             ORDER BY day DESC",
+        )
+        .map_err(map_rusqlite)?;
+    let rows = stmt
+        .query_map([], |r| {
+            let day: String = r.get(0)?;
+            let outcome: String = r.get(1)?;
+            Ok((day, outcome))
+        })
+        .map_err(map_rusqlite)?;
+    let mut days = Vec::new();
+    for row in rows {
+        let (day, outcome) = row.map_err(map_rusqlite)?;
+        let date = parse_day(&day)?;
+        let Some(outcome) = outcome_from_str(&outcome) else {
+            continue;
+        };
+        days.push((date, outcome));
+    }
+    Ok(days)
+}
+
+fn streak_from_db(conn: &Connection) -> Result<u32, DbOpError> {
+    Ok(recompute_streak(&load_settled_days_newest_first(conn)?))
+}
+
+fn apply_streak_milestones(
+    conn: &Connection,
+    trigger_day: &str,
+    old_streak: u32,
+    new_streak: u32,
+) -> Result<(), DbOpError> {
+    for milestone in new_milestones(old_streak, new_streak) {
+        let key = format!("streak_milestone:{milestone}");
+        if let Err(e) = insert_ledger(conn, &key, trigger_day, 0, 0) {
+            if e != DbOpError::AlreadyApplied {
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn convert_pending_to_unknown(conn: &Connection, day: &str) -> Result<(), DbOpError> {
@@ -851,6 +907,7 @@ pub fn settle_day(conn: &mut Connection, day: &str, settled_at: i64) -> Result<(
     if day_is_settled(conn, day)? {
         return Ok(());
     }
+    let old_streak = streak_from_db(conn)?;
     convert_pending_to_unknown(conn, day)?;
     let credited = day_total_credited(conn, day)?;
     let outcome = if credited >= i64::try_from(CHEST_SECS).unwrap_or(i64::MAX) {
@@ -878,6 +935,8 @@ pub fn settle_day(conn: &mut Connection, day: &str, settled_at: i64) -> Result<(
         params![day, settled_at, final_outcome],
     )
     .map_err(map_rusqlite)?;
+    let new_streak = streak_from_db(conn)?;
+    apply_streak_milestones(conn, day, old_streak, new_streak)?;
     Ok(())
 }
 
@@ -957,6 +1016,7 @@ pub fn freeze_day(
     if !can_use_freeze(&used, protected) {
         return Err(DbOpError::Fatal("freeze quota".into()));
     }
+    let old_streak = streak_from_db(conn)?;
     let tx = conn.transaction().map_err(map_rusqlite)?;
     tx.execute(
         "INSERT INTO freeze_uses (protected_date) VALUES (?1)",
@@ -969,6 +1029,8 @@ pub fn freeze_day(
     )
     .map_err(map_rusqlite)?;
     tx.commit().map_err(map_rusqlite)?;
+    let new_streak = streak_from_db(conn)?;
+    apply_streak_milestones(conn, protected_date, old_streak, new_streak)?;
     Ok(())
 }
 
@@ -1561,5 +1623,168 @@ mod tests {
         assert_eq!(freeze_month_key(d), "2026-03");
         assert_eq!(freeze_quota_used(&used, "2026-03"), 1);
         assert!(!can_use_freeze(&used, d));
+    }
+
+    #[test]
+    fn settle_completed_when_credited_reaches_chest() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let chest = i64::try_from(CHEST_SECS).unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, credited_core_seconds, observed_seconds, used_vision)
+             VALUES (?1, 0, 'final', ?2, ?2, 0)",
+            params![day, chest],
+        )
+        .unwrap();
+        settle_day(&mut conn, day, 1).unwrap();
+        let outcome: String = conn
+            .query_row(
+                "SELECT outcome FROM days WHERE day = ?1",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outcome, "completed");
+    }
+
+    #[test]
+    fn settle_preserves_existing_protected_outcome() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        conn.execute(
+            "INSERT INTO days (day, settled_at, outcome) VALUES (?1, NULL, 'protected')",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, credited_core_seconds, observed_seconds, used_vision)
+             VALUES (?1, 0, 'final', 100, 100, 0)",
+            params![day],
+        )
+        .unwrap();
+        settle_day(&mut conn, day, 1).unwrap();
+        let outcome: String = conn
+            .query_row(
+                "SELECT outcome FROM days WHERE day = ?1",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outcome, "protected");
+    }
+
+    #[test]
+    fn settle_third_weekday_inserts_streak_milestone() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        for (day, ts) in [("2026-09-07", 1), ("2026-09-08", 2)] {
+            conn.execute(
+                "INSERT INTO days (day, settled_at, outcome) VALUES (?1, ?2, 'completed')",
+                params![day, ts],
+            )
+            .unwrap();
+        }
+        assert_eq!(streak_from_db(&conn).unwrap(), 2);
+        let day = "2026-09-09";
+        let chest = i64::try_from(CHEST_SECS).unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, credited_core_seconds, observed_seconds, used_vision)
+             VALUES (?1, 0, 'final', ?2, ?2, 0)",
+            params![day, chest],
+        )
+        .unwrap();
+        settle_day(&mut conn, day, 3).unwrap();
+        assert_eq!(streak_from_db(&conn).unwrap(), 3);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ledger WHERE reward_event_key = 'streak_milestone:3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn freeze_restores_streak_and_is_idempotent_on_milestones() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let fri = "2026-09-04";
+        let mon = "2026-09-07";
+        conn.execute(
+            "INSERT INTO days (day, settled_at, outcome) VALUES (?1, 1, 'completed')",
+            params![fri],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO days (day, settled_at, outcome) VALUES (?1, 2, 'failed')",
+            params![mon],
+        )
+        .unwrap();
+        assert_eq!(streak_from_db(&conn).unwrap(), 0);
+        freeze_day(&mut conn, mon, 3).unwrap();
+        assert_eq!(streak_from_db(&conn).unwrap(), 2);
+        freeze_day(&mut conn, mon, 4).unwrap();
+        assert_eq!(streak_from_db(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn end_today_half_slot_missed_capture_and_stops_sampling() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let day_start = day_start_ts(day);
+        let now = day_start + 450;
+        let ss = slot_start(now);
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status)
+             VALUES (?1, ?2, ?3, 'Scheduled')",
+            params![day, ss, now + 300],
+        )
+        .unwrap();
+        for i in 0..10 {
+            conn.execute(
+                "INSERT INTO samples (ts, day, app, title, idle_seconds, locked, paused)
+                 VALUES (?1, ?2, 'Isaac Sim', 'robot', 2, 0, 0)",
+                params![ss + i * 15, day],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"robot\",\"keywords\":[\"robot\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+
+        end_today(&mut conn, now, ScreenshotRetention::None).unwrap();
+
+        let capture: String = conn
+            .query_row(
+                "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(capture, "Missed");
+        let observed: i64 = conn
+            .query_row(
+                "SELECT observed_seconds FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(observed < 900);
+        let settled: i64 = conn
+            .query_row(
+                "SELECT settled_at FROM days WHERE day = ?1",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(settled > 0);
+        assert!(!sampling_allowed(&conn, day).unwrap());
     }
 }
