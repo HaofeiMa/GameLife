@@ -61,10 +61,11 @@ fn slot_is_immutable(conn: &Connection, day: &str, slot_start: i64) -> Result<bo
         .query_row(
             "SELECT status FROM slots WHERE day=?1 AND slot_start=?2",
             params![day, slot_start],
-            |r| r.get(0),
+            |r| r.get::<_, Option<String>>(0),
         )
         .optional()
-        .map_err(map_rusqlite)?;
+        .map_err(map_rusqlite)?
+        .flatten();
     Ok(matches!(status.as_deref(), Some("final" | "unknown")))
 }
 
@@ -87,7 +88,7 @@ fn upsert_slot(
            credited_core_seconds=excluded.credited_core_seconds,
            observed_seconds=excluded.observed_seconds,
            used_vision=excluded.used_vision
-         WHERE slots.status NOT IN ('final', 'unknown')",
+         WHERE slots.status IS NULL OR slots.status NOT IN ('final', 'unknown')",
             params![
                 day,
                 slot_start,

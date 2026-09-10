@@ -12,8 +12,16 @@ use gamelife_core::{SAMPLE_INTERVAL_SECS, slot_start, strip_url_query_fragment};
 use crate::db::{migrate, open, write_heartbeat};
 use crate::db_error::DbOpError;
 use crate::scheduler::{
-    day_str_for_ts, ensure_slot, slot_rng, startup_from_heartbeat, tick_capture,
+    day_str_for_ts, default_screenshot_retention, ensure_slot, maybe_finalize_previous_slot,
+    purge_expired_screenshots, slot_rng, startup_from_heartbeat, tick_capture,
 };
+
+/// Tracks the last sampled slot so we can finalize on boundary crossing.
+#[derive(Default)]
+pub struct SamplerState {
+    pub last_day: Option<String>,
+    pub last_slot: Option<i64>,
+}
 
 pub trait SampleSource: Send + Sync {
     fn frontmost_app(&self) -> Result<(String, String), ()>;
@@ -164,9 +172,23 @@ pub fn insert_sample(
     Ok(())
 }
 
-pub fn sample_once(conn: &Connection, source: &dyn SampleSource, ts: i64) -> Result<(), DbOpError> {
+pub fn sample_once(
+    conn: &mut Connection,
+    source: &dyn SampleSource,
+    ts: i64,
+    state: &mut SamplerState,
+) -> Result<(), DbOpError> {
     let day = day_str_for_ts(ts);
     let ss = slot_start(ts);
+    let retention = default_screenshot_retention();
+    maybe_finalize_previous_slot(
+        conn,
+        state.last_day.as_deref(),
+        state.last_slot,
+        &day,
+        ss,
+        retention,
+    )?;
     let rng = slot_rng(&day, ss);
     ensure_slot(conn, &day, ss, rng)?;
 
@@ -197,11 +219,13 @@ pub fn sample_once(conn: &Connection, source: &dyn SampleSource, ts: i64) -> Res
     )?;
     write_heartbeat(conn)?;
     tick_capture(conn, &day, ss, ts, &app, secure, locked, paused)?;
+    state.last_day = Some(day);
+    state.last_slot = Some(ss);
     Ok(())
 }
 
 pub fn run_sampler_loop(db_path: PathBuf, source: &dyn SampleSource) {
-    let conn = match open(&db_path) {
+    let mut conn = match open(&db_path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("sampler: open db failed: {e:?}");
@@ -216,10 +240,12 @@ pub fn run_sampler_loop(db_path: PathBuf, source: &dyn SampleSource) {
     if let Err(e) = startup_from_heartbeat(&conn, now) {
         eprintln!("sampler: startup heartbeat fill failed: {e:?}");
     }
+    purge_expired_screenshots(default_screenshot_retention(), now);
+    let mut state = SamplerState::default();
     let interval = Duration::from_secs(SAMPLE_INTERVAL_SECS);
     loop {
         let ts = now_secs();
-        if let Err(e) = sample_once(&conn, source, ts) {
+        if let Err(e) = sample_once(&mut conn, source, ts, &mut state) {
             eprintln!("sampler: sample failed: {e:?}");
         }
         thread::sleep(interval);
@@ -241,7 +267,7 @@ mod tests {
 
     #[test]
     fn sample_once_inserts_row_and_heartbeat() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         let source = FakeSampleSource {
             app: "Cursor".into(),
@@ -253,7 +279,8 @@ mod tests {
             paused: false,
         };
         let ts = 1_700_000_000i64;
-        sample_once(&conn, &source, ts).unwrap();
+        let mut state = SamplerState::default();
+        sample_once(&mut conn, &source, ts, &mut state).unwrap();
         let app: String = conn
             .query_row("SELECT app FROM samples WHERE ts = ?1", [ts], |r| r.get(0))
             .unwrap();
@@ -271,7 +298,7 @@ mod tests {
     /// Step 4 substitute: one FakeSampleSource tick must persist sample + heartbeat rows.
     #[test]
     fn fake_source_one_sampling_tick_persists_sample_and_heartbeat() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         let samples_before: i64 = conn
             .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))
@@ -288,7 +315,8 @@ mod tests {
             paused: false,
         };
         let ts = 1_700_000_015i64;
-        sample_once(&conn, &source, ts).unwrap();
+        let mut state = SamplerState::default();
+        sample_once(&mut conn, &source, ts, &mut state).unwrap();
 
         let samples_after: i64 = conn
             .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))

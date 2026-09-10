@@ -155,7 +155,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
         if !pending
             && matches!(
                 input.capture,
-                CaptureStatus::Missed | CaptureStatus::Skipped
+                CaptureStatus::Missed | CaptureStatus::Skipped | CaptureStatus::Captured
             )
             && input.vision.is_none()
             && input.manual_core.is_none()
@@ -561,6 +561,27 @@ mod tests {
             }],
             policy: &pol(),
             capture: CaptureStatus::Missed,
+            vision: None,
+            manual_core: None,
+        });
+        assert!(out.pending);
+        assert_eq!(out.dominant, Dominant::PendingReview);
+        assert_eq!(out.credited_core_seconds, 0);
+    }
+
+    #[test]
+    fn gray_zone_captured_vision_failure_is_pending() {
+        let samples = grid("Isaac Sim", "robot", 0, 30, 15, 2);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "robot".into(),
+                keywords: vec!["robot".into()],
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Captured,
             vision: None,
             manual_core: None,
         });

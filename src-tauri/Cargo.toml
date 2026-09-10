@@ -28,6 +28,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 base64 = "0.22"
 
 [dev-dependencies]
+filetime = "0.2"
 tempfile = "3"
 
 [profile.release]

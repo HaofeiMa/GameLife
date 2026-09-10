@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Deserialize;
 
 use gamelife_core::{
     builtin_never_capture, builtin_side_project_rules, capture_on_resume, heartbeat_unobserved,
@@ -35,6 +37,50 @@ pub enum ScreenshotRetention {
 
 pub fn default_screenshot_retention() -> ScreenshotRetention {
     ScreenshotRetention::None
+}
+
+pub fn retention_ttl_secs(retention: ScreenshotRetention) -> Option<i64> {
+    match retention {
+        ScreenshotRetention::None => None,
+        ScreenshotRetention::Hours24 => Some(24 * 3600),
+        ScreenshotRetention::Days3 => Some(3 * 86400),
+        ScreenshotRetention::Days14 => Some(14 * 86400),
+    }
+}
+
+pub fn is_screenshot_expired(mtime: i64, now: i64, retention: ScreenshotRetention) -> bool {
+    retention_ttl_secs(retention).is_some_and(|ttl| now - mtime > ttl)
+}
+
+pub fn purge_expired_screenshots(retention: ScreenshotRetention, now: i64) {
+    let Some(ttl) = retention_ttl_secs(retention) else {
+        return;
+    };
+    let Some(dir) = screenshots_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let mtime = modified
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if now - mtime > ttl {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// `secure||locked||paused||never.iter().any(|n| app.contains(n))` → Skipped; else Scheduled.
@@ -166,9 +212,42 @@ pub fn maybe_vision_for_gray_zone(
 }
 
 pub fn apply_screenshot_retention(path: &Path, retention: ScreenshotRetention) {
-    if retention == ScreenshotRetention::None {
-        let _ = std::fs::remove_file(path);
+    match retention {
+        ScreenshotRetention::None => {
+            let _ = std::fs::remove_file(path);
+        }
+        ScreenshotRetention::Hours24 | ScreenshotRetention::Days3 | ScreenshotRetention::Days14 => {}
     }
+}
+
+fn attach_screenshot_path_to_latest_sample(
+    conn: &Connection,
+    day: &str,
+    slot_start_ts: i64,
+    path: &Path,
+) -> Result<(), DbOpError> {
+    let slot_end = slot_end_exclusive(slot_start_ts);
+    let path_str = path.to_string_lossy().to_string();
+    let updated = conn
+        .execute(
+            "UPDATE samples SET path = ?1
+             WHERE ts = (
+               SELECT ts FROM samples
+               WHERE day = ?2 AND ts >= ?3 AND ts < ?4
+               ORDER BY ts DESC LIMIT 1
+             )",
+            params![path_str, day, slot_start_ts, slot_end],
+        )
+        .map_err(map_rusqlite)?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO samples (ts, day, app, title, path, idle_seconds, locked, paused)
+             VALUES (?1, ?2, '', '', ?3, 0, 0, 0)",
+            params![slot_start_ts, day, path.to_string_lossy().to_string()],
+        )
+        .map_err(map_rusqlite)?;
+    }
+    Ok(())
 }
 
 type CaptureFn = fn(&Path) -> Result<(), ()>;
@@ -234,10 +313,11 @@ fn slot_is_final(conn: &Connection, day: &str, slot_start_ts: i64) -> Result<boo
         .query_row(
             "SELECT status FROM slots WHERE day = ?1 AND slot_start = ?2",
             params![day, slot_start_ts],
-            |r| r.get(0),
+            |r| r.get::<_, Option<String>>(0),
         )
         .optional()
-        .map_err(map_rusqlite)?;
+        .map_err(map_rusqlite)?
+        .flatten();
     Ok(matches!(status.as_deref(), Some("final" | "unknown")))
 }
 
@@ -411,11 +491,7 @@ fn tick_capture_impl(
             let _ = std::fs::create_dir_all(parent);
         }
         if capture_fn(&path).is_ok() {
-            conn.execute(
-                "UPDATE samples SET path = ?1 WHERE ts = ?2",
-                params![path.to_string_lossy().to_string(), now],
-            )
-            .map_err(map_rusqlite)?;
+            attach_screenshot_path_to_latest_sample(conn, day, slot_start_ts, &path)?;
             CaptureStatus::Captured
         } else {
             CaptureStatus::Missed
@@ -441,6 +517,91 @@ fn default_policy() -> Policy {
         reading_apps: vec![],
         never_capture_apps: builtin_never_capture(),
     }
+}
+
+#[derive(Deserialize)]
+struct QuestJson {
+    text: String,
+    keywords: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct PolicyJson {
+    trusted_apps: Option<Vec<String>>,
+    distraction_rules: Option<Vec<String>>,
+    side_project_rules: Option<Vec<String>>,
+    reading_apps: Option<Vec<String>>,
+    never_capture_apps: Option<Vec<String>>,
+}
+
+pub fn load_policy(conn: &Connection) -> Result<Policy, DbOpError> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT json FROM policy_versions ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    let Some(json) = json else {
+        return Ok(default_policy());
+    };
+    let parsed: PolicyJson = serde_json::from_str(&json).map_err(|e| {
+        DbOpError::Fatal(format!("policy json: {e}"))
+    })?;
+    Ok(Policy {
+        trusted_apps: parsed.trusted_apps.unwrap_or_default(),
+        distraction_rules: parsed.distraction_rules.unwrap_or_default(),
+        side_project_rules: parsed
+            .side_project_rules
+            .unwrap_or_else(builtin_side_project_rules),
+        reading_apps: parsed.reading_apps.unwrap_or_default(),
+        never_capture_apps: parsed
+            .never_capture_apps
+            .unwrap_or_else(builtin_never_capture),
+    })
+}
+
+pub fn load_quests_for_day(conn: &Connection, day: &str) -> Result<Vec<Quest>, DbOpError> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT json FROM quest_versions WHERE day = ?1 ORDER BY id DESC LIMIT 1",
+            params![day],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    let Some(json) = json else {
+        return Ok(vec![]);
+    };
+    let parsed: Vec<QuestJson> =
+        serde_json::from_str(&json).map_err(|e| DbOpError::Fatal(format!("quest json: {e}")))?;
+    Ok(parsed
+        .into_iter()
+        .map(|q| Quest {
+            text: q.text,
+            keywords: q.keywords,
+        })
+        .collect())
+}
+
+fn credited_before_slot(conn: &Connection, day: &str, slot_start: i64) -> Result<i64, DbOpError> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(credited_core_seconds), 0) FROM slots
+         WHERE day = ?1 AND slot_start < ?2 AND status = 'final'",
+        params![day, slot_start],
+        |r| r.get(0),
+    )
+    .map_err(map_rusqlite)
+}
+
+fn capture_app_from_samples(samples: &[Sample]) -> Option<String> {
+    samples
+        .iter()
+        .rev()
+        .find(|s| s.path.is_some())
+        .map(|s| s.app.clone())
+        .or_else(|| samples.last().map(|s| s.app.clone()))
 }
 
 fn load_samples_for_slot(
@@ -472,17 +633,55 @@ fn load_samples_for_slot(
     rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
 }
 
+/// Finalize the previous slot when the sampler crosses a slot (or day) boundary.
+pub fn maybe_finalize_previous_slot(
+    conn: &mut Connection,
+    prev_day: Option<&str>,
+    prev_slot: Option<i64>,
+    current_day: &str,
+    current_slot: i64,
+    retention: ScreenshotRetention,
+) -> Result<(), DbOpError> {
+    let (Some(prev_day), Some(prev_slot)) = (prev_day, prev_slot) else {
+        return Ok(());
+    };
+    if prev_day == current_day && prev_slot == current_slot {
+        return Ok(());
+    }
+    if slot_is_final(conn, prev_day, prev_slot)? {
+        return Ok(());
+    }
+    let slot_end = if prev_day == current_day {
+        current_slot
+    } else {
+        slot_end_exclusive(prev_slot)
+    };
+    let credited_before = credited_before_slot(conn, prev_day, prev_slot)?;
+    finalize_slot_end(
+        conn,
+        prev_day,
+        prev_slot,
+        slot_end,
+        retention,
+        credited_before,
+        0,
+    )
+}
+
 /// Slot end: strong metadata → no upload; gray zone + Captured → vision HTTP; then judge + resolve.
 pub fn finalize_slot_end(
     conn: &mut Connection,
     day: &str,
     slot_start: i64,
     slot_end: i64,
-    capture_app: Option<&str>,
     retention: ScreenshotRetention,
     credited_before: i64,
     early_coins: i64,
 ) -> Result<(), DbOpError> {
+    if slot_is_final(conn, day, slot_start)? {
+        return Ok(());
+    }
+
     let capture_status_str: Option<String> = conn
         .query_row(
             "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -497,21 +696,23 @@ pub fn finalize_slot_end(
         .unwrap_or(CaptureStatus::Scheduled);
 
     let samples = load_samples_for_slot(conn, day, slot_start, slot_end)?;
-    let policy = default_policy();
-    let quests: Vec<Quest> = vec![];
+    let policy = load_policy(conn)?;
+    let quests = load_quests_for_day(conn, day)?;
     let actual = slot_end - slot_start;
     let (activity, strong_core, reading_bridge) =
         compute_slot_activity(&samples, &policy, &quests, slot_start, slot_end);
-    let decidable = metadata_decidable(&activity, strong_core, reading_bridge, actual, quests.is_empty());
+    let decidable =
+        metadata_decidable(&activity, strong_core, reading_bridge, actual, quests.is_empty());
 
     let screenshot_path = samples
         .iter()
         .rev()
         .find_map(|s| s.path.as_deref().map(PathBuf::from));
 
+    let capture_app = capture_app_from_samples(&samples);
     let api_key = crate::keychain::get_openai_api_key().ok();
     let vision = screenshot_path.as_ref().and_then(|path| {
-        capture_app.and_then(|app| {
+        capture_app.as_deref().and_then(|app| {
             maybe_vision_for_gray_zone(decidable, capture, path, app, api_key.as_deref())
         })
     });
@@ -532,7 +733,15 @@ pub fn finalize_slot_end(
     if let Some(path) = screenshot_path.as_ref() {
         apply_screenshot_retention(path, retention);
     }
+    purge_expired_screenshots(retention, now_secs());
     Ok(())
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 #[cfg(test)]
@@ -752,7 +961,8 @@ mod tests {
         migrate(&conn).unwrap();
         let day = "2026-09-10";
         let ss = 0i64;
-        let now = 100i64;
+        let sample_ts = 90i64;
+        let capture_ts = 100i64;
         conn.execute(
             "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status)
              VALUES (?1, ?2, 100, 'Scheduled')",
@@ -762,14 +972,14 @@ mod tests {
         conn.execute(
             "INSERT INTO samples (ts, day, app, title, idle_seconds, locked, paused)
              VALUES (?1, ?2, 'Cursor', 'lib.rs', 0, 0, 0)",
-            params![now, day],
+            params![sample_ts, day],
         )
         .unwrap();
         tick_capture_impl(
             &conn,
             day,
             ss,
-            now,
+            capture_ts,
             "Cursor",
             false,
             false,
@@ -786,8 +996,199 @@ mod tests {
             .unwrap();
         assert_eq!(status, "Captured");
         let path: Option<String> = conn
-            .query_row("SELECT path FROM samples WHERE ts = ?1", [now], |r| r.get(0))
+            .query_row(
+                "SELECT path FROM samples WHERE ts = ?1",
+                [sample_ts],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(path.as_deref().is_some_and(|p| p.contains(".jpg")));
+        let missing: Option<String> = conn
+            .query_row(
+                "SELECT path FROM samples WHERE ts = ?1",
+                [capture_ts],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+            .flatten();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn finalize_finds_screenshot_path_from_latest_sample() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("HOME", dir.path()); }
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        let shot = screenshots_dir().unwrap().join("test.jpg");
+        std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
+        std::fs::write(&shot, b"x").unwrap();
+
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status)
+             VALUES (?1, ?2, 50, 'Captured')",
+            params![day, ss],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO samples (ts, day, app, title, path, idle_seconds, locked, paused)
+             VALUES (60, ?1, 'Isaac Sim', 'robot', ?2, 2, 0, 0)",
+            params![day, shot.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        for i in 1..30 {
+            conn.execute(
+                "INSERT INTO samples (ts, day, app, title, idle_seconds, locked, paused)
+                 VALUES (?1, ?2, 'Isaac Sim', 'robot', 2, 0, 0)",
+                params![60 + i * 15, day],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"robot\",\"keywords\":[\"robot\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+
+        finalize_slot_end(
+            &mut conn,
+            day,
+            ss,
+            900,
+            ScreenshotRetention::None,
+            0,
+            0,
+        )
+        .unwrap();
+
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "pending_review");
+        assert!(!shot.exists());
+    }
+
+    #[test]
+    fn load_quests_and_policy_from_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"HDP\",\"keywords\":[\"HDP\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at)
+             VALUES ('{\"trusted_apps\":[\"Cursor\"],\"distraction_rules\":[],\"side_project_rules\":[],\"reading_apps\":[],\"never_capture_apps\":[]}', 1)",
+            [],
+        )
+        .unwrap();
+        let quests = load_quests_for_day(&conn, day).unwrap();
+        assert_eq!(quests.len(), 1);
+        assert_eq!(quests[0].text, "HDP");
+        let policy = load_policy(&conn).unwrap();
+        assert_eq!(policy.trusted_apps, vec!["Cursor".to_string()]);
+    }
+
+    #[test]
+    fn apply_screenshot_retention_none_deletes_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.jpg");
+        std::fs::write(&path, b"x").unwrap();
+        apply_screenshot_retention(&path, ScreenshotRetention::None);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn apply_screenshot_retention_hours24_keeps_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.jpg");
+        std::fs::write(&path, b"x").unwrap();
+        apply_screenshot_retention(&path, ScreenshotRetention::Hours24);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn is_screenshot_expired_respects_ttl() {
+        let now = 1_000_000i64;
+        assert!(!is_screenshot_expired(now - 3600, now, ScreenshotRetention::Hours24));
+        assert!(is_screenshot_expired(now - 86401, now, ScreenshotRetention::Hours24));
+        assert!(is_screenshot_expired(now - 86400 * 4, now, ScreenshotRetention::Days3));
+        assert!(!is_screenshot_expired(now - 86400, now, ScreenshotRetention::Days14));
+    }
+
+    #[test]
+    fn purge_expired_screenshots_removes_old_files() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("HOME", dir.path()) };
+        let shots = screenshots_dir().unwrap();
+        std::fs::create_dir_all(&shots).unwrap();
+        let old = shots.join("old.jpg");
+        std::fs::write(&old, b"x").unwrap();
+        let now = 1_000_000i64;
+        let old_mtime = now - 86400 * 5;
+        let _ = filetime::set_file_mtime(
+            &old,
+            filetime::FileTime::from_unix_time(old_mtime, 0),
+        );
+        purge_expired_screenshots(ScreenshotRetention::Days3, now);
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn maybe_finalize_previous_slot_on_boundary() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status)
+             VALUES (?1, 0, 50, 'Missed')",
+            params![day],
+        )
+        .unwrap();
+        for i in 0..20 {
+            conn.execute(
+                "INSERT INTO samples (ts, day, app, title, idle_seconds, locked, paused)
+                 VALUES (?1, ?2, 'Isaac Sim', 'robot', 2, 0, 0)",
+                params![i * 15, day],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"robot\",\"keywords\":[\"robot\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+
+        maybe_finalize_previous_slot(
+            &mut conn,
+            Some(day),
+            Some(0),
+            day,
+            900,
+            ScreenshotRetention::None,
+        )
+        .unwrap();
+
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM slots WHERE day = ?1 AND slot_start = 0",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "pending_review");
     }
 }
