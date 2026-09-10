@@ -136,6 +136,7 @@ dependencies = [
 name = "gamelife"
 version = "0.1.0"
 dependencies = [
+ "gamelife-core",
  "rusqlite",
  "tempfile",
 ]

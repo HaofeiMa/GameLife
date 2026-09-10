@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 
 use crate::db_error::{map_rusqlite, DbOpError};
+use gamelife_core::shop::{validate_redeem, Wish, WishKind};
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS heartbeat (id INTEGER PRIMARY KEY CHECK (id=1), ts INTEGER NOT NULL);
@@ -93,6 +94,49 @@ pub fn insert_ledger(
     Ok(())
 }
 
+pub fn redeem(
+    conn: &mut Connection,
+    credited_today: i64,
+    day: &str,
+    wish: &Wish,
+    redemption_id: &str,
+) -> Result<(), DbOpError> {
+    let tx = conn.transaction().map_err(map_rusqlite)?;
+    let coin: i64 = tx
+        .query_row("SELECT COALESCE(SUM(coin_delta),0) FROM ledger", [], |r| r.get(0))
+        .map_err(map_rusqlite)?;
+    let xp: i64 = tx
+        .query_row(
+            "SELECT COALESCE(SUM(xp_delta),0) FROM ledger WHERE day=?1",
+            [day],
+            |r| r.get(0),
+        )
+        .map_err(map_rusqlite)?;
+    validate_redeem(credited_today, coin, xp, wish)
+        .map_err(|_| DbOpError::Fatal("redeem".into()))?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    tx.execute(
+        "INSERT INTO redemptions (redemption_id, wish_id, ts) VALUES (?1,?2,?3)",
+        params![redemption_id, wish.id, now],
+    )
+    .map_err(map_rusqlite)?;
+    let key = format!("shop_spend:{redemption_id}");
+    let (c, x) = match wish.kind {
+        WishKind::Coin => (-wish.price, 0),
+        WishKind::Xp { .. } => (0, -wish.price),
+    };
+    tx.execute(
+        "INSERT INTO ledger (reward_event_key, day, ts, coin_delta, xp_delta) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![key, day, now, c, x],
+    )
+    .map_err(map_rusqlite)?;
+    tx.commit().map_err(map_rusqlite)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +173,50 @@ mod tests {
         let conn = open(&path).unwrap();
         migrate(&conn).unwrap();
         insert_ledger(&conn, "validated_coin:2026-09-10:1", "2026-09-10", 1, 0).unwrap();
+    }
+
+    fn xp_sum(conn: &Connection, day: &str) -> i64 {
+        conn.query_row(
+            "SELECT COALESCE(SUM(xp_delta),0) FROM ledger WHERE day=?1",
+            [day],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn xp_wish(price: i64) -> gamelife_core::shop::Wish {
+        gamelife_core::shop::Wish {
+            id: "coffee".into(),
+            kind: gamelife_core::shop::WishKind::Xp {
+                duration_minutes: None,
+            },
+            price,
+        }
+    }
+
+    #[test]
+    fn redeem_same_id_twice_is_already_applied_and_xp_spent_once() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let wish = xp_wish(10);
+        redeem(&mut conn, 3600, day, &wish, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &wish, "r1").unwrap_err();
+        assert!(matches!(e, DbOpError::AlreadyApplied));
+        assert_eq!(xp_sum(&conn, day), 40);
+    }
+
+    #[test]
+    fn redeem_insufficient_second_id_leaves_xp_spent_once() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let wish = xp_wish(40);
+        redeem(&mut conn, 3600, day, &wish, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &wish, "r2").unwrap_err();
+        assert!(matches!(e, DbOpError::Fatal(_)));
+        assert_eq!(xp_sum(&conn, day), 10);
     }
 }
