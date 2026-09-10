@@ -75,6 +75,37 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
     Ok(())
 }
 
+pub fn app_db_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|home| {
+        Path::new(&home)
+            .join("Library/Application Support/GameLife/gamelife.db")
+    })
+}
+
+pub fn write_heartbeat(conn: &Connection) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    conn.execute(
+        "INSERT INTO heartbeat (id, ts) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET ts = excluded.ts",
+        params![ts],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+pub fn write_heartbeat_at_default_path() -> Result<(), DbOpError> {
+    let path = app_db_path().ok_or_else(|| DbOpError::Fatal("home dir".into()))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| DbOpError::Fatal(format!("create db dir: {e}")))?;
+    }
+    let conn = open(&path)?;
+    write_heartbeat(&conn)
+}
+
 pub fn insert_ledger(
     conn: &Connection,
     key: &str,
