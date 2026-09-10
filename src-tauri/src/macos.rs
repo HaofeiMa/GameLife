@@ -68,6 +68,42 @@ mod imp {
         unsafe { IsSecureEventInputEnabled() }
     }
 
+    pub fn frontmost_window_id() -> Result<u32, ()> {
+        let script = r#"
+            tell application "System Events"
+                set p to first application process whose frontmost is true
+                return id of front window of p
+            end tell
+        "#;
+        let out = Command::new("osascript").args(["-e", script]).output().map_err(|_| ())?;
+        if !out.status.success() {
+            return Err(());
+        }
+        let binding = String::from_utf8_lossy(&out.stdout);
+        let s = binding.trim();
+        s.parse().map_err(|_| ())
+    }
+
+    pub fn capture_frontmost_window(path: &std::path::Path) -> Result<(), ()> {
+        let wid = frontmost_window_id()?;
+        let status = Command::new("/usr/sbin/screencapture")
+            .args([
+                "-x",
+                "-t",
+                "jpg",
+                "-l",
+                &wid.to_string(),
+                &path.to_string_lossy(),
+            ])
+            .status()
+            .map_err(|_| ())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
     pub fn optional_browser_url() -> Option<String> {
         let script = r#"
             tell application "System Events"
@@ -119,6 +155,10 @@ mod imp {
     pub fn optional_browser_url() -> Option<String> {
         None
     }
+
+    pub fn capture_frontmost_window(_path: &std::path::Path) -> Result<(), ()> {
+        Err(())
+    }
 }
 
 pub fn frontmost_app() -> Result<(String, String), ()> {
@@ -139,4 +179,8 @@ pub fn secure_input_on() -> bool {
 
 pub fn optional_browser_url() -> Option<String> {
     imp::optional_browser_url()
+}
+
+pub fn capture_frontmost_window(path: &std::path::Path) -> Result<(), ()> {
+    imp::capture_frontmost_window(path)
 }

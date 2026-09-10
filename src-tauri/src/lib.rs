@@ -1,9 +1,11 @@
 pub mod db;
 pub mod db_error;
+pub mod keychain;
 pub mod macos;
 pub mod resolve;
 pub mod sampler;
 pub mod scheduler;
+pub mod vision;
 
 pub use db::{
     app_db_path, insert_ledger, migrate, open, redeem, write_heartbeat,
