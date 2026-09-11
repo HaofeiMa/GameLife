@@ -131,10 +131,21 @@ pub fn default_reading_apps() -> Vec<String> {
     ]
 }
 
+pub fn default_distraction_rules() -> Vec<String> {
+    vec![
+        "bilibili.com".into(),
+        "youtube.com".into(),
+        "twitter.com".into(),
+        "x.com".into(),
+        "douyin.com".into(),
+        "tiktok.com".into(),
+    ]
+}
+
 pub fn default_v01() -> Policy {
     Policy {
         trusted_apps: default_trusted_apps(),
-        distraction_rules: vec![],
+        distraction_rules: default_distraction_rules(),
         side_project_rules: vec![],
         reading_apps: default_reading_apps(),
         never_capture_apps: builtin_never_capture(),
@@ -234,5 +245,24 @@ mod tests {
     fn isaac_matches_display_name_without_catalog() {
         let names = vec!["Isaac Sim".into()];
         assert!(matches_app_identity("Isaac Sim", None, &names));
+    }
+
+    #[test]
+    fn default_v01_includes_d2_distraction_hosts() {
+        let p = default_v01();
+        for host in [
+            "bilibili.com",
+            "youtube.com",
+            "twitter.com",
+            "x.com",
+            "douyin.com",
+            "tiktok.com",
+        ] {
+            assert!(
+                p.distraction_rules.iter().any(|r| r == host),
+                "missing {host}"
+            );
+        }
+        assert_eq!(p.distraction_rules, default_distraction_rules());
     }
 }
