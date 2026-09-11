@@ -4,10 +4,12 @@ pub struct Sample {
     pub app: String,
     pub window_title: String,
     pub url: Option<String>,
-    pub path: Option<String>,
+    pub document_path: Option<String>,
+    pub bundle_id: Option<String>,
     pub idle_seconds: i64,
     pub screen_locked: bool,
     pub paused: bool,
+    pub secure_input: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

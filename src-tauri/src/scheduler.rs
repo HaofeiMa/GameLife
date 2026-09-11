@@ -752,12 +752,7 @@ fn credited_before_slot(conn: &Connection, day: &str, slot_start: i64) -> Result
 }
 
 fn capture_app_from_samples(samples: &[Sample]) -> Option<String> {
-    samples
-        .iter()
-        .rev()
-        .find(|s| s.path.is_some())
-        .map(|s| s.app.clone())
-        .or_else(|| samples.last().map(|s| s.app.clone()))
+    samples.last().map(|s| s.app.clone())
 }
 
 fn load_samples_for_slot(
@@ -768,7 +763,7 @@ fn load_samples_for_slot(
 ) -> Result<Vec<Sample>, DbOpError> {
     let mut stmt = conn
         .prepare(
-            "SELECT ts, app, title, url, path, idle_seconds, locked, paused
+            "SELECT ts, app, title, url, idle_seconds, locked, paused
              FROM samples WHERE day = ?1 AND ts >= ?2 AND ts < ?3 ORDER BY ts",
         )
         .map_err(map_rusqlite)?;
@@ -779,10 +774,12 @@ fn load_samples_for_slot(
                 app: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 window_title: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 url: r.get(3)?,
-                path: r.get(4)?,
-                idle_seconds: r.get(5)?,
-                screen_locked: r.get::<_, i64>(6)? != 0,
-                paused: r.get::<_, i64>(7)? != 0,
+                document_path: None,
+                bundle_id: None,
+                idle_seconds: r.get(4)?,
+                screen_locked: r.get::<_, i64>(5)? != 0,
+                paused: r.get::<_, i64>(6)? != 0,
+                secure_input: false,
             })
         })
         .map_err(map_rusqlite)?;
@@ -1026,10 +1023,7 @@ pub fn finalize_slot_end(
     let decidable =
         metadata_decidable(&activity, strong_core, reading_bridge, actual, quests.is_empty());
 
-    let screenshot_path = samples
-        .iter()
-        .rev()
-        .find_map(|s| s.path.as_deref().map(PathBuf::from));
+    let screenshot_path: Option<PathBuf> = None;
 
     let capture_app = capture_app_from_samples(&samples);
     let api_key = crate::keychain::get_openai_api_key().ok();
@@ -1542,13 +1536,7 @@ pub fn review_pending_slot(
     )
     .unwrap_or(0);
     resolve_slot(conn, day, slot_start, &output, credited_before, early_coins)?;
-    if let Some(path) = samples
-        .iter()
-        .rev()
-        .find_map(|s| s.path.as_deref().map(PathBuf::from))
-    {
-        apply_screenshot_retention(&path, retention);
-    }
+    let _ = retention;
     Ok(())
 }
 
@@ -1825,7 +1813,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_finds_screenshot_path_from_latest_sample() {
+    fn finalize_does_not_treat_sample_path_as_screenshot() {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("HOME", dir.path()); }
 
@@ -1874,7 +1862,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "pending_review");
-        assert!(!shot.exists());
+        assert!(
+            shot.exists(),
+            "samples.path must not be used as screenshot evidence or cleanup target"
+        );
     }
 
     #[test]

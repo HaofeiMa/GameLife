@@ -449,10 +449,12 @@ mod tests {
                 app: app.into(),
                 window_title: title.into(),
                 url: None,
-                path: Some("/paper/main.tex".into()),
+                document_path: Some("/paper/main.tex".into()),
+                bundle_id: None,
                 idle_seconds: idle,
                 screen_locked: false,
                 paused: false,
+                secure_input: false,
             })
             .collect()
     }

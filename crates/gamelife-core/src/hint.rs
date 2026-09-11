@@ -61,7 +61,7 @@ fn sample_haystacks(sample: &Sample) -> Vec<&str> {
     if let Some(url) = &sample.url {
         haystacks.push(url.as_str());
     }
-    if let Some(path) = &sample.path {
+    if let Some(path) = &sample.document_path {
         haystacks.push(path.as_str());
     }
     haystacks
@@ -74,7 +74,7 @@ fn is_core_candidate(sample: &Sample, quests: &[Quest]) -> bool {
 
     let title_lower = sample.window_title.to_ascii_lowercase();
     let path_lower = sample
-        .path
+        .document_path
         .as_deref()
         .map(|p| p.to_ascii_lowercase())
         .unwrap_or_default();
@@ -104,10 +104,12 @@ mod tests {
             app: app.into(),
             window_title: title.into(),
             url: None,
-            path: Some("/Users/me/HDP/README.md".into()),
+            document_path: None,
+            bundle_id: None,
             idle_seconds: idle,
             screen_locked: false,
             paused: false,
+            secure_input: false,
         }
     }
 
@@ -139,7 +141,7 @@ mod tests {
             keywords: vec!["HDP".into()],
         }];
         let mut s = sample("Cursor", "README.md", 5);
-        s.path = Some("/proj/HDP/README.md".into());
+        s.document_path = Some("/proj/HDP/README.md".into());
         assert_eq!(hint_sample(&s, &p, &q, None), Hint::Unsure);
     }
 
