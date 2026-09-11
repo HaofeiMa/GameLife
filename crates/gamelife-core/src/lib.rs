@@ -14,6 +14,7 @@ pub mod quest;
 pub mod shop;
 pub mod streak;
 pub mod task;
+pub mod task_parse;
 pub mod time;
 pub mod types;
 pub mod url;
@@ -59,6 +60,7 @@ pub use task::{
     in_judgment_set, judgment_tasks, parse_task_snapshot_json, preset_lists, snapshot_of,
     validate_lists,
 };
+pub use task_parse::{parse_task_line, ParseContext, ParsedTask};
 pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
 pub use url::{host_is_research, optional_stripped_url, strip_url_query_fragment, url_host};

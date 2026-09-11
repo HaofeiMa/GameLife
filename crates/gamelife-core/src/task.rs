@@ -110,7 +110,7 @@ pub fn align_range(start: i64, end: i64) -> (i64, i64) {
     (start, end)
 }
 
-pub fn in_judgment_set(task: &Task, list: &TaskList, day_start: i64, day_end: i64) -> bool {
+pub fn in_judgment_set(task: &Task, _list: &TaskList, day_start: i64, day_end: i64) -> bool {
     if task.done {
         return false;
     }
