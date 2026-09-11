@@ -26,6 +26,29 @@ export interface TodaySlot {
   final: boolean;
 }
 
+export interface EntertainmentView {
+  name: string;
+  endsAt: number;
+  remainingSecs: number;
+}
+
+export interface EndedEntertainmentView {
+  name: string;
+}
+
+export interface LedgerTailRow {
+  key: string;
+  coin: number;
+  xp: number;
+  ts: number;
+}
+
+export interface RedemptionView {
+  id: string;
+  name: string;
+  ts: number;
+}
+
 export interface TodayView {
   day: string;
   quests: string[];
@@ -43,6 +66,9 @@ export interface TodayView {
   firstCoreLabel: string | null;
   slots: TodaySlot[];
   goldDay: boolean;
+  activeEntertainment: EntertainmentView | null;
+  endedEntertainment: EndedEntertainmentView | null;
+  ledgerTail: LedgerTailRow[];
 }
 
 export interface WeekView {
@@ -58,6 +84,9 @@ export interface WeekView {
   coinBalance: number;
   xpToday: number;
   xpShopUnlocked: boolean;
+  activeEntertainment: EntertainmentView | null;
+  endedEntertainment: EndedEntertainmentView | null;
+  redemptions: RedemptionView[];
 }
 
 export interface WishView {
@@ -115,6 +144,35 @@ export function reportMisclassification(
 
 export function redeem(wishId: string, redemptionId: string): Promise<void> {
   return invoke("redeem", { wishId, redemptionId });
+}
+
+export function createWish(
+  id: string,
+  name: string,
+  kind: string,
+  price: number,
+  durationMinutes: number | null,
+): Promise<void> {
+  return invoke("create_wish", {
+    id,
+    name,
+    kind,
+    price,
+    durationMinutes,
+  });
+}
+
+export function updateWish(
+  id: string,
+  name: string,
+  price: number,
+  durationMinutes: number | null,
+): Promise<void> {
+  return invoke("update_wish", { id, name, price, durationMinutes });
+}
+
+export function archiveWish(id: string): Promise<void> {
+  return invoke("archive_wish", { id });
 }
 
 export function endToday(): Promise<void> {
