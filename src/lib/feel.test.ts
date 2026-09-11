@@ -81,7 +81,7 @@ describe("wishRejectedMessage", () => {
     expect(wishRejectedMessage("name_too_long")).toBe("名称最多 80 字");
     expect(wishRejectedMessage("non_positive_price")).toBe("价格必须大于 0");
     expect(wishRejectedMessage("entertainment_needs_duration")).toBe(
-      "XP 时时长至少 5 分钟",
+      "能量兑换时长至少 5 分钟",
     );
   });
 });

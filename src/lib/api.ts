@@ -77,6 +77,10 @@ export interface RedemptionView {
   id: string;
   name: string;
   ts: number;
+  durationMinutes: number | null;
+  kind: string;
+  spent: number;
+  status: string;
 }
 
 export interface TodayView {
@@ -138,6 +142,7 @@ export interface WeekView {
   byDay: WeekDayRow[];
   byHour: WeekHourRow[];
   coreLabel: string;
+  creditedTodayMinutes: number;
 }
 
 export interface WishView {

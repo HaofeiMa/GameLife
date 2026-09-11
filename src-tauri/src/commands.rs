@@ -164,6 +164,10 @@ pub struct RedemptionView {
     pub id: String,
     pub name: String,
     pub ts: i64,
+    pub duration_minutes: Option<i64>,
+    pub kind: String,
+    pub spent: i64,
+    pub status: String,
 }
 
 #[derive(Serialize)]
@@ -256,6 +260,7 @@ pub struct WeekView {
     pub by_day: Vec<WeekDayRow>,
     pub by_hour: Vec<WeekHourRow>,
     pub core_label: String,
+    pub credited_today_minutes: i64,
 }
 
 #[derive(Serialize)]
@@ -441,26 +446,56 @@ fn load_ledger_tail(conn: &Connection, day: &str) -> Result<Vec<LedgerTailRow>, 
         .map_err(crate::db_error::map_rusqlite)
 }
 
-fn load_redemptions(conn: &Connection) -> Result<Vec<RedemptionView>, DbOpError> {
+fn load_redemptions(conn: &Connection, now: i64) -> Result<Vec<RedemptionView>, DbOpError> {
     let mut stmt = conn
         .prepare(
-            "SELECT r.redemption_id, COALESCE(r.name, w.name, ''), r.ts
+            "SELECT r.redemption_id, COALESCE(r.name, w.name, ''), r.ts, r.duration_minutes,
+                    COALESCE(ABS(l.coin_delta), 0), COALESCE(ABS(l.xp_delta), 0), s.ends_at
              FROM redemptions r
              LEFT JOIN wishes w ON r.wish_id = w.id
+             LEFT JOIN ledger l ON l.reward_event_key = 'shop_spend:' || r.redemption_id
+             LEFT JOIN entertainment_sessions s ON s.redemption_id = r.redemption_id
              ORDER BY r.ts DESC LIMIT 20",
         )
         .map_err(crate::db_error::map_rusqlite)?;
     let rows = stmt
         .query_map([], |r| {
-            Ok(RedemptionView {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                ts: r.get(2)?,
-            })
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+            ))
         })
         .map_err(crate::db_error::map_rusqlite)?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(crate::db_error::map_rusqlite)
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, name, ts, duration_minutes, coin_spent, xp_spent, ends_at) =
+            row.map_err(crate::db_error::map_rusqlite)?;
+        let energy = duration_minutes.is_some();
+        let status = if energy {
+            if ends_at.unwrap_or(0) > now {
+                "进行中".into()
+            } else {
+                "已结束".into()
+            }
+        } else {
+            "—".into()
+        };
+        out.push(RedemptionView {
+            id,
+            name,
+            ts,
+            duration_minutes,
+            kind: if energy { "energy".into() } else { "coin".into() },
+            spent: if energy { xp_spent } else { coin_spent },
+            status,
+        });
+    }
+    Ok(out)
 }
 
 fn week_start_for(date: NaiveDate) -> NaiveDate {
@@ -825,7 +860,7 @@ fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOp
     let active_entertainment = load_active_entertainment(conn, now)?;
     let ended_entertainment =
         load_ended_entertainment(conn, now, active_entertainment.is_some())?;
-    let redemptions = load_redemptions(conn)?;
+    let redemptions = load_redemptions(conn, now)?;
     Ok(WeekView {
         core: secs_to_minutes(total.core),
         support: secs_to_minutes(total.support),
@@ -845,6 +880,7 @@ fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOp
         by_day,
         by_hour,
         core_label: format_estimated_minutes(total.core),
+        credited_today_minutes: secs_to_minutes(credited_today),
     })
 }
 
@@ -1480,6 +1516,54 @@ mod tests {
         assert_eq!(hour.core, 1800);
         assert_eq!(hour.observed, 3600);
         assert!(view.core_label.contains("30m"));
+    }
+
+    #[test]
+    fn load_redemptions_reports_kind_spent_and_status() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        insert_wish(&conn, "w1", "奶茶", "coin", 32, None).unwrap();
+        insert_wish(&conn, "w2", "B站", "xp", 20, Some(45)).unwrap();
+        conn.execute(
+            "INSERT INTO redemptions (redemption_id, wish_id, ts, name, duration_minutes)
+             VALUES ('r1', 'w1', 10, '奶茶', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger (reward_event_key, day, ts, coin_delta, xp_delta)
+             VALUES ('shop_spend:r1', '2026-09-11', 10, -32, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO redemptions (redemption_id, wish_id, ts, name, duration_minutes)
+             VALUES ('r2', 'w2', 20, 'B站', 45)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger (reward_event_key, day, ts, coin_delta, xp_delta)
+             VALUES ('shop_spend:r2', '2026-09-11', 20, 0, -20)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entertainment_sessions (redemption_id, wish_id, name, started_at, ends_at)
+             VALUES ('r2', 'w2', 'B站', 20, 100)",
+            [],
+        )
+        .unwrap();
+        let rows = load_redemptions(&conn, 50).unwrap();
+        assert_eq!(rows[0].name, "B站");
+        assert_eq!(rows[0].kind, "energy");
+        assert_eq!(rows[0].spent, 20);
+        assert_eq!(rows[0].status, "进行中");
+        assert_eq!(rows[1].kind, "coin");
+        assert_eq!(rows[1].spent, 32);
+        assert_eq!(rows[1].status, "—");
+        let ended = load_redemptions(&conn, 200).unwrap();
+        assert_eq!(ended[0].status, "已结束");
     }
 
     #[test]

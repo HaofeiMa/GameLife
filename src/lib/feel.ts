@@ -138,7 +138,7 @@ const WISH_REJECTED: Record<string, string> = {
   empty_name: "名称不能为空",
   name_too_long: "名称最多 80 字",
   non_positive_price: "价格必须大于 0",
-  entertainment_needs_duration: "XP 时时长至少 5 分钟",
+  entertainment_needs_duration: "能量兑换时长至少 5 分钟",
 };
 
 export function wishRejectedMessage(err: unknown): string {

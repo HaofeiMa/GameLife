@@ -1015,3 +1015,229 @@ button.danger {
     grid-column: 1 / -1;
   }
 }
+
+.shop-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.shop-head h2 {
+  margin: 0 0 0.2rem;
+}
+
+.shop-badges {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.shop-badges > div {
+  background: #fff;
+  border-radius: 12px;
+  padding: 0.45rem 0.8rem;
+  min-width: 5.5rem;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+}
+
+.shop-badges span {
+  display: block;
+  font-size: 0.72rem;
+  color: #6b7280;
+}
+
+.shop-badges strong {
+  font-size: 1.15rem;
+}
+
+.shop-section {
+  background: #fff;
+  border-radius: 16px;
+  padding: 1rem 1.1rem 1.15rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.shop-section h3 {
+  margin: 0 0 0.2rem;
+}
+
+.gift-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 112px));
+  gap: 0.65rem;
+  margin-top: 0.75rem;
+}
+
+.gift-card {
+  aspect-ratio: 1;
+  max-width: 112px;
+  width: 100%;
+  border: 0;
+  border-radius: 14px;
+  padding: 0.55rem 0.5rem 0.45rem;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+  color: #111827;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.gift-card.coin {
+  background: linear-gradient(160deg, #fef3c7, #fde68a);
+}
+
+.gift-card.energy {
+  background: linear-gradient(160deg, #dbeafe, #93c5fd);
+}
+
+.gift-glyph {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.gift-card strong {
+  font-size: 0.78rem;
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.gift-card p {
+  margin: 0.15rem 0 auto;
+  font-size: 0.68rem;
+  color: #4b5563;
+}
+
+.gift-card > button {
+  margin-top: 0.25rem;
+  border: 0;
+  background: #111827;
+  color: #fff;
+  border-radius: 8px;
+  padding: 0.25rem 0.35rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.gift-card > button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.gift-more {
+  display: flex;
+  gap: 0.2rem;
+  margin-top: 0.2rem;
+}
+
+.gift-more .secondary {
+  flex: 1;
+  border: 0;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 6px;
+  padding: 0.1rem;
+  font-size: 0.65rem;
+  cursor: pointer;
+}
+
+.gift-add {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1 !important;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 0.8rem;
+  gap: 0.2rem;
+}
+
+.gift-add span {
+  font-size: 1.4rem;
+  font-weight: 400;
+}
+
+.gift-edit {
+  aspect-ratio: auto;
+  min-height: 112px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+}
+
+.gift-edit input {
+  margin: 0 0 0.25rem;
+  padding: 0.2rem 0.3rem;
+  font-size: 0.7rem;
+}
+
+.gift-edit button {
+  margin-top: 0.15rem;
+  font-size: 0.7rem;
+}
+
+.shop-history {
+  background: #fff;
+  border-radius: 16px;
+  padding: 1rem 1.1rem;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.shop-history h3 {
+  margin: 0 0 0.5rem;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.history-table th,
+.history-table td {
+  text-align: left;
+  padding: 0.4rem 0.35rem;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0 0 1rem;
+}
+
+.settings-tabs button {
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+
+.settings-tabs button.active {
+  background: #111827;
+  color: #fff;
+  border-color: #111827;
+}
+
+.settings-page section {
+  background: #fff;
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+}
+
+@media (max-width: 900px) {
+  .gift-grid {
+    grid-template-columns: repeat(4, minmax(0, 112px));
+  }
+}
