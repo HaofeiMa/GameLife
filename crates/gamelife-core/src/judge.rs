@@ -88,6 +88,7 @@ pub struct JudgeInput<'a> {
     pub slot_end: i64,
     pub samples: &'a [Sample],
     pub quests: &'a [Quest],
+    pub tasks: &'a [crate::task::TaskSnapshot],
     pub policy: &'a Policy,
     pub capture: CaptureStatus,
     pub vision: Option<VisionResult>,
@@ -198,10 +199,10 @@ pub fn analyze_slot_evidence(
 /// Slot judge pipeline:
 /// 1. analyze_slot_evidence (hints + spans + activity)
 /// 2. branch: unobserved / break-away / strong core / side-distraction / gray+vision
-/// 3. credited = min(observed, actual, strong + bridge + verified); quests empty → 0
+/// 3. credited = min(observed, actual, strong + bridge + verified); tasks empty → 0
 pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     let actual = input.slot_end - input.slot_start;
-    let quests_empty = !crate::quest::quest_list_has_evidence(input.quests);
+    let tasks_empty = input.tasks.is_empty();
     let ev = analyze_slot_evidence(
         input.samples,
         input.policy,
@@ -226,7 +227,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
         dominant = Dominant::Unobserved;
     } else if activity.away >= AWAY_DOMINANT_SECS && strong_core < 300 {
         dominant = Dominant::BreakAway;
-    } else if !quests_empty
+    } else if !tasks_empty
         && grounded_strong_core >= STRONG_CORE_AUTO_SECS
         && activity.side + activity.distraction <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
     {
@@ -317,7 +318,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
 
     // Step 7–8: final credited cap
     let mut credited = credited_raw.min(observed).min(actual).min(900);
-    if quests_empty {
+    if tasks_empty {
         credited = 0;
         if dominant == Dominant::CoreResearch {
             dominant = dominant_from_activity(&activity, 0);
@@ -556,6 +557,18 @@ mod tests {
         }
     }
 
+    fn mainline_tasks() -> &'static [crate::task::TaskSnapshot] {
+        use std::sync::OnceLock;
+        static TASKS: OnceLock<Vec<crate::task::TaskSnapshot>> = OnceLock::new();
+        TASKS.get_or_init(|| {
+            vec![crate::task::TaskSnapshot {
+                id: "t1".into(),
+                title: "HDP".into(),
+                role: crate::task::ListRole::Mainline,
+            }]
+        })
+    }
+
     fn match_ctx(app: &str, title: &str) -> Option<VisionMatchContext> {
         Some(VisionMatchContext {
             app: app.into(),
@@ -593,6 +606,7 @@ mod tests {
                 evidence: vec!["robot".into()],
                 hero: true,
             }],
+            tasks: mainline_tasks(),
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: Some(VisionResult {
@@ -625,6 +639,7 @@ mod tests {
                 evidence: vec!["main.tex".into()],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: Some(VisionResult {
@@ -650,6 +665,7 @@ mod tests {
                 evidence: vec!["main.tex".into()],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Missed,
             vision: None,
@@ -671,6 +687,7 @@ mod tests {
                 evidence: vec!["main.tex".into()],
                 hero: true,
             }],
+            tasks: mainline_tasks(),
             policy: &pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,
@@ -694,6 +711,7 @@ mod tests {
                 evidence: vec!["main.tex".into()],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: Some(VisionResult {
@@ -724,6 +742,7 @@ mod tests {
                 evidence: vec!["main.tex".into()],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: None,
@@ -749,6 +768,7 @@ mod tests {
                 evidence: vec!["main.tex".into()],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: Some(VisionResult {
@@ -776,6 +796,7 @@ mod tests {
                 evidence: vec!["robot".into()],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Missed,
             vision: None,
@@ -798,6 +819,7 @@ mod tests {
                 evidence: vec!["robot".into()],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: None,
@@ -820,6 +842,7 @@ mod tests {
                 evidence: vec!["robot".into()],
                 hero: true,
             }],
+            tasks: mainline_tasks(),
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: None,
@@ -842,6 +865,7 @@ mod tests {
                 evidence: vec!["robot".into()],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: None,
@@ -859,6 +883,7 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,
@@ -866,6 +891,24 @@ mod tests {
         });
         assert_eq!(out.credited_core_seconds, 0);
         assert_ne!(out.dominant, Dominant::CoreResearch);
+    }
+
+    #[test]
+    fn empty_tasks_zero_credit_even_with_quest_evidence() {
+        let quests = [Quest::fixture("HDP", "HDP")];
+        let samples = grid("Cursor", "HDP train.py", 0, 60, 15, 5);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &quests,
+            tasks: &[],
+            policy: &pol(),
+            capture: CaptureStatus::Captured,
+            vision: None,
+            manual_core: None,
+        });
+        assert_eq!(out.credited_core_seconds, 0);
     }
 
     #[test]
@@ -880,6 +923,7 @@ mod tests {
                 evidence: vec![],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,
@@ -892,33 +936,40 @@ mod tests {
     #[test]
     fn title_only_quests_with_manual_core_still_force_zero_credit() {
         let samples = grid("Isaac Sim", "robot", 0, 40, 15, 2);
-        let base = |quests: &[Quest]| {
+        let base = |quests: &[Quest], tasks: &[crate::task::TaskSnapshot]| {
             judge_slot(JudgeInput {
                 slot_start: 0,
                 slot_end: 900,
                 samples: &samples,
                 quests,
+                tasks,
                 policy: &pol(),
                 capture: CaptureStatus::Captured,
                 vision: None,
                 manual_core: Some(true),
             })
         };
-        let title_only = base(&[Quest {
-            text: "robot".into(),
-            evidence: vec![],
-            hero: true,
-        }]);
+        let title_only = base(
+            &[Quest {
+                text: "robot".into(),
+                evidence: vec![],
+                hero: true,
+            }],
+            &[],
+        );
         assert_eq!(
             title_only.credited_core_seconds,
             0,
             "empty evidence must gate credit even when manual_core would otherwise pay"
         );
-        let with_evidence = base(&[Quest {
-            text: "robot".into(),
-            evidence: vec!["robot".into()],
-            hero: true,
-        }]);
+        let with_evidence = base(
+            &[Quest {
+                text: "robot".into(),
+                evidence: vec!["robot".into()],
+                hero: true,
+            }],
+            mainline_tasks(),
+        );
         assert!(
             with_evidence.credited_core_seconds > 60,
             "same slot with evidence must credit manual_core, got {}",
@@ -938,6 +989,7 @@ mod tests {
                 evidence: vec!["main.tex".into()],
                 hero: true,
             }],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: Some(VisionResult {
@@ -966,6 +1018,7 @@ mod tests {
                 evidence: vec!["robot".into()],
                 hero: true,
             }],
+            tasks: mainline_tasks(),
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: None,
@@ -1082,6 +1135,7 @@ mod tests {
                 evidence: vec!["HDP".into()],
                 hero: true,
             }],
+            tasks: mainline_tasks(),
             policy: &Policy {
                 trusted_apps: vec!["Google Chrome".into()],
                 distraction_rules: vec![],
@@ -1157,6 +1211,7 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[Quest::fixture("HDP", "HDP")],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Missed,
             vision: None,
@@ -1187,6 +1242,7 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[Quest::fixture("HDP", "HDP")],
+            tasks: mainline_tasks(),
             policy: &browser_pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,
@@ -1218,6 +1274,7 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[Quest::fixture("HDP", "HDP")],
+            tasks: &[],
             policy: &browser_pol(),
             capture: CaptureStatus::Missed,
             vision: None,
@@ -1236,6 +1293,7 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[Quest::fixture("paper", "main.tex")],
+            tasks: &[],
             policy: &pol(),
             capture: CaptureStatus::Missed,
             vision: None,
@@ -1266,6 +1324,7 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[Quest::fixture("HDP", "HDP")],
+            tasks: &[],
             policy: &browser_pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,
@@ -1297,6 +1356,7 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[],
+            tasks: &[],
             policy: &browser_pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,
