@@ -65,13 +65,13 @@ fn sample_haystacks(sample: &Sample) -> Vec<&str> {
     haystacks
 }
 
-fn quest_keyword_in(hay: &str, quests: &[Quest]) -> bool {
+fn evidence_in(hay: &str, quests: &[Quest]) -> bool {
     let lower = hay.to_ascii_lowercase();
     quests.iter().any(|quest| {
-        quest
-            .keywords
-            .iter()
-            .any(|keyword| lower.contains(&keyword.to_ascii_lowercase()))
+        quest.evidence.iter().any(|token| {
+            let needle = token.to_ascii_lowercase();
+            !needle.is_empty() && lower.contains(&needle)
+        })
     })
 }
 
@@ -83,14 +83,14 @@ pub fn is_grounded_core_sample(sample: &Sample, quests: &[Quest]) -> bool {
     if sample
         .document_path
         .as_deref()
-        .is_some_and(|p| quest_keyword_in(p, quests))
+        .is_some_and(|p| evidence_in(p, quests))
     {
         return true;
     }
     let Some(url) = stripped_url(sample) else {
         return false;
     };
-    if quest_keyword_in(&url, quests) {
+    if evidence_in(&url, quests) {
         return true;
     }
     url_host(&url).is_some_and(|h| host_is_research(&h))
@@ -98,7 +98,7 @@ pub fn is_grounded_core_sample(sample: &Sample, quests: &[Quest]) -> bool {
 
 fn is_core_candidate(sample: &Sample, quests: &[Quest]) -> bool {
     let title_hit = !is_readme_or_settings_title(&sample.window_title)
-        && quest_keyword_in(&sample.window_title, quests);
+        && evidence_in(&sample.window_title, quests);
     title_hit || is_grounded_core_sample(sample, quests)
 }
 
@@ -154,10 +154,7 @@ mod tests {
             reading_apps: vec![],
             never_capture_apps: vec![],
         };
-        let q = [Quest {
-            text: "HDP".into(),
-            keywords: vec!["HDP".into()],
-        }];
+        let q = [Quest::fixture("HDP", "HDP")];
         let mut s = sample("Cursor", "README.md", 5);
         s.document_path = Some("/proj/HDP/README.md".into());
         assert_eq!(hint_sample(&s, &p, &q, None), Hint::CoreCandidate);
@@ -173,10 +170,7 @@ mod tests {
             reading_apps: vec!["Preview".into()],
             never_capture_apps: vec![],
         };
-        let q = [Quest {
-            text: "paper".into(),
-            keywords: vec!["paper".into()],
-        }];
+        let q = [Quest::fixture("paper", "paper")];
         let mut s = sample("Preview", "paper.pdf", 200);
         s.ts = 1_000 + 200;
         assert_eq!(hint_sample(&s, &p, &q, Some(1_000)), Hint::CoreReading);
@@ -210,10 +204,7 @@ mod tests {
     }
 
     fn hdp_quest() -> [Quest; 1] {
-        [Quest {
-            text: "HDP".into(),
-            keywords: vec!["HDP".into()],
-        }]
+        [Quest::fixture("HDP", "HDP")]
     }
 
     #[test]
@@ -333,5 +324,40 @@ mod tests {
         s.url = Some("https://overleaf.com/project/x".into());
         assert_eq!(hint_sample(&s, &p, &hdp_quest(), None), Hint::CoreCandidate);
         assert!(is_grounded_core_sample(&s, &hdp_quest()));
+    }
+
+    #[test]
+    fn finish_in_title_without_hdp_evidence_is_unsure() {
+        let q = [Quest {
+            text: "Finish HDP tactile ablation".into(),
+            evidence: vec!["HDP".into()],
+            hero: true,
+        }];
+        let s = sample("Cursor", "Finish notes", 5);
+        assert_eq!(hint_sample(&s, &hdp_policy(), &q, None), Hint::Unsure);
+    }
+
+    #[test]
+    fn trusted_chrome_url_evidence_is_core() {
+        let p = Policy {
+            trusted_apps: vec!["Google Chrome".into()],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+        };
+        let q = [Quest::fixture("overleaf", "overleaf.com")];
+        let mut s = sample("Google Chrome", "Overleaf", 5);
+        s.url = Some("https://overleaf.com/project/abc".into());
+        assert_eq!(hint_sample(&s, &p, &q, None), Hint::CoreCandidate);
+    }
+
+    #[test]
+    fn untrusted_app_with_evidence_in_title_is_not_core() {
+        let s = sample("WeChat", "HDP chat", 5);
+        assert_eq!(
+            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            Hint::Unsure
+        );
     }
 }

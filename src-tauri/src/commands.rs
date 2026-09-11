@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use gamelife_core::{
-    format_estimated_minutes, sum_activity, xp_shop_unlocked, CHEST_SECS, GOLD_DAY_SECS,
+    format_estimated_minutes, matched_quest_index, matches_app_identity, sum_activity,
+    xp_shop_unlocked, QuestDraft, CHEST_SECS, GOLD_DAY_SECS,
 };
 use gamelife_core::shop::{Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
@@ -21,8 +22,9 @@ use crate::keychain::{
 use crate::macos;
 use crate::sampler::PauseControl;
 use crate::scheduler::{
-    day_str_for_ts, default_screenshot_retention, list_freeze_candidates, load_quests_for_day,
-    review_pending_slot, sampling_allowed, streak_from_db,
+    continue_previous_workday_for_day, day_str_for_ts, default_screenshot_retention,
+    list_freeze_candidates, load_policy, load_quests_for_day, previous_quest_day,
+    review_pending_slot, sampling_allowed, save_quests_for_day, streak_from_db,
 };
 
 fn now_secs() -> i64 {
@@ -87,9 +89,30 @@ pub struct TodaySlot {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct QuestView {
+    pub text: String,
+    pub evidence: Vec<String>,
+    pub hero: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveWindow {
+    pub app: String,
+    pub title: String,
+    pub document_path: Option<String>,
+    pub url: Option<String>,
+    pub matched_quest_index: Option<usize>,
+    pub trusted: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TodayView {
     pub day: String,
-    pub quests: Vec<String>,
+    pub quests: Vec<QuestView>,
+    pub live: Option<LiveWindow>,
+    pub previous_workday: Option<String>,
     pub credited_seconds: i64,
     pub credited_label: String,
     pub coins_today: i64,
@@ -234,7 +257,54 @@ fn week_start_for(date: NaiveDate) -> NaiveDate {
 
 fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
     let quests = load_quests_for_day(conn, day)?;
-    let quest_texts = quests.iter().map(|q| q.text.clone()).collect();
+    let quest_views: Vec<QuestView> = quests
+        .iter()
+        .map(|q| QuestView {
+            text: q.text.clone(),
+            evidence: q.evidence.clone(),
+            hero: q.hero,
+        })
+        .collect();
+    let previous_workday = previous_quest_day(conn, day)?;
+    let policy = load_policy(conn)?;
+    let live = conn
+        .query_row(
+            "SELECT app, title, document_path, url, bundle_id FROM samples
+             WHERE day = ?1 ORDER BY ts DESC LIMIT 1",
+            params![day],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(crate::db_error::map_rusqlite)?
+        .map(|(app, title, document_path, url, bundle_id)| {
+            let quest_match = matched_quest_index(
+                &title,
+                document_path.as_deref(),
+                url.as_deref(),
+                &quests,
+            );
+            let trusted = matches_app_identity(
+                &app,
+                bundle_id.as_deref(),
+                &policy.trusted_apps,
+            );
+            LiveWindow {
+                app,
+                title,
+                document_path,
+                url,
+                matched_quest_index: quest_match,
+                trusted,
+            }
+        });
     let credited_seconds: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(credited_core_seconds), 0) FROM slots
@@ -313,7 +383,9 @@ fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
     let default_freeze_date = freeze_candidates.first().cloned();
     Ok(TodayView {
         day: day.to_string(),
-        quests: quest_texts,
+        quests: quest_views,
+        live,
+        previous_workday,
         credited_seconds,
         credited_label: format_estimated_minutes(credited_seconds),
         coins_today,
@@ -473,41 +545,24 @@ pub fn get_week() -> Result<WeekView, String> {
 }
 
 #[tauri::command]
-pub fn set_quests(quests: Vec<String>) -> Result<(), String> {
-    if quests.len() > 3 {
-        return Err("at most 3 quests".into());
-    }
+pub fn set_quests(quests: Vec<QuestDraft>) -> Result<(), String> {
     with_db(|conn| {
         let day = day_str_for_ts(now_secs());
         if !sampling_allowed(conn, &day)? {
             return Err(DbOpError::Fatal("day ended".into()));
         }
-        let json = serde_json::to_string(
-            &quests
-                .into_iter()
-                .map(|text| {
-                    let keywords: Vec<String> = text
-                        .split_whitespace()
-                        .map(|w| w.to_string())
-                        .filter(|w| !w.is_empty())
-                        .collect();
-                    let keywords = if keywords.is_empty() {
-                        vec![text.clone()]
-                    } else {
-                        keywords
-                    };
-                    serde_json::json!({ "text": text, "keywords": keywords })
-                })
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|e| DbOpError::Fatal(e.to_string()))?;
-        let ts = now_secs();
-        conn.execute(
-            "INSERT INTO quest_versions (day, json, created_at) VALUES (?1, ?2, ?3)",
-            params![day, json, ts],
-        )
-        .map_err(crate::db_error::map_rusqlite)?;
-        Ok(())
+        save_quests_for_day(conn, &day, quests, now_secs())
+    })
+}
+
+#[tauri::command]
+pub fn continue_previous_workday() -> Result<String, String> {
+    with_db(|conn| {
+        let day = day_str_for_ts(now_secs());
+        if !sampling_allowed(conn, &day)? {
+            return Err(DbOpError::Fatal("day ended".into()));
+        }
+        continue_previous_workday_for_day(conn, &day, now_secs())
     })
 }
 
@@ -765,5 +820,51 @@ mod tests {
         let status = get_permission_status();
         assert!(!status.process_name.is_empty());
         assert!(!status.process_path.is_empty());
+    }
+
+    #[test]
+    fn today_live_matches_latest_sample() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        save_quests_for_day(
+            &conn,
+            day,
+            vec![QuestDraft {
+                text: "HDP".into(),
+                evidence: vec!["HDP".into()],
+                hero: true,
+            }],
+            1,
+        )
+        .unwrap();
+        crate::sampler::insert_sample(
+            &conn,
+            10,
+            day,
+            "Cursor",
+            "train.py — HDP",
+            None,
+            None,
+            None,
+            1,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let view = build_today(&conn, day).unwrap();
+        assert_eq!(view.quests[0].text, "HDP");
+        assert_eq!(view.live.as_ref().unwrap().matched_quest_index, Some(0));
+        assert!(view.live.as_ref().unwrap().trusted);
+    }
+
+    #[test]
+    fn today_live_null_without_samples() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let view = build_today(&conn, "2026-09-11").unwrap();
+        assert!(view.live.is_none());
+        assert!(view.previous_workday.is_none());
     }
 }

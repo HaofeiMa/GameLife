@@ -15,7 +15,18 @@ pub struct Sample {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Quest {
     pub text: String,
-    pub keywords: Vec<String>,
+    pub evidence: Vec<String>,
+    pub hero: bool,
+}
+
+impl Quest {
+    pub fn fixture(text: &str, token: &str) -> Self {
+        Self {
+            text: text.into(),
+            evidence: vec![token.into()],
+            hero: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

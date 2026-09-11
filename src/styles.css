@@ -127,16 +127,77 @@ nav button.active {
 
 input,
 select,
+textarea,
 button {
   font: inherit;
 }
 
 input,
-select {
+select,
+textarea {
   display: block;
   width: 100%;
   margin: 0.35rem 0 0.75rem;
   padding: 0.4rem 0.5rem;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 3rem;
+}
+
+.live-match {
+  font-size: 0.95rem;
+  margin: 0 0 0.75rem;
+  color: #374151;
+}
+
+.continue-previous {
+  margin-bottom: 0.75rem;
+}
+
+.quest-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+  background: #fff;
+}
+
+.quest-hero {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.quest-secondary {
+  background: #fff;
+}
+
+.quest-evidence-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.quest-evidence-chip {
+  background: #e5e7eb;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+
+.quest-hero-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.quest-hero-toggle input {
+  width: auto;
+  margin: 0;
 }
 
 button.primary,

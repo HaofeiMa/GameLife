@@ -7,16 +7,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 
 use gamelife_core::judge::{Dominant, JudgeOutput, VisionResult};
-use gamelife_core::types::ActivitySeconds;
-use gamelife_core::types::Hint;
+use gamelife_core::types::{ActivitySeconds, Hint};
 use gamelife_core::{
     activity_summary_for_vision, analyze_slot_evidence, builtin_never_capture,
     builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
     default_distraction_rules, default_v01, early_start_anchor, early_start_coins_for_local_secs,
     heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity,
-    new_milestones, recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
-    spans_for_slot, CaptureContext, CaptureStatus, DayOutcome, JudgeInput, Policy, Quest, Sample,
-    VisionContext, CHEST_SECS,
+    new_milestones, normalize_quest_list, parse_quest_versions_json, quest_list_has_evidence,
+    recompute_streak, schedule_capture, slot_end_exclusive, slot_start, spans_for_slot,
+    vision_quest_label, CaptureContext, CaptureStatus, DayOutcome, JudgeInput, Policy, Quest,
+    QuestDraft, QuestListError, Sample, VisionContext, CHEST_SECS,
 };
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
@@ -710,12 +710,6 @@ pub fn seed_default_policy_if_needed(conn: &Connection) -> Result<(), DbOpError>
 }
 
 #[derive(Deserialize)]
-struct QuestJson {
-    text: String,
-    keywords: Vec<String>,
-}
-
-#[derive(Deserialize)]
 struct PolicyJson {
     trusted_apps: Option<Vec<String>>,
     distraction_rules: Option<Vec<String>>,
@@ -799,15 +793,13 @@ pub fn load_quests_for_version(
             return load_quests_for_day(conn, day);
         }
     };
-    let parsed: Vec<QuestJson> =
-        serde_json::from_str(&json).map_err(|e| DbOpError::Fatal(format!("quest json: {e}")))?;
-    Ok(parsed
-        .into_iter()
-        .map(|q| Quest {
-            text: q.text,
-            keywords: q.keywords,
-        })
-        .collect())
+    match parse_quest_versions_json(&json) {
+        Ok(quests) => Ok(quests),
+        Err(e) => {
+            eprintln!("quest json parse failed: {e}");
+            Ok(vec![])
+        }
+    }
 }
 
 pub fn load_policy_for_version(
@@ -855,15 +847,88 @@ pub fn load_quests_for_day(conn: &Connection, day: &str) -> Result<Vec<Quest>, D
     let Some(json) = json else {
         return Ok(vec![]);
     };
-    let parsed: Vec<QuestJson> =
-        serde_json::from_str(&json).map_err(|e| DbOpError::Fatal(format!("quest json: {e}")))?;
-    Ok(parsed
-        .into_iter()
-        .map(|q| Quest {
-            text: q.text,
-            keywords: q.keywords,
+    match parse_quest_versions_json(&json) {
+        Ok(quests) => Ok(quests),
+        Err(e) => {
+            eprintln!("quest json parse failed: {e}");
+            Ok(vec![])
+        }
+    }
+}
+
+pub fn save_quests_for_day(
+    conn: &Connection,
+    day: &str,
+    drafts: Vec<QuestDraft>,
+    now: i64,
+) -> Result<(), DbOpError> {
+    let quests = normalize_quest_list(drafts).map_err(|e| match e {
+        QuestListError::TooMany => DbOpError::Fatal("at most 3 quests".into()),
+        QuestListError::EmptyText => DbOpError::Fatal("quest text empty".into()),
+    })?;
+    let json_rows = quests
+        .iter()
+        .map(|q| {
+            serde_json::json!({
+                "text": q.text,
+                "evidence": q.evidence,
+                "hero": q.hero,
+            })
         })
-        .collect())
+        .collect::<Vec<_>>();
+    let json = serde_json::to_string(&json_rows)
+        .map_err(|e| DbOpError::Fatal(e.to_string()))?;
+    conn.execute(
+        "INSERT INTO quest_versions (day, json, created_at) VALUES (?1, ?2, ?3)",
+        params![day, json, now],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+fn previous_nonempty_quest_snapshot(
+    conn: &Connection,
+    today: &str,
+) -> Result<Option<(String, Vec<Quest>)>, DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT day, json FROM quest_versions WHERE day < ?1 ORDER BY day DESC, id DESC",
+        )
+        .map_err(map_rusqlite)?;
+    let rows = stmt
+        .query_map(params![today], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(map_rusqlite)?;
+    for row in rows {
+        let (day, json) = row.map_err(map_rusqlite)?;
+        match parse_quest_versions_json(&json) {
+            Ok(quests) if !quests.is_empty() => return Ok(Some((day, quests))),
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+pub fn previous_quest_day(conn: &Connection, today: &str) -> Result<Option<String>, DbOpError> {
+    Ok(previous_nonempty_quest_snapshot(conn, today)?.map(|(day, _)| day))
+}
+
+pub fn continue_previous_workday_for_day(
+    conn: &Connection,
+    today: &str,
+    now: i64,
+) -> Result<String, DbOpError> {
+    let (from_day, quests) = previous_nonempty_quest_snapshot(conn, today)?
+        .ok_or_else(|| DbOpError::Fatal("no previous quests".into()))?;
+    let drafts = quests
+        .into_iter()
+        .map(|q| QuestDraft {
+            text: q.text,
+            evidence: q.evidence,
+            hero: q.hero,
+        })
+        .collect();
+    save_quests_for_day(conn, today, drafts, now)?;
+    Ok(from_day)
 }
 
 fn credited_before_slot(conn: &Connection, day: &str, slot_start: i64) -> Result<i64, DbOpError> {
@@ -1130,7 +1195,7 @@ pub fn finalize_slot_end(
         evidence.grounded_strong_core_seconds,
         evidence.reading_bridge_seconds,
         actual,
-        quests.is_empty(),
+        !quest_list_has_evidence(&quests),
     );
 
     let (screenshot_path, capture_json): (Option<String>, Option<String>) = conn
@@ -1164,7 +1229,7 @@ pub fn finalize_slot_end(
             let ctx = VisionContext {
                 slot_start,
                 slot_end,
-                quests: quests.iter().map(|q| q.text.clone()).collect(),
+                quests: quests.iter().map(vision_quest_label).collect(),
                 capture: capture_ctx,
                 activity_summary: activity_summary_for_vision(&evidence, &samples),
             };
@@ -2379,6 +2444,98 @@ mod tests {
             )
             .unwrap();
         assert_eq!(used, 0);
+    }
+
+    #[test]
+    fn previous_quest_day_skips_empty_json() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at) VALUES ('2026-09-10', '[]', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at) VALUES ('2026-09-09', ?1, 1)",
+            rusqlite::params![r#"[{"text":"HDP","evidence":["HDP"],"hero":true}]"#],
+        )
+        .unwrap();
+        assert_eq!(
+            previous_quest_day(&conn, "2026-09-11").unwrap().as_deref(),
+            Some("2026-09-09")
+        );
+    }
+
+    #[test]
+    fn continue_copies_hero_and_evidence() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at) VALUES ('2026-09-10', ?1, 1)",
+            rusqlite::params![r#"[{"text":"HDP","evidence":["HDP"],"hero":true}]"#],
+        )
+        .unwrap();
+        let from = continue_previous_workday_for_day(&conn, "2026-09-11", 2).unwrap();
+        assert_eq!(from, "2026-09-10");
+        let qs = load_quests_for_day(&conn, "2026-09-11").unwrap();
+        assert_eq!(qs[0].text, "HDP");
+        assert_eq!(qs[0].evidence, vec!["HDP".to_string()]);
+        assert!(qs[0].hero);
+    }
+
+    #[test]
+    fn continue_without_history_errors() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let err = continue_previous_workday_for_day(&conn, "2026-09-11", 1).unwrap_err();
+        assert!(format!("{err:?}").contains("no previous quests"));
+    }
+
+    #[test]
+    fn save_quests_writes_evidence_and_hero() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        save_quests_for_day(
+            &conn,
+            day,
+            vec![gamelife_core::QuestDraft {
+                text: "Finish HDP tactile ablation".into(),
+                evidence: vec!["HDP".into(), "a".into()],
+                hero: true,
+            }],
+            1,
+        )
+        .unwrap();
+        let json: String = conn
+            .query_row(
+                "SELECT json FROM quest_versions WHERE day = ?1",
+                rusqlite::params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(json.contains("\"evidence\""));
+        assert!(json.contains("HDP"));
+        assert!(!json.contains("\"a\""));
+        let qs = load_quests_for_day(&conn, day).unwrap();
+        assert_eq!(qs[0].text, "Finish HDP tactile ablation");
+        assert_eq!(qs[0].evidence, vec!["HDP".to_string()]);
+        assert!(qs[0].hero);
+    }
+
+    #[test]
+    fn load_legacy_keywords_json() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at) VALUES (?1, ?2, 1)",
+            rusqlite::params![day, r#"[{"text":"robot","keywords":["robot"]}]"#],
+        )
+        .unwrap();
+        let qs = load_quests_for_day(&conn, day).unwrap();
+        assert_eq!(qs[0].evidence, vec!["robot".to_string()]);
+        assert!(qs[0].hero);
     }
 
     #[test]

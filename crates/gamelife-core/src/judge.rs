@@ -199,7 +199,7 @@ pub fn analyze_slot_evidence(
 /// 3. credited = min(observed, actual, strong + bridge + verified); quests empty → 0
 pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     let actual = input.slot_end - input.slot_start;
-    let quests_empty = input.quests.is_empty();
+    let quests_empty = !crate::quest::quest_list_has_evidence(input.quests);
     let ev = analyze_slot_evidence(
         input.samples,
         input.policy,
@@ -586,7 +586,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -617,7 +618,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -641,7 +643,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Missed,
@@ -661,7 +664,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Scheduled,
@@ -683,7 +687,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -712,7 +717,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -736,7 +742,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -762,7 +769,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Missed,
@@ -783,7 +791,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -804,7 +813,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -825,7 +835,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -854,6 +865,64 @@ mod tests {
     }
 
     #[test]
+    fn title_only_quests_without_evidence_force_zero_credit() {
+        let samples = grid("Cursor", "main.tex", 0, 58, 15, 2);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "paper".into(),
+                evidence: vec![],
+                hero: true,
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Scheduled,
+            vision: None,
+            manual_core: None,
+        });
+        assert_eq!(out.credited_core_seconds, 0);
+        assert_ne!(out.dominant, Dominant::CoreResearch);
+    }
+
+    #[test]
+    fn title_only_quests_with_manual_core_still_force_zero_credit() {
+        let samples = grid("Isaac Sim", "robot", 0, 40, 15, 2);
+        let base = |quests: &[Quest]| {
+            judge_slot(JudgeInput {
+                slot_start: 0,
+                slot_end: 900,
+                samples: &samples,
+                quests,
+                policy: &pol(),
+                capture: CaptureStatus::Captured,
+                vision: None,
+                manual_core: Some(true),
+            })
+        };
+        let title_only = base(&[Quest {
+            text: "robot".into(),
+            evidence: vec![],
+            hero: true,
+        }]);
+        assert_eq!(
+            title_only.credited_core_seconds,
+            0,
+            "empty evidence must gate credit even when manual_core would otherwise pay"
+        );
+        let with_evidence = base(&[Quest {
+            text: "robot".into(),
+            evidence: vec!["robot".into()],
+            hero: true,
+        }]);
+        assert!(
+            with_evidence.credited_core_seconds > 60,
+            "same slot with evidence must credit manual_core, got {}",
+            with_evidence.credited_core_seconds
+        );
+    }
+
+    #[test]
     fn metadata_core_vision_wechat_is_pending() {
         let samples = grid("Cursor", "main.tex", 0, 40, 15, 2);
         let out = judge_slot(JudgeInput {
@@ -862,7 +931,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -889,7 +959,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -1004,7 +1075,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "HDP".into(),
-                keywords: vec!["HDP".into()],
+                evidence: vec!["HDP".into()],
+                hero: true,
             }],
             policy: &Policy {
                 trusted_apps: vec!["Google Chrome".into()],
@@ -1080,10 +1152,7 @@ mod tests {
             slot_start: 0,
             slot_end: 900,
             samples: &samples,
-            quests: &[Quest {
-                text: "HDP".into(),
-                keywords: vec!["HDP".into()],
-            }],
+            quests: &[Quest::fixture("HDP", "HDP")],
             policy: &pol(),
             capture: CaptureStatus::Missed,
             vision: None,
@@ -1113,10 +1182,7 @@ mod tests {
             slot_start: 0,
             slot_end: 900,
             samples: &samples,
-            quests: &[Quest {
-                text: "HDP".into(),
-                keywords: vec!["HDP".into()],
-            }],
+            quests: &[Quest::fixture("HDP", "HDP")],
             policy: &browser_pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,
@@ -1147,10 +1213,7 @@ mod tests {
             slot_start: 0,
             slot_end: 900,
             samples: &samples,
-            quests: &[Quest {
-                text: "HDP".into(),
-                keywords: vec!["HDP".into()],
-            }],
+            quests: &[Quest::fixture("HDP", "HDP")],
             policy: &browser_pol(),
             capture: CaptureStatus::Missed,
             vision: None,
@@ -1168,10 +1231,7 @@ mod tests {
             slot_start: 0,
             slot_end: 900,
             samples: &samples,
-            quests: &[Quest {
-                text: "paper".into(),
-                keywords: vec!["main.tex".into()],
-            }],
+            quests: &[Quest::fixture("paper", "main.tex")],
             policy: &pol(),
             capture: CaptureStatus::Missed,
             vision: None,
@@ -1201,10 +1261,7 @@ mod tests {
             slot_start: 0,
             slot_end: 900,
             samples: &samples,
-            quests: &[Quest {
-                text: "HDP".into(),
-                keywords: vec!["HDP".into()],
-            }],
+            quests: &[Quest::fixture("HDP", "HDP")],
             policy: &browser_pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,
