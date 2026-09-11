@@ -2,45 +2,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Shop } from "./pages/Shop";
 import { Settings } from "./pages/Settings";
 import { Today } from "./pages/Today";
-import { Timeline } from "./pages/Timeline";
 import { Week } from "./pages/Week";
 import { getToday } from "./lib/api";
 import {
   nextFeelNotices,
+  noticeText,
   sessionJustEnded,
-  type FeelNotice,
 } from "./lib/feel";
 
-type Tab = "today" | "timeline" | "week" | "shop" | "settings";
+type Tab = "today" | "week" | "shop" | "settings";
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "today", label: "今日" },
-  { id: "timeline", label: "时间轴" },
-  { id: "week", label: "本周" },
-  { id: "shop", label: "商店" },
-  { id: "settings", label: "设置" },
+const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: "today", label: "今日", icon: "今" },
+  { id: "week", label: "本周", icon: "周" },
+  { id: "shop", label: "商店", icon: "店" },
+  { id: "settings", label: "设置", icon: "设" },
 ];
-
-function noticeText(notice: FeelNotice): string {
-  switch (notice.type) {
-    case "coins":
-      return `+${notice.n} Coins`;
-    case "xp":
-      return `+${notice.n} XP`;
-    case "chest":
-      return "Chest";
-    case "goldDay":
-      return "Gold Day";
-    case "earlyStart":
-      return `Early start +${notice.coins}`;
-    case "streak":
-      return `连胜 ${notice.n}`;
-    case "redeem":
-      return "已兑换";
-    case "entertainmentOver":
-      return `${notice.name} 时间到`;
-  }
-}
 
 export function App() {
   const [tab, setTab] = useState<Tab>("today");
@@ -92,35 +69,36 @@ export function App() {
 
   return (
     <div className="app">
-      <div className="toast-host" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className="toast">
-            {t.text}
-          </div>
+      <aside className="app-rail" aria-label="主导航">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={tab === t.id ? "active" : ""}
+            title={t.label}
+            aria-label={t.label}
+            onClick={() => setTab(t.id)}
+          >
+            <span aria-hidden="true">{t.icon}</span>
+            <span className="rail-label">{t.label}</span>
+          </button>
         ))}
-      </div>
-      <header>
-        <h1>GameLife</h1>
-        <nav>
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={tab === t.id ? "active" : ""}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
+      </aside>
+      <div className="app-body">
+        <div className="toast-host" aria-live="polite">
+          {toasts.map((t) => (
+            <div key={t.id} className="toast">
+              {t.text}
+            </div>
           ))}
-        </nav>
-      </header>
-      <main>
-        {tab === "today" && <Today />}
-        {tab === "timeline" && <Timeline />}
-        {tab === "week" && <Week />}
-        {tab === "shop" && <Shop />}
-        {tab === "settings" && <Settings />}
-      </main>
+        </div>
+        <main>
+          {tab === "today" && <Today />}
+          {tab === "week" && <Week />}
+          {tab === "shop" && <Shop />}
+          {tab === "settings" && <Settings />}
+        </main>
+      </div>
     </div>
   );
 }

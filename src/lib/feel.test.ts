@@ -3,6 +3,7 @@ import {
   coalesceFeelEvents,
   entertainmentStillActive,
   nextFeelNotices,
+  noticeText,
   sessionJustEnded,
   showEndedFromActive,
   trayEntertainmentMinutes,
@@ -82,5 +83,12 @@ describe("wishRejectedMessage", () => {
     expect(wishRejectedMessage("entertainment_needs_duration")).toBe(
       "XP 时时长至少 5 分钟",
     );
+  });
+});
+
+describe("noticeText", () => {
+  it("uses Chinese coin and energy copy", () => {
+    expect(noticeText({ type: "xp", n: 10 })).toBe("+10 能量");
+    expect(noticeText({ type: "coins", n: 1 })).toBe("+1 硬币");
   });
 });

@@ -10,6 +10,27 @@ export type FeelNotice =
 
 export type LedgerRow = { key: string; coin: number; xp: number; ts: number };
 
+export function noticeText(notice: FeelNotice): string {
+  switch (notice.type) {
+    case "coins":
+      return `+${notice.n} 硬币`;
+    case "xp":
+      return `+${notice.n} 能量`;
+    case "chest":
+      return "宝箱已达成";
+    case "goldDay":
+      return "黄金日";
+    case "earlyStart":
+      return `早开始 +${notice.coins}`;
+    case "streak":
+      return `连胜 ${notice.n}`;
+    case "redeem":
+      return "已兑换";
+    case "entertainmentOver":
+      return `${notice.name} 时间到`;
+  }
+}
+
 function maxTs(rows: LedgerRow[]): number | null {
   if (rows.length === 0) return null;
   return Math.max(...rows.map((r) => r.ts));
