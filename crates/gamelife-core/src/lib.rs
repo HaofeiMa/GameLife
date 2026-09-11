@@ -33,7 +33,10 @@ pub use judge::{
     VisionResult, analyze_slot_evidence, credited_core_spans, judge_slot, parse_vision_json,
     sum_unsure_spans,
 };
-pub use ledger::{RewardEvent, admin_xp_key, support_xp_key, tick_keys_for_credited};
+pub use ledger::{
+    CHORE_COIN_TICK_SECS, CHORE_XP_TICK_SECS, SIDE_COIN_TICK_SECS, SIDE_XP_TICK_SECS, RewardEvent,
+    admin_xp_key, support_xp_key, tick_keys_for_credited, tick_keys_for_discount,
+};
 pub use observe::{Span, SpanKind, observed_seconds, spans_for_slot};
 pub use policy::{
     Policy, builtin_never_capture, builtin_side_project_rules, default_distraction_rules,
