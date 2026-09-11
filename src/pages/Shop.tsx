@@ -5,10 +5,18 @@ import {
   createWish,
   getWeek,
   redeem,
+  updateWish,
   type RedemptionView,
   type WeekView,
   type WishView,
 } from "../lib/api";
+import {
+  entertainmentStillActive,
+  wishRejectedMessage,
+} from "../lib/feel";
+
+/** Synchronous guard: useState busy is too late to stop a double-click's second request. */
+let redeemInFlight = false;
 
 function newId(): string {
   return crypto.randomUUID();
@@ -27,31 +35,70 @@ function hasTimedXp(wish: WishView): boolean {
   return wish.kind !== "coin" && wish.durationMinutes != null && wish.durationMinutes >= 5;
 }
 
+function parseWishFields(
+  name: string,
+  price: string,
+  kind: string,
+  duration: string,
+): { name: string; price: number; duration: number | null; err: string | null } {
+  const trimmed = name.trim();
+  const priceNum = Number(price);
+  const durationNum = kind === "coin" ? null : Number(duration);
+  if (!trimmed) {
+    return { name: trimmed, price: priceNum, duration: durationNum, err: "名称不能为空" };
+  }
+  if (!Number.isFinite(priceNum) || priceNum <= 0) {
+    return { name: trimmed, price: priceNum, duration: durationNum, err: "价格必须大于 0" };
+  }
+  if (kind !== "coin" && (!Number.isFinite(durationNum!) || durationNum! < 5)) {
+    return {
+      name: trimmed,
+      price: priceNum,
+      duration: durationNum,
+      err: "XP 时时长至少 5 分钟",
+    };
+  }
+  return { name: trimmed, price: priceNum, duration: durationNum, err: null };
+}
+
 function WishRow({
   wish,
   week,
+  nowSecs,
   onChanged,
 }: {
   wish: WishView;
   week: WeekView;
+  nowSecs: number;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(wish.name);
+  const [editPrice, setEditPrice] = useState(String(wish.price));
+  const [editDuration, setEditDuration] = useState(
+    wish.durationMinutes != null ? String(wish.durationMinutes) : "30",
+  );
   const isXp = wish.kind !== "coin";
   const locked = isXp && !week.xpShopUnlocked;
   const entertainmentBlocked =
-    hasTimedXp(wish) && week.activeEntertainment != null;
+    hasTimedXp(wish) &&
+    week.activeEntertainment != null &&
+    entertainmentStillActive(week.activeEntertainment.endsAt, nowSecs);
 
   async function handleRedeem() {
+    if (redeemInFlight) return;
+    redeemInFlight = true;
     setBusy(true);
     setErr(null);
     try {
       await redeem(wish.id, newId());
       onChanged();
     } catch (e) {
-      setErr(String(e));
+      setErr(wishRejectedMessage(e));
     } finally {
+      redeemInFlight = false;
       setBusy(false);
     }
   }
@@ -63,10 +110,45 @@ function WishRow({
       await archiveWish(wish.id);
       onChanged();
     } catch (e) {
-      setErr(String(e));
+      setErr(wishRejectedMessage(e));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    const parsed = parseWishFields(
+      editName,
+      editPrice,
+      wish.kind,
+      editDuration,
+    );
+    if (parsed.err) {
+      setErr(parsed.err);
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await updateWish(wish.id, parsed.name, parsed.price, parsed.duration);
+      setEditing(false);
+      onChanged();
+    } catch (e) {
+      setErr(wishRejectedMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEdit() {
+    setEditName(wish.name);
+    setEditPrice(String(wish.price));
+    setEditDuration(
+      wish.durationMinutes != null ? String(wish.durationMinutes) : "30",
+    );
+    setErr(null);
+    setEditing(true);
   }
 
   let redeemLabel = "兑换";
@@ -83,30 +165,91 @@ function WishRow({
   return (
     <div className="wish-row">
       <div className="wish-info">
-        <strong>{wish.name}</strong>
-        <span className="muted"> · {priceLabel}</span>
-        {wish.durationMinutes != null && (
-          <span className="muted"> · {wish.durationMinutes} min</span>
+        {editing ? (
+          <form className="wish-edit" onSubmit={handleSave}>
+            <p className="muted">{isXp ? "XP（娱乐时长）" : "Coin"} · 类型不可改</p>
+            <label>
+              名称
+              <input
+                value={editName}
+                disabled={busy}
+                onChange={(e) => setEditName(e.target.value)}
+              />
+            </label>
+            <label>
+              价格
+              <input
+                type="number"
+                min={1}
+                value={editPrice}
+                disabled={busy}
+                onChange={(e) => setEditPrice(e.target.value)}
+              />
+            </label>
+            {isXp && (
+              <label>
+                时长（分钟，≥5）
+                <input
+                  type="number"
+                  min={5}
+                  value={editDuration}
+                  disabled={busy}
+                  onChange={(e) => setEditDuration(e.target.value)}
+                />
+              </label>
+            )}
+            <div className="wish-actions">
+              <button type="submit" disabled={busy}>
+                {busy ? "保存中…" : "保存"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => setEditing(false)}
+              >
+                取消
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <strong>{wish.name}</strong>
+            <span className="muted"> · {priceLabel}</span>
+            {wish.durationMinutes != null && (
+              <span className="muted"> · {wish.durationMinutes} min</span>
+            )}
+          </>
         )}
         {err && <p className="error">{err}</p>}
       </div>
-      <div className="wish-actions">
-        <button
-          type="button"
-          disabled={busy || locked || entertainmentBlocked}
-          onClick={handleRedeem}
-        >
-          {redeemLabel}
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy}
-          onClick={handleArchive}
-        >
-          停用
-        </button>
-      </div>
+      {!editing && (
+        <div className="wish-actions">
+          <button
+            type="button"
+            disabled={busy || locked || entertainmentBlocked}
+            onClick={handleRedeem}
+          >
+            {redeemLabel}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={startEdit}
+          >
+            编辑
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={handleArchive}
+          >
+            停用
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -123,38 +266,26 @@ function AddWishForm({ onCreated }: { onCreated: () => void }) {
     e.preventDefault();
     setBusy(true);
     setErr(null);
-    const trimmed = name.trim();
-    const priceNum = Number(price);
-    const durationNum = kind === "xp" ? Number(duration) : null;
-    if (!trimmed) {
-      setErr("名称不能为空");
-      setBusy(false);
-      return;
-    }
-    if (!Number.isFinite(priceNum) || priceNum <= 0) {
-      setErr("价格必须大于 0");
-      setBusy(false);
-      return;
-    }
-    if (kind === "xp" && (!Number.isFinite(durationNum!) || durationNum! < 5)) {
-      setErr("XP 时时长至少 5 分钟");
+    const parsed = parseWishFields(name, price, kind, duration);
+    if (parsed.err) {
+      setErr(parsed.err);
       setBusy(false);
       return;
     }
     try {
       await createWish(
         newId(),
-        trimmed,
+        parsed.name,
         kind,
-        priceNum,
-        kind === "xp" ? durationNum : null,
+        parsed.price,
+        kind === "xp" ? parsed.duration : null,
       );
       setName("");
       setPrice("10");
       setDuration("30");
       onCreated();
     } catch (e) {
-      setErr(String(e));
+      setErr(wishRejectedMessage(e));
     } finally {
       setBusy(false);
     }
@@ -232,6 +363,7 @@ function RedemptionHistory({ rows }: { rows: RedemptionView[] }) {
 
 export function Shop() {
   const [week, setWeek] = useState<WeekView | null>(null);
+  const [nowSecs, setNowSecs] = useState(() => Math.floor(Date.now() / 1000));
 
   const refresh = useCallback(() => {
     getWeek().then(setWeek).catch(console.error);
@@ -239,8 +371,18 @@ export function Shop() {
 
   useEffect(() => {
     refresh();
-    const id = window.setInterval(refresh, 30_000);
-    return () => window.clearInterval(id);
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        refresh();
+      }
+    }, 5_000);
+    const tick = window.setInterval(() => {
+      setNowSecs(Math.floor(Date.now() / 1000));
+    }, 1_000);
+    return () => {
+      window.clearInterval(poll);
+      window.clearInterval(tick);
+    };
   }, [refresh]);
 
   if (!week) return <p className="muted">加载中…</p>;
@@ -263,7 +405,13 @@ export function Shop() {
           <p className="muted">还没有愿望，添加一个你真正想兑的奖励。</p>
         )}
         {week.wishes.map((w) => (
-          <WishRow key={w.id} wish={w} week={week} onChanged={refresh} />
+          <WishRow
+            key={w.id}
+            wish={w}
+            week={week}
+            nowSecs={nowSecs}
+            onChanged={refresh}
+          />
         ))}
       </section>
       <RedemptionHistory rows={week.redemptions} />

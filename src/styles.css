@@ -240,6 +240,19 @@ button.danger {
   border-radius: 6px;
 }
 
+.wish-edit {
+  display: flex;
+  flex-direction: column;
+}
+
+.wish-edit label {
+  font-size: 0.85rem;
+}
+
+.wish-edit input {
+  margin-bottom: 0.5rem;
+}
+
 .redemption-list {
   list-style: none;
   margin: 0;

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   coalesceFeelEvents,
+  entertainmentStillActive,
   nextFeelNotices,
   sessionJustEnded,
+  showEndedFromActive,
   trayEntertainmentMinutes,
+  wishRejectedMessage,
 } from "./feel";
 
 describe("coalesceFeelEvents", () => {
@@ -52,5 +55,32 @@ describe("trayEntertainmentMinutes", () => {
     expect(trayEntertainmentMinutes(0)).toBeNull();
     expect(trayEntertainmentMinutes(59)).toBe(1);
     expect(trayEntertainmentMinutes(120)).toBe(2);
+  });
+});
+
+describe("entertainmentStillActive", () => {
+  it("is active only while endsAt is strictly after now", () => {
+    expect(entertainmentStillActive(100, 99)).toBe(true);
+    expect(entertainmentStillActive(100, 100)).toBe(false);
+    expect(entertainmentStillActive(100, 101)).toBe(false);
+  });
+});
+
+describe("showEndedFromActive", () => {
+  it("names the ended session when remaining is not positive", () => {
+    expect(showEndedFromActive(1, "视频")).toBeNull();
+    expect(showEndedFromActive(0, "视频")).toBe("视频 已结束");
+    expect(showEndedFromActive(-5, "咖啡")).toBe("咖啡 已结束");
+  });
+});
+
+describe("wishRejectedMessage", () => {
+  it("maps create/update Rejected codes to the same Chinese copy", () => {
+    expect(wishRejectedMessage("empty_name")).toBe("名称不能为空");
+    expect(wishRejectedMessage("name_too_long")).toBe("名称最多 80 字");
+    expect(wishRejectedMessage("non_positive_price")).toBe("价格必须大于 0");
+    expect(wishRejectedMessage("entertainment_needs_duration")).toBe(
+      "XP 时时长至少 5 分钟",
+    );
   });
 });

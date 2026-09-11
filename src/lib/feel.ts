@@ -95,3 +95,37 @@ export function trayEntertainmentMinutes(
   }
   return Math.max(1, Math.floor(remainingSecs / 60));
 }
+
+/** Timed XP lock: active only while endsAt is strictly after now. */
+export function entertainmentStillActive(
+  endsAt: number,
+  nowSecs: number,
+): boolean {
+  return endsAt > nowSecs;
+}
+
+/** When local remaining hits 0 but the parent still has `active`, show this instead of a blank banner. */
+export function showEndedFromActive(
+  remainingSecs: number,
+  name: string,
+): string | null {
+  if (remainingSecs > 0) return null;
+  return `${name} 已结束`;
+}
+
+const WISH_REJECTED: Record<string, string> = {
+  empty_name: "名称不能为空",
+  name_too_long: "名称最多 80 字",
+  non_positive_price: "价格必须大于 0",
+  entertainment_needs_duration: "XP 时时长至少 5 分钟",
+};
+
+export function wishRejectedMessage(err: unknown): string {
+  const raw =
+    typeof err === "string"
+      ? err
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  return WISH_REJECTED[raw] ?? raw;
+}

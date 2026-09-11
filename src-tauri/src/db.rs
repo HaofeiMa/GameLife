@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::db_error::{map_rusqlite, DbOpError};
 use gamelife_core::shop::{
@@ -390,6 +390,46 @@ fn map_redeem_error(e: RedeemError) -> DbOpError {
     }
 }
 
+fn begin_write_tx(conn: &mut Connection) -> Result<Transaction<'_>, DbOpError> {
+    conn.transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_rusqlite)
+}
+
+fn reject_if_multiple_active_sessions(
+    tx: &Transaction<'_>,
+    now: i64,
+) -> Result<(), DbOpError> {
+    let n: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM entertainment_sessions WHERE ends_at > ?1",
+            [now],
+            |r| r.get(0),
+        )
+        .map_err(map_rusqlite)?;
+    if n > 1 {
+        Err(DbOpError::Rejected("entertainment_in_progress".into()))
+    } else {
+        Ok(())
+    }
+}
+
+fn insert_entertainment_session(
+    tx: &Transaction<'_>,
+    redemption_id: &str,
+    wish_id: &str,
+    name: &str,
+    now: i64,
+    duration_minutes: i64,
+) -> Result<(), DbOpError> {
+    let ends_at = now + duration_minutes * 60;
+    tx.execute(
+        "INSERT INTO entertainment_sessions (redemption_id, wish_id, name, started_at, ends_at) VALUES (?1,?2,?3,?4,?5)",
+        params![redemption_id, wish_id, name, now, ends_at],
+    )
+    .map_err(map_rusqlite)?;
+    reject_if_multiple_active_sessions(tx, now)
+}
+
 pub fn redeem(
     conn: &mut Connection,
     credited_today: i64,
@@ -399,7 +439,7 @@ pub fn redeem(
     now: i64,
     redemption_id: &str,
 ) -> Result<(), DbOpError> {
-    let tx = conn.transaction().map_err(map_rusqlite)?;
+    let tx = begin_write_tx(conn)?;
     let coin: i64 = tx
         .query_row("SELECT COALESCE(SUM(coin_delta),0) FROM ledger", [], |r| r.get(0))
         .map_err(map_rusqlite)?;
@@ -459,12 +499,7 @@ pub fn redeem(
             } => *d,
             _ => unreachable!(),
         };
-        let ends_at = now + duration * 60;
-        tx.execute(
-            "INSERT INTO entertainment_sessions (redemption_id, wish_id, name, started_at, ends_at) VALUES (?1,?2,?3,?4,?5)",
-            params![redemption_id, wish.id, wish_name, now, ends_at],
-        )
-        .map_err(map_rusqlite)?;
+        insert_entertainment_session(&tx, redemption_id, &wish.id, wish_name, now, duration)?;
     }
     tx.commit().map_err(map_rusqlite)?;
     Ok(())
@@ -672,6 +707,61 @@ mod tests {
             .unwrap();
         assert_eq!(n, 1);
         assert_eq!(xp_sum(&conn, day), 40);
+    }
+
+    #[test]
+    fn begin_write_tx_is_immediate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock.db");
+        let mut a = Connection::open(&path).unwrap();
+        let mut b = Connection::open(&path).unwrap();
+        a.busy_timeout(std::time::Duration::from_millis(0)).unwrap();
+        b.busy_timeout(std::time::Duration::from_millis(0)).unwrap();
+        migrate(&a).unwrap();
+        let _tx = begin_write_tx(&mut a).unwrap();
+        let err = begin_write_tx(&mut b).unwrap_err();
+        assert_eq!(err, DbOpError::Busy);
+    }
+
+    #[test]
+    fn overlapping_session_insert_rolls_back_when_count_exceeds_one() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let now = 1_700_000_000i64;
+        {
+            let tx = begin_write_tx(&mut conn).unwrap();
+            insert_entertainment_session(&tx, "r1", "video", "视频", now, 30).unwrap();
+            let e = insert_entertainment_session(&tx, "r2", "video", "视频", now, 30)
+                .unwrap_err();
+            assert_eq!(e, DbOpError::Rejected("entertainment_in_progress".into()));
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn timed_redeem_second_uuid_on_other_connection_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("two-conn.db");
+        let mut a = open(&path).unwrap();
+        migrate(&a).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&a, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        redeem(&mut a, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        let mut b = open(&path).unwrap();
+        let e = redeem(&mut b, 3600, day, &timed_xp(10), "视频", now + 10, "r2")
+            .unwrap_err();
+        assert_eq!(e, DbOpError::Rejected("entertainment_in_progress".into()));
+        assert_eq!(xp_sum(&b, day), 40);
+        let n: i64 = b
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     fn user_version(conn: &Connection) -> i32 {

@@ -3,7 +3,10 @@ import type {
   EndedEntertainmentView,
   EntertainmentView,
 } from "../lib/api";
-import { trayEntertainmentMinutes } from "../lib/feel";
+import {
+  showEndedFromActive,
+  trayEntertainmentMinutes,
+} from "../lib/feel";
 
 export function EntertainmentBanner({
   active,
@@ -24,7 +27,13 @@ export function EntertainmentBanner({
   }, [active]);
 
   if (active) {
-    const remaining = Math.max(0, active.endsAt - now);
+    const remaining = active.endsAt - now;
+    const endedText = showEndedFromActive(remaining, active.name);
+    if (endedText) {
+      return (
+        <div className="entertainment-banner ended">{endedText}</div>
+      );
+    }
     const mins = trayEntertainmentMinutes(remaining);
     if (mins == null) return null;
     return (
