@@ -8,6 +8,7 @@ use gamelife_core::shop::{
     can_start_entertainment, entertainment_remaining_secs, has_entertainment_timer,
     validate_redeem, validate_wish, RedeemError, Wish, WishError, WishKind,
 };
+use gamelife_core::{preset_lists, ListRole};
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS heartbeat (id INTEGER PRIMARY KEY CHECK (id=1), ts INTEGER NOT NULL);
@@ -41,8 +42,11 @@ CREATE TABLE IF NOT EXISTS slots (
   status TEXT,
   activity_json TEXT,
   credited_core_seconds INTEGER,
+  credited_side_seconds INTEGER,
+  credited_chore_seconds INTEGER,
   observed_seconds INTEGER,
   used_vision INTEGER,
+  task_snapshot_json TEXT,
   PRIMARY KEY (day, slot_start)
 );
 CREATE TABLE IF NOT EXISTS ledger (
@@ -84,9 +88,21 @@ CREATE TABLE IF NOT EXISTS app_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS task_lists (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, sort INTEGER NOT NULL, role TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  done INTEGER NOT NULL DEFAULT 0,
+  start INTEGER,
+  end INTEGER,
+  range TEXT
+);
 ";
 
-const TARGET_USER_VERSION: i32 = 1;
+const TARGET_USER_VERSION: i32 = 2;
 
 const WAVE1_COLUMNS: &[(&str, &str, &str)] = &[
     ("samples", "document_path", "TEXT"),
@@ -136,6 +152,63 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
          );",
     )
     .map_err(map_rusqlite)?;
+    add_column_if_missing(conn, "slots", "task_snapshot_json", "TEXT")?;
+    add_column_if_missing(conn, "slots", "credited_side_seconds", "INTEGER")?;
+    add_column_if_missing(conn, "slots", "credited_chore_seconds", "INTEGER")?;
+    seed_preset_lists_if_empty(conn)?;
+    seed_example_wishes_if_empty(conn)?;
+    Ok(())
+}
+
+fn list_role_sql(role: ListRole) -> &'static str {
+    match role {
+        ListRole::Mainline => "mainline",
+        ListRole::Side => "side",
+        ListRole::Longterm => "longterm",
+        ListRole::Chore => "chore",
+        ListRole::Custom => "custom",
+    }
+}
+
+fn seed_preset_lists_if_empty(conn: &Connection) -> Result<(), DbOpError> {
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM task_lists", [], |r| r.get(0))
+        .map_err(map_rusqlite)?;
+    if n > 0 {
+        return Ok(());
+    }
+    for list in preset_lists() {
+        conn.execute(
+            "INSERT INTO task_lists (id, name, sort, role) VALUES (?1, ?2, ?3, ?4)",
+            params![list.id, list.name, list.sort, list_role_sql(list.role)],
+        )
+        .map_err(map_rusqlite)?;
+    }
+    Ok(())
+}
+
+fn seed_example_wishes_if_empty(conn: &Connection) -> Result<(), DbOpError> {
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM wishes", [], |r| r.get(0))
+        .map_err(map_rusqlite)?;
+    if n > 0 {
+        return Ok(());
+    }
+    let seeds: [(&str, &str, &str, i64, Option<i64>); 6] = [
+        ("seed-coin-tea", "一杯奶茶", "coin", 32, None),
+        ("seed-coin-takeout", "一顿外卖", "coin", 64, None),
+        ("seed-coin-book", "一本新书", "coin", 48, None),
+        ("seed-xp-bilibili", "B 站 45 分钟", "xp", 20, Some(45)),
+        ("seed-xp-game", "游戏 30 分钟", "xp", 18, Some(30)),
+        ("seed-xp-shorts", "短视频 15 分钟", "xp", 10, Some(15)),
+    ];
+    for (id, name, kind, price, duration) in seeds {
+        conn.execute(
+            "INSERT INTO wishes (id, name, kind, price, duration_minutes, archived) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            params![id, name, kind, price, duration],
+        )
+        .map_err(map_rusqlite)?;
+    }
     Ok(())
 }
 
@@ -806,14 +879,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
-        assert_eq!(user_version(&conn), 1);
+        assert_eq!(user_version(&conn), 2);
     }
 
     #[test]
-    fn migrate_new_db_sets_user_version_1() {
+    fn migrate_v2_adds_task_tables_and_seed_wishes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA user_version = 1;").unwrap();
+        migrate(&conn).unwrap();
+        let v: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 2);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM task_lists", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 4);
+        let w: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wishes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(w, 6);
+        migrate(&conn).unwrap();
+        let w2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wishes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(w2, 6);
+    }
+
+    #[test]
+    fn migrate_new_db_sets_user_version_2() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 1);
+        assert_eq!(user_version(&conn), 2);
         let samples = column_names(&conn, "samples");
         assert!(samples.iter().any(|c| c == "document_path"));
         assert!(samples.iter().any(|c| c == "bundle_id"));
@@ -858,14 +955,22 @@ mod tests {
         insert_wish(&conn, "w2", "咖啡", "coin", 3, None).unwrap();
         assert!(insert_wish(&conn, "w3", "视频", "xp", 10, None).is_err());
         archive_wish(&conn, "w1").unwrap();
-        let n: i64 = conn
+        let active_w2: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM wishes WHERE COALESCE(archived,0)=0",
+                "SELECT COUNT(*) FROM wishes WHERE id='w2' AND COALESCE(archived,0)=0",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(n, 1);
+        let active_w1: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wishes WHERE id='w1' AND COALESCE(archived,0)=0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_w2, 1);
+        assert_eq!(active_w1, 0);
     }
 
     #[test]
@@ -894,7 +999,7 @@ mod tests {
         )
         .unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 1);
+        assert_eq!(user_version(&conn), 2);
         let path: String = conn
             .query_row("SELECT path FROM samples WHERE ts=1", [], |r| r.get(0))
             .unwrap();
@@ -904,6 +1009,6 @@ mod tests {
             .unwrap();
         assert_eq!(doc, None);
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 1);
+        assert_eq!(user_version(&conn), 2);
     }
 }

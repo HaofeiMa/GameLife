@@ -13,10 +13,10 @@ use gamelife_core::{
     builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
     default_distraction_rules, default_v01, early_start_anchor, early_start_coins_for_local_secs,
     heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity,
-    new_milestones, normalize_quest_list, parse_quest_versions_json, quest_list_has_evidence,
-    recompute_streak, schedule_capture, slot_end_exclusive, slot_start, spans_for_slot,
-    vision_quest_label, CaptureContext, CaptureStatus, DayOutcome, JudgeInput, Policy, Quest,
-    QuestDraft, QuestListError, Sample, VisionContext, CHEST_SECS,
+    new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
+    quest_list_has_evidence, recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
+    spans_for_slot, vision_quest_label, CaptureContext, CaptureStatus, DayOutcome, JudgeInput,
+    Policy, Quest, QuestDraft, QuestListError, Sample, TaskSnapshot, VisionContext, CHEST_SECS,
 };
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
@@ -972,6 +972,32 @@ fn load_samples_for_slot(
     rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
 }
 
+fn load_slot_task_snapshots(
+    conn: &Connection,
+    day: &str,
+    slot_start: i64,
+) -> Result<Vec<TaskSnapshot>, DbOpError> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT task_snapshot_json FROM slots WHERE day = ?1 AND slot_start = ?2",
+            params![day, slot_start],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?
+        .flatten();
+    match json.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => match parse_task_snapshot_json(raw) {
+            Ok(tasks) => Ok(tasks),
+            Err(e) => {
+                eprintln!("task_snapshot_json parse failed for {day}@{slot_start}: {e}");
+                Ok(vec![])
+            }
+        },
+        _ => Ok(vec![]),
+    }
+}
+
 fn hints_for_slot(samples: &[Sample], policy: &Policy, quests: &[Quest]) -> Vec<Hint> {
     let mut last_core_interaction_ts: Option<i64> = None;
     let mut hints = Vec::with_capacity(samples.len());
@@ -1187,6 +1213,7 @@ pub fn finalize_slot_end(
     let (quest_vid, policy_vid) = slot_version_ids(conn, day, slot_start)?;
     let policy = load_policy_for_version(conn, policy_vid)?;
     let quests = load_quests_for_version(conn, day, quest_vid)?;
+    let tasks = load_slot_task_snapshots(conn, day, slot_start)?;
     let actual = slot_end - slot_start;
     let evidence = analyze_slot_evidence(&samples, &policy, &quests, slot_start, slot_end);
     let decidable = metadata_decidable(
@@ -1251,7 +1278,7 @@ pub fn finalize_slot_end(
         slot_end,
         samples: &samples,
         quests: &quests,
-        tasks: &[],
+        tasks: &tasks,
         policy: &policy,
         capture,
         vision,
@@ -1708,6 +1735,7 @@ pub fn review_pending_slot(
     let (quest_vid, policy_vid) = slot_version_ids(conn, day, slot_start)?;
     let policy = load_policy_for_version(conn, policy_vid)?;
     let quests = load_quests_for_version(conn, day, quest_vid)?;
+    let tasks = load_slot_task_snapshots(conn, day, slot_start)?;
     let capture_status_str: Option<String> = conn
         .query_row(
             "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -1727,7 +1755,7 @@ pub fn review_pending_slot(
             slot_end,
             samples: &samples,
             quests: &quests,
-            tasks: &[],
+            tasks: &tasks,
             policy: &policy,
             capture,
             vision: None,
@@ -1741,7 +1769,7 @@ pub fn review_pending_slot(
             slot_end,
             samples: &samples,
             quests: &quests,
-            tasks: &[],
+            tasks: &tasks,
             policy: &policy,
             capture,
             vision: None,
@@ -2315,6 +2343,18 @@ mod tests {
         .unwrap()
     }
 
+    fn mainline_snapshot_json() -> &'static str {
+        r#"[{"id":"t1","title":"paper","role":"mainline"}]"#
+    }
+
+    fn pin_mainline_snapshot(conn: &Connection, day: &str, slot_start: i64) {
+        conn.execute(
+            "UPDATE slots SET task_snapshot_json = ?1 WHERE day = ?2 AND slot_start = ?3",
+            params![mainline_snapshot_json(), day, slot_start],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn finalize_isaac_screenshot_without_api_key_is_pending() {
         let dir = tempfile::tempdir().unwrap();
@@ -2849,6 +2889,7 @@ mod tests {
             [],
         )
         .unwrap();
+        pin_mainline_snapshot(&conn, day, ss);
         finalize_slot_end(&mut conn, day, ss, 900, ScreenshotRetention::None, 0).unwrap();
         let (path, json, capture_status, status) = slot_capture_cols(&conn, day, ss);
         assert_eq!(status.as_deref(), Some("final"));
@@ -3292,6 +3333,7 @@ mod tests {
             )
             .unwrap();
         }
+        pin_mainline_snapshot(&conn, day, ss);
         finalize_slot_end(&mut conn, day, ss, ss + 900, ScreenshotRetention::None, 0).unwrap();
         let coin: i64 = conn
             .query_row(
