@@ -2,41 +2,12 @@ use std::io::Cursor;
 use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use gamelife_core::judge::VisionResult;
+use gamelife_core::judge::{parse_vision_json, VisionMatchContext, VisionResult};
 use image::imageops::FilterType;
 use image::GenericImageView;
-use serde::Deserialize;
 
 pub const VISION_TIMEOUT_SECS: u64 = 20;
 pub const JPEG_MAX_LONG_EDGE: u32 = 1280;
-
-#[derive(Debug, Deserialize)]
-struct VisionApiPayload {
-    category: String,
-    confidence: f64,
-    #[allow(dead_code)]
-    reason: String,
-}
-
-/// Map OpenAI-compatible JSON `{"category","confidence","reason"}` into `VisionResult`.
-pub fn parse_vision_json(json: &str, context_app: Option<String>) -> Result<VisionResult, ()> {
-    let payload: VisionApiPayload = serde_json::from_str(json).map_err(|_| ())?;
-    Ok(map_vision_payload(&payload.category, payload.confidence, context_app))
-}
-
-pub fn map_vision_payload(
-    category: &str,
-    confidence: f64,
-    context_app: Option<String>,
-) -> VisionResult {
-    let wants_core = category == "core_research";
-    VisionResult {
-        wants_core,
-        confidence,
-        context_app,
-        category: category.to_string(),
-    }
-}
 
 /// Resize in-memory image so long edge ≤ `JPEG_MAX_LONG_EDGE` and return JPEG bytes.
 pub fn jpeg_bytes_for_upload(image_bytes: &[u8]) -> Result<Vec<u8>, ()> {
@@ -76,16 +47,17 @@ fn openai_model() -> String {
 pub fn call_vision_api(
     jpeg_bytes: &[u8],
     api_key: &str,
-    context_app: Option<&str>,
+    match_context: Option<VisionMatchContext>,
 ) -> Result<VisionResult, ()> {
     let b64 = STANDARD.encode(jpeg_bytes);
-    let app_hint = context_app
-        .map(|a| format!("Frontmost app at capture: {a}."))
+    let app_hint = match_context
+        .as_ref()
+        .map(|c| format!("Frontmost app at capture: {}.", c.app))
         .unwrap_or_default();
     let prompt = format!(
         "Classify this macOS screenshot for productivity tracking. \
 Return JSON only with keys category, confidence, reason. \
-category must be one of: core_research, research_support, admin, side_project, distraction, break_away, unknown. \
+category must be one of: core_research, research_support, admin, side_project, distraction, break_away. \
 {app_hint}"
     );
     let url = format!("{}/chat/completions", openai_base_url().trim_end_matches('/'));
@@ -117,16 +89,16 @@ category must be one of: core_research, research_support, admin, side_project, d
     let content = json["choices"][0]["message"]["content"]
         .as_str()
         .ok_or(())?;
-    parse_vision_json(content, context_app.map(str::to_string))
+    parse_vision_json(content, match_context).map_err(|_| ())
 }
 
 pub fn analyze_screenshot(
     path: &Path,
     api_key: &str,
-    context_app: Option<&str>,
+    match_context: Option<VisionMatchContext>,
 ) -> Result<VisionResult, ()> {
     let jpeg = read_and_prepare_jpeg(path)?;
-    call_vision_api(&jpeg, api_key, context_app)
+    call_vision_api(&jpeg, api_key, match_context)
 }
 
 #[cfg(test)]
@@ -136,17 +108,33 @@ mod tests {
     #[test]
     fn parse_core_research_maps_to_wants_core() {
         let json = r#"{"category":"core_research","confidence":0.91,"reason":"sim viewport"}"#;
-        let v = parse_vision_json(json, Some("Isaac Sim".into())).unwrap();
+        let ctx = Some(VisionMatchContext {
+            app: "Isaac Sim".into(),
+            title: "robot".into(),
+            document_path: None,
+        });
+        let v = parse_vision_json(json, ctx.clone()).unwrap();
         assert!(v.wants_core);
         assert!((v.confidence - 0.91).abs() < 1e-6);
-        assert_eq!(v.context_app.as_deref(), Some("Isaac Sim"));
+        assert_eq!(v.match_context.as_ref().map(|c| c.app.as_str()), Some("Isaac Sim"));
     }
 
     #[test]
     fn parse_distraction_maps_to_not_wants_core() {
         let json = r#"{"category":"distraction","confidence":0.8,"reason":"social feed"}"#;
-        let v = parse_vision_json(json, Some("Safari".into())).unwrap();
+        let ctx = Some(VisionMatchContext {
+            app: "Safari".into(),
+            title: "".into(),
+            document_path: None,
+        });
+        let v = parse_vision_json(json, ctx).unwrap();
         assert!(!v.wants_core);
+    }
+
+    #[test]
+    fn parse_rejects_unknown_category() {
+        let json = r#"{"category":"unknown","confidence":0.5,"reason":""}"#;
+        assert!(parse_vision_json(json, None).is_err());
     }
 
     #[test]

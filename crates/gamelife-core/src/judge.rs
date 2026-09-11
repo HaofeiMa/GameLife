@@ -11,13 +11,76 @@ const STRONG_CORE_AUTO_SECS: i64 = 780;
 const SIDE_DISTRACTION_DOMINANT_SECS: i64 = 300;
 const SIDE_DISTRACTION_MAX_FOR_AUTO_CORE: i64 = 60;
 const VISION_CONFIDENCE_MIN: f64 = 0.7;
+const LEGAL_VISION_CATEGORIES: &[&str] = &[
+    "core_research",
+    "research_support",
+    "admin",
+    "side_project",
+    "distraction",
+    "break_away",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisionMatchContext {
+    pub app: String,
+    pub title: String,
+    pub document_path: Option<String>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VisionResult {
     pub wants_core: bool,
     pub confidence: f64,
-    pub context_app: Option<String>,
+    pub match_context: Option<VisionMatchContext>,
     pub category: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisionParseError {
+    InvalidJson,
+    InvalidCategory,
+    InvalidConfidence,
+    InvalidReason,
+}
+
+pub fn parse_vision_json(
+    json: &str,
+    match_context: Option<VisionMatchContext>,
+) -> Result<VisionResult, VisionParseError> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| VisionParseError::InvalidJson)?;
+    let obj = value
+        .as_object()
+        .ok_or(VisionParseError::InvalidJson)?;
+
+    let category = match obj.get("category") {
+        Some(serde_json::Value::String(s)) if LEGAL_VISION_CATEGORIES.contains(&s.as_str()) => {
+            s.clone()
+        }
+        _ => return Err(VisionParseError::InvalidCategory),
+    };
+
+    let confidence = match obj.get("confidence") {
+        Some(serde_json::Value::Number(n)) => n
+            .as_f64()
+            .ok_or(VisionParseError::InvalidConfidence)?,
+        _ => return Err(VisionParseError::InvalidConfidence),
+    };
+    if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
+        return Err(VisionParseError::InvalidConfidence);
+    }
+
+    match obj.get("reason") {
+        None | Some(serde_json::Value::String(_)) => {}
+        _ => return Err(VisionParseError::InvalidReason),
+    }
+
+    Ok(VisionResult {
+        wants_core: category == "core_research",
+        confidence,
+        match_context,
+        category,
+    })
 }
 
 pub struct JudgeInput<'a> {
@@ -146,7 +209,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
 
         if vision_wants_core && strong_core > 0 {
             let context_matches = input.vision.as_ref().is_some_and(|v| {
-                v.context_app
+                v.match_context
                     .as_ref()
                     .is_some_and(|ctx| span_context_matches(input.samples, ctx, &spans))
             });
@@ -316,11 +379,11 @@ fn app_matches_context(sample_app: &str, context_app: &str) -> bool {
     sample_app.eq_ignore_ascii_case(context_app)
 }
 
-fn span_context_matches(samples: &[Sample], context_app: &str, spans: &[Span]) -> bool {
+fn span_context_matches(samples: &[Sample], ctx: &VisionMatchContext, spans: &[Span]) -> bool {
     spans.iter().any(|span| {
         matches!(span.kind, SpanKind::Observed(Hint::CoreCandidate | Hint::CoreReading))
             && sample_at(samples, span.start)
-                .is_some_and(|s| app_matches_context(&s.app, context_app))
+                .is_some_and(|s| app_matches_context(&s.app, &ctx.app))
     })
 }
 
@@ -333,15 +396,15 @@ fn upgrade_verified_core(input: JudgeInput<'_>, spans: &[Span]) -> i64 {
     };
 
     if !manual_core {
-        match &vision.context_app {
+        match &vision.match_context {
             None => return 0,
-            Some(context_app) => {
+            Some(ctx) => {
                 let mut total = 0_i64;
                 for span in spans {
                     let Some(sample) = sample_at(input.samples, span.start) else {
                         continue;
                     };
-                    if !app_matches_context(&sample.app, context_app) {
+                    if !app_matches_context(&sample.app, &ctx.app) {
                         continue;
                     }
                     if let SpanKind::Observed(hint) = span.kind {
@@ -442,6 +505,14 @@ mod tests {
         }
     }
 
+    fn match_ctx(app: &str, title: &str) -> Option<VisionMatchContext> {
+        Some(VisionMatchContext {
+            app: app.into(),
+            title: title.into(),
+            document_path: None,
+        })
+    }
+
     fn grid(app: &str, title: &str, start: i64, n: usize, every: i64, idle: i64) -> Vec<Sample> {
         (0..n)
             .map(|i| Sample {
@@ -475,7 +546,7 @@ mod tests {
             vision: Some(VisionResult {
                 wants_core: true,
                 confidence: 0.9,
-                context_app: Some("Isaac Sim".into()),
+                match_context: match_ctx("Isaac Sim", "robot"),
                 category: "core_research".into(),
             }),
             manual_core: None,
@@ -506,7 +577,7 @@ mod tests {
             vision: Some(VisionResult {
                 wants_core: true,
                 confidence: 0.95,
-                context_app: Some("Cursor".into()),
+                match_context: match_ctx("Cursor", "main.tex"),
                 category: "core_research".into(),
             }),
             manual_core: None,
@@ -572,7 +643,7 @@ mod tests {
             vision: Some(VisionResult {
                 wants_core: true,
                 confidence: 0.95,
-                context_app: Some("Cursor".into()),
+                match_context: match_ctx("Cursor", "main.tex"),
                 category: "core_research".into(),
             }),
             manual_core: None,
@@ -625,7 +696,7 @@ mod tests {
             vision: Some(VisionResult {
                 wants_core: true,
                 confidence: 0.9,
-                context_app: Some("WeChat".into()),
+                match_context: match_ctx("WeChat", "chat"),
                 category: "core_research".into(),
             }),
             manual_core: None,
@@ -751,7 +822,7 @@ mod tests {
             vision: Some(VisionResult {
                 wants_core: false,
                 confidence: 0.9,
-                context_app: Some("WeChat".into()),
+                match_context: match_ctx("WeChat", "chat"),
                 category: "distraction".into(),
             }),
             manual_core: None,
@@ -785,5 +856,67 @@ mod tests {
         );
         assert!(out.credited_core_seconds >= 100);
         assert!(out.activity.distraction >= 100);
+    }
+
+    #[test]
+    fn parse_legal_categories() {
+        for category in [
+            "core_research",
+            "research_support",
+            "admin",
+            "side_project",
+            "distraction",
+            "break_away",
+        ] {
+            let json = format!(
+                r#"{{"category":"{category}","confidence":0.8,"reason":""}}"#
+            );
+            let v = parse_vision_json(&json, match_ctx("Cursor", "t")).unwrap();
+            assert_eq!(v.category, category);
+            assert_eq!(v.wants_core, category == "core_research");
+            assert_eq!(v.match_context.as_ref().map(|c| c.app.as_str()), Some("Cursor"));
+        }
+    }
+
+    #[test]
+    fn parse_rejects_unknown_and_whatever() {
+        for category in ["unknown", "whatever"] {
+            let json = format!(r#"{{"category":"{category}","confidence":0.8,"reason":"x"}}"#);
+            assert_eq!(
+                parse_vision_json(&json, None),
+                Err(VisionParseError::InvalidCategory)
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_illegal_confidence() {
+        for json in [
+            r#"{"category":"core_research","confidence":1.1,"reason":""}"#,
+            r#"{"category":"core_research","confidence":-0.1,"reason":""}"#,
+            r#"{"category":"core_research","confidence":null,"reason":""}"#,
+        ] {
+            assert_eq!(
+                parse_vision_json(json, None),
+                Err(VisionParseError::InvalidConfidence)
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_null_reason_allows_empty() {
+        assert_eq!(
+            parse_vision_json(
+                r#"{"category":"core_research","confidence":0.7,"reason":null}"#,
+                None
+            ),
+            Err(VisionParseError::InvalidReason)
+        );
+        let v = parse_vision_json(
+            r#"{"category":"core_research","confidence":0.7,"reason":""}"#,
+            None,
+        )
+        .unwrap();
+        assert!(v.wants_core);
     }
 }

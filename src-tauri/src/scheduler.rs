@@ -14,7 +14,7 @@ use gamelife_core::{
     Quest, Sample, CHEST_SECS,
 };
 use gamelife_core::types::Hint;
-use gamelife_core::judge::{Dominant, JudgeOutput, VisionResult};
+use gamelife_core::judge::{Dominant, JudgeOutput, VisionMatchContext, VisionResult};
 use gamelife_core::observe::SpanKind;
 use gamelife_core::types::ActivitySeconds;
 
@@ -230,7 +230,16 @@ pub fn maybe_vision_for_gray_zone(
         return None;
     }
     let key = api_key?;
-    vision::analyze_screenshot(screenshot_path, key, Some(capture_app)).ok()
+    vision::analyze_screenshot(
+        screenshot_path,
+        key,
+        Some(VisionMatchContext {
+            app: capture_app.to_string(),
+            title: String::new(),
+            document_path: None,
+        }),
+    )
+    .ok()
 }
 
 pub fn apply_screenshot_retention(path: &Path, retention: ScreenshotRetention) {
