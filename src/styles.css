@@ -269,15 +269,98 @@ button.danger {
   text-align: left;
 }
 
+.entertainment-banner {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.entertainment-banner.active {
+  background: #dbeafe;
+  border: 1px solid #93c5fd;
+  color: #1e40af;
+}
+
+.entertainment-banner.ended {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  color: #4b5563;
+}
+
+.wish-form {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.wish-form h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
 .wish-row {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 0.75rem;
   padding: 0.75rem;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   margin-bottom: 0.5rem;
   background: #fff;
+}
+
+.wish-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.wish-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.35rem;
+}
+
+.wish-actions button.secondary {
+  background: #fff;
+  border: 1px solid #d1d5db;
+  padding: 0.35rem 0.65rem;
+  border-radius: 6px;
+}
+
+.wish-edit {
+  display: flex;
+  flex-direction: column;
+}
+
+.wish-edit label {
+  font-size: 0.85rem;
+}
+
+.wish-edit input {
+  margin-bottom: 0.5rem;
+}
+
+.redemption-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.redemption-list li {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 0.9rem;
+}
+
+.redemption-list li:last-child {
+  border-bottom: none;
 }
 
 .modal-backdrop {
@@ -311,4 +394,36 @@ button.danger {
   border: none;
   padding: 0.4rem 0.8rem;
   border-radius: 6px;
+}
+
+.toast-host {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.toast {
+  background: #1a1a1a;
+  color: #fff;
+  padding: 0.6rem 1rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  animation: toast-in 0.2s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

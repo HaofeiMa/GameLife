@@ -1,10 +1,13 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::db_error::{map_rusqlite, DbOpError};
-use gamelife_core::shop::{validate_redeem, Wish, WishKind};
+use gamelife_core::shop::{
+    can_start_entertainment, entertainment_remaining_secs, has_entertainment_timer,
+    validate_redeem, validate_wish, RedeemError, Wish, WishError, WishKind,
+};
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS heartbeat (id INTEGER PRIMARY KEY CHECK (id=1), ts INTEGER NOT NULL);
@@ -50,12 +53,22 @@ CREATE TABLE IF NOT EXISTS ledger (
   xp_delta INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS wishes (
-  id TEXT PRIMARY KEY, name TEXT, kind TEXT, price INTEGER, duration_minutes INTEGER, notes TEXT
+  id TEXT PRIMARY KEY, name TEXT, kind TEXT, price INTEGER, duration_minutes INTEGER, notes TEXT,
+  archived INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS redemptions (
   redemption_id TEXT PRIMARY KEY,
   wish_id TEXT NOT NULL,
-  ts INTEGER NOT NULL
+  ts INTEGER NOT NULL,
+  name TEXT,
+  duration_minutes INTEGER
+);
+CREATE TABLE IF NOT EXISTS entertainment_sessions (
+  redemption_id TEXT PRIMARY KEY,
+  wish_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ends_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS freeze_uses (
   protected_date TEXT PRIMARY KEY
@@ -110,6 +123,19 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
         conn.pragma_update(None, "user_version", TARGET_USER_VERSION)
             .map_err(map_rusqlite)?;
     }
+    add_column_if_missing(conn, "wishes", "archived", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(conn, "redemptions", "name", "TEXT")?;
+    add_column_if_missing(conn, "redemptions", "duration_minutes", "INTEGER")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS entertainment_sessions (
+           redemption_id TEXT PRIMARY KEY,
+           wish_id TEXT NOT NULL,
+           name TEXT NOT NULL,
+           started_at INTEGER NOT NULL,
+           ends_at INTEGER NOT NULL
+         );",
+    )
+    .map_err(map_rusqlite)?;
     Ok(())
 }
 
@@ -210,14 +236,210 @@ pub fn insert_ledger(
     Ok(())
 }
 
+fn map_wish_error(e: WishError) -> DbOpError {
+    match e {
+        WishError::EmptyName => DbOpError::Rejected("empty_name".into()),
+        WishError::NameTooLong => DbOpError::Rejected("name_too_long".into()),
+        WishError::NonPositivePrice => DbOpError::Rejected("non_positive_price".into()),
+        WishError::EntertainmentNeedsDuration => {
+            DbOpError::Rejected("entertainment_needs_duration".into())
+        }
+        WishError::CoinMustNotHaveDuration => {
+            DbOpError::Rejected("coin_must_not_have_duration".into())
+        }
+    }
+}
+
+fn parse_wish_kind(kind: &str, duration: Option<i64>) -> Result<WishKind, DbOpError> {
+    match kind {
+        "coin" => {
+            if duration.is_some() {
+                return Err(DbOpError::Rejected("coin_must_not_have_duration".into()));
+            }
+            Ok(WishKind::Coin)
+        }
+        "xp" => Ok(WishKind::Xp {
+            duration_minutes: duration,
+        }),
+        _ => Err(DbOpError::Rejected("invalid_kind".into())),
+    }
+}
+
+pub fn insert_wish(
+    conn: &Connection,
+    wish_id: &str,
+    name: &str,
+    kind: &str,
+    price: i64,
+    duration: Option<i64>,
+) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let wish_kind = parse_wish_kind(kind, duration)?;
+    validate_wish(name, &wish_kind, price).map_err(map_wish_error)?;
+    let kind_str = match &wish_kind {
+        WishKind::Coin => "coin",
+        WishKind::Xp { .. } => "xp",
+    };
+    let duration_minutes = match &wish_kind {
+        WishKind::Coin => None,
+        WishKind::Xp { duration_minutes } => *duration_minutes,
+    };
+    conn.execute(
+        "INSERT INTO wishes (id, name, kind, price, duration_minutes, archived) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        params![wish_id, name.trim(), kind_str, price, duration_minutes],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+pub fn update_wish(
+    conn: &Connection,
+    wish_id: &str,
+    name: &str,
+    price: i64,
+    duration: Option<i64>,
+) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let row: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT kind, COALESCE(archived, 0) FROM wishes WHERE id = ?1",
+            [wish_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    let (kind_str, archived) =
+        row.ok_or_else(|| DbOpError::Rejected("wish_missing".into()))?;
+    if archived != 0 {
+        return Err(DbOpError::Rejected("wish_archived".into()));
+    }
+    let wish_kind = if kind_str == "coin" {
+        if duration.is_some() {
+            return Err(DbOpError::Rejected("coin_must_not_have_duration".into()));
+        }
+        WishKind::Coin
+    } else {
+        WishKind::Xp {
+            duration_minutes: duration,
+        }
+    };
+    validate_wish(name, &wish_kind, price).map_err(map_wish_error)?;
+    let duration_minutes = match &wish_kind {
+        WishKind::Coin => None,
+        WishKind::Xp { duration_minutes } => *duration_minutes,
+    };
+    let n = conn
+        .execute(
+            "UPDATE wishes SET name = ?1, price = ?2, duration_minutes = ?3
+             WHERE id = ?4 AND COALESCE(archived, 0) = 0",
+            params![name.trim(), price, duration_minutes, wish_id],
+        )
+        .map_err(map_rusqlite)?;
+    if n == 0 {
+        return Err(DbOpError::Rejected("wish_missing".into()));
+    }
+    Ok(())
+}
+
+pub fn archive_wish(conn: &Connection, wish_id: &str) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let n = conn
+        .execute(
+            "UPDATE wishes SET archived = 1 WHERE id = ?1",
+            [wish_id],
+        )
+        .map_err(map_rusqlite)?;
+    if n == 0 {
+        return Err(DbOpError::Rejected("wish_missing".into()));
+    }
+    Ok(())
+}
+
+pub fn load_active_session(
+    conn: &Connection,
+    now: i64,
+) -> Result<Option<(String, i64, i64)>, DbOpError> {
+    let row: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT name, ends_at FROM entertainment_sessions
+             WHERE ends_at > ?1
+             ORDER BY ends_at DESC LIMIT 1",
+            [now],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    Ok(row.map(|(name, ends_at)| {
+        (name, ends_at, entertainment_remaining_secs(now, ends_at))
+    }))
+}
+
+fn map_redeem_error(e: RedeemError) -> DbOpError {
+    match e {
+        RedeemError::ShopLocked => DbOpError::Rejected("shop_locked".into()),
+        RedeemError::Insufficient => DbOpError::Rejected("insufficient".into()),
+        RedeemError::EntertainmentNeedsDuration => {
+            DbOpError::Rejected("entertainment_needs_duration".into())
+        }
+        RedeemError::EntertainmentInProgress => {
+            DbOpError::Rejected("entertainment_in_progress".into())
+        }
+        RedeemError::WishArchived => DbOpError::Rejected("wish_archived".into()),
+        RedeemError::WishMissing => DbOpError::Rejected("wish_missing".into()),
+        RedeemError::FinalSlotImmutable => DbOpError::Fatal("final".into()),
+    }
+}
+
+fn begin_write_tx(conn: &mut Connection) -> Result<Transaction<'_>, DbOpError> {
+    conn.transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_rusqlite)
+}
+
+fn reject_if_multiple_active_sessions(
+    tx: &Transaction<'_>,
+    now: i64,
+) -> Result<(), DbOpError> {
+    let n: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM entertainment_sessions WHERE ends_at > ?1",
+            [now],
+            |r| r.get(0),
+        )
+        .map_err(map_rusqlite)?;
+    if n > 1 {
+        Err(DbOpError::Rejected("entertainment_in_progress".into()))
+    } else {
+        Ok(())
+    }
+}
+
+fn insert_entertainment_session(
+    tx: &Transaction<'_>,
+    redemption_id: &str,
+    wish_id: &str,
+    name: &str,
+    now: i64,
+    duration_minutes: i64,
+) -> Result<(), DbOpError> {
+    let ends_at = now + duration_minutes * 60;
+    tx.execute(
+        "INSERT INTO entertainment_sessions (redemption_id, wish_id, name, started_at, ends_at) VALUES (?1,?2,?3,?4,?5)",
+        params![redemption_id, wish_id, name, now, ends_at],
+    )
+    .map_err(map_rusqlite)?;
+    reject_if_multiple_active_sessions(tx, now)
+}
+
 pub fn redeem(
     conn: &mut Connection,
     credited_today: i64,
     day: &str,
     wish: &Wish,
+    wish_name: &str,
+    now: i64,
     redemption_id: &str,
 ) -> Result<(), DbOpError> {
-    let tx = conn.transaction().map_err(map_rusqlite)?;
+    let tx = begin_write_tx(conn)?;
     let coin: i64 = tx
         .query_row("SELECT COALESCE(SUM(coin_delta),0) FROM ledger", [], |r| r.get(0))
         .map_err(map_rusqlite)?;
@@ -228,15 +450,36 @@ pub fn redeem(
             |r| r.get(0),
         )
         .map_err(map_rusqlite)?;
-    validate_redeem(credited_today, coin, xp, wish)
-        .map_err(|_| DbOpError::Fatal("redeem".into()))?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let redemption_exists: bool = tx
+        .query_row(
+            "SELECT 1 FROM redemptions WHERE redemption_id = ?1",
+            [redemption_id],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(map_rusqlite)?
+        .is_some();
+    if redemption_exists {
+        return Err(DbOpError::AlreadyApplied);
+    }
+    validate_redeem(credited_today, coin, xp, wish).map_err(map_redeem_error)?;
+    let active_ends_at: Option<i64> = tx
+        .query_row(
+            "SELECT MAX(ends_at) FROM entertainment_sessions",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(map_rusqlite)?;
+    if has_entertainment_timer(&wish.kind) && !can_start_entertainment(now, active_ends_at) {
+        return Err(DbOpError::Rejected("entertainment_in_progress".into()));
+    }
+    let duration_minutes = match &wish.kind {
+        WishKind::Xp { duration_minutes } => duration_minutes,
+        WishKind::Coin => &None,
+    };
     tx.execute(
-        "INSERT INTO redemptions (redemption_id, wish_id, ts) VALUES (?1,?2,?3)",
-        params![redemption_id, wish.id, now],
+        "INSERT INTO redemptions (redemption_id, wish_id, ts, name, duration_minutes) VALUES (?1,?2,?3,?4,?5)",
+        params![redemption_id, wish.id, now, wish_name, duration_minutes],
     )
     .map_err(map_rusqlite)?;
     let key = format!("shop_spend:{redemption_id}");
@@ -249,6 +492,15 @@ pub fn redeem(
         params![key, day, now, c, x],
     )
     .map_err(map_rusqlite)?;
+    if has_entertainment_timer(&wish.kind) {
+        let duration = match &wish.kind {
+            WishKind::Xp {
+                duration_minutes: Some(d),
+            } => *d,
+            _ => unreachable!(),
+        };
+        insert_entertainment_session(&tx, redemption_id, &wish.id, wish_name, now, duration)?;
+    }
     tx.commit().map_err(map_rusqlite)?;
     Ok(())
 }
@@ -326,6 +578,16 @@ mod tests {
         }
     }
 
+    fn timed_xp(price: i64) -> gamelife_core::shop::Wish {
+        gamelife_core::shop::Wish {
+            id: "video".into(),
+            kind: gamelife_core::shop::WishKind::Xp {
+                duration_minutes: Some(30),
+            },
+            price,
+        }
+    }
+
     #[test]
     fn redeem_same_id_twice_is_already_applied_and_xp_spent_once() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -333,10 +595,25 @@ mod tests {
         let day = "2026-09-10";
         insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
         let wish = xp_wish(10);
-        redeem(&mut conn, 3600, day, &wish, "r1").unwrap();
-        let e = redeem(&mut conn, 3600, day, &wish, "r1").unwrap_err();
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap_err();
         assert!(matches!(e, DbOpError::AlreadyApplied));
         assert_eq!(xp_sum(&conn, day), 40);
+    }
+
+    #[test]
+    fn redeem_retry_same_id_after_insufficient_balance_returns_already_applied() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let wish = xp_wish(40);
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap_err();
+        assert_eq!(e, DbOpError::AlreadyApplied);
+        assert_eq!(xp_sum(&conn, day), 10);
     }
 
     #[test]
@@ -346,10 +623,145 @@ mod tests {
         let day = "2026-09-10";
         insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
         let wish = xp_wish(40);
-        redeem(&mut conn, 3600, day, &wish, "r1").unwrap();
-        let e = redeem(&mut conn, 3600, day, &wish, "r2").unwrap_err();
-        assert!(matches!(e, DbOpError::Fatal(_)));
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r2").unwrap_err();
+        assert_eq!(e, DbOpError::Rejected("insufficient".into()));
         assert_eq!(xp_sum(&conn, day), 10);
+    }
+
+    #[test]
+    fn timed_redeem_writes_session_and_blocks_second() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        let ends: i64 = conn
+            .query_row(
+                "SELECT ends_at FROM entertainment_sessions WHERE redemption_id='r1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ends, now + 30 * 60);
+        let e = redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now + 10, "r2")
+            .unwrap_err();
+        assert_eq!(e, DbOpError::Rejected("entertainment_in_progress".into()));
+        assert_eq!(xp_sum(&conn, day), 40);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn coin_redeem_skips_session_and_expired_allows_new() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_coin:2026-09-10:1", day, 20, 0).unwrap();
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        let coin = gamelife_core::shop::Wish {
+            id: "mug".into(),
+            kind: gamelife_core::shop::WishKind::Coin,
+            price: 5,
+        };
+        redeem(&mut conn, 3600, day, &coin, "杯子", now, "c1").unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        redeem(
+            &mut conn,
+            3600,
+            day,
+            &timed_xp(10),
+            "视频",
+            now + 30 * 60,
+            "r2",
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn same_redemption_id_does_not_insert_second_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1")
+            .unwrap_err();
+        assert!(matches!(e, DbOpError::AlreadyApplied));
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(xp_sum(&conn, day), 40);
+    }
+
+    #[test]
+    fn begin_write_tx_is_immediate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock.db");
+        let mut a = Connection::open(&path).unwrap();
+        let mut b = Connection::open(&path).unwrap();
+        a.busy_timeout(std::time::Duration::from_millis(0)).unwrap();
+        b.busy_timeout(std::time::Duration::from_millis(0)).unwrap();
+        migrate(&a).unwrap();
+        let _tx = begin_write_tx(&mut a).unwrap();
+        let err = begin_write_tx(&mut b).unwrap_err();
+        assert_eq!(err, DbOpError::Busy);
+    }
+
+    #[test]
+    fn overlapping_session_insert_rolls_back_when_count_exceeds_one() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let now = 1_700_000_000i64;
+        {
+            let tx = begin_write_tx(&mut conn).unwrap();
+            insert_entertainment_session(&tx, "r1", "video", "视频", now, 30).unwrap();
+            let e = insert_entertainment_session(&tx, "r2", "video", "视频", now, 30)
+                .unwrap_err();
+            assert_eq!(e, DbOpError::Rejected("entertainment_in_progress".into()));
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn timed_redeem_second_uuid_on_other_connection_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("two-conn.db");
+        let mut a = open(&path).unwrap();
+        migrate(&a).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&a, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        redeem(&mut a, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        let mut b = open(&path).unwrap();
+        let e = redeem(&mut b, 3600, day, &timed_xp(10), "视频", now + 10, "r2")
+            .unwrap_err();
+        assert_eq!(e, DbOpError::Rejected("entertainment_in_progress".into()));
+        assert_eq!(xp_sum(&b, day), 40);
+        let n: i64 = b
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     fn user_version(conn: &Connection) -> i32 {
@@ -368,6 +780,36 @@ mod tests {
     }
 
     #[test]
+    fn migrate_adds_archived_and_sessions_on_existing_user_version_1() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE wishes (
+               id TEXT PRIMARY KEY, name TEXT, kind TEXT, price INTEGER,
+               duration_minutes INTEGER, notes TEXT
+             );
+             CREATE TABLE redemptions (
+               redemption_id TEXT PRIMARY KEY, wish_id TEXT NOT NULL, ts INTEGER NOT NULL
+             );
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let wishes = column_names(&conn, "wishes");
+        assert!(wishes.iter().any(|c| c == "archived"));
+        let redemptions = column_names(&conn, "redemptions");
+        assert!(redemptions.iter().any(|c| c == "name"));
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entertainment_sessions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(user_version(&conn), 1);
+    }
+
+    #[test]
     fn migrate_new_db_sets_user_version_1() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
@@ -383,6 +825,42 @@ mod tests {
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_meta'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn load_active_session_tracks_timed_redeem_until_ends_at() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        let ends_at = now + 30 * 60;
+        let during = load_active_session(&conn, now + 100).unwrap();
+        assert_eq!(
+            during,
+            Some(("视频".into(), ends_at, ends_at - (now + 100)))
+        );
+        assert_eq!(load_active_session(&conn, ends_at).unwrap(), None);
+        assert_eq!(load_active_session(&conn, ends_at + 1).unwrap(), None);
+    }
+
+    #[test]
+    fn insert_and_archive_wish_hides_from_active_list() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        insert_wish(&conn, "w1", "视频", "xp", 10, Some(30)).unwrap();
+        insert_wish(&conn, "w2", "咖啡", "coin", 3, None).unwrap();
+        assert!(insert_wish(&conn, "w3", "视频", "xp", 10, None).is_err());
+        archive_wish(&conn, "w1").unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wishes WHERE COALESCE(archived,0)=0",
                 [],
                 |r| r.get(0),
             )

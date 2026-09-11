@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod document;
 pub mod early_start;
+pub mod feel;
 pub mod r#const;
 pub mod format;
 pub mod heartbeat;
@@ -20,6 +21,7 @@ pub mod weekly;
 
 pub use capture::{CaptureStatus, capture_on_resume, schedule_capture};
 pub use early_start::{early_start_anchor, early_start_coins_for_local_secs};
+pub use feel::{FeelNotice, LedgerSlice, coalesce_feel_events};
 pub use r#const::*;
 pub use format::format_estimated_minutes;
 pub use heartbeat::heartbeat_unobserved;
@@ -42,7 +44,9 @@ pub use quest::{
     quest_list_has_evidence, vision_quest_label,
 };
 pub use shop::{
-    RedeemError, Wish, WishKind, validate_redeem, xp_shop_unlocked,
+    RedeemError, Wish, WishError, WishKind, can_start_entertainment,
+    entertainment_remaining_secs, has_entertainment_timer, tray_entertainment_minutes,
+    validate_redeem, validate_wish, xp_shop_unlocked,
 };
 pub use streak::{
     DayOutcome, FREEZE_PER_MONTH, can_use_freeze, freeze_month_key, freeze_quota_used,

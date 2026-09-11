@@ -9,11 +9,14 @@ use gamelife_core::{
     format_estimated_minutes, matched_quest_index, matches_app_identity, sum_activity,
     xp_shop_unlocked, QuestDraft, CHEST_SECS, GOLD_DAY_SECS,
 };
-use gamelife_core::shop::{Wish, WishKind};
+use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
 
 use crate::config::{load_settings, retention_from_str, save_settings as write_settings_file, AppSettings};
-use crate::db::{migrate, open, redeem as db_redeem};
+use crate::db::{
+    archive_wish as db_archive_wish, insert_wish as db_insert_wish, load_active_session, migrate,
+    open, redeem as db_redeem, update_wish as db_update_wish,
+};
 use crate::db_error::DbOpError;
 use crate::keychain::{
     get_openai_api_key, get_provider_api_key, set_openai_api_key,
@@ -32,6 +35,28 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn map_db_err(e: DbOpError) -> String {
+    match e {
+        DbOpError::Rejected(code) => code,
+        DbOpError::AlreadyApplied => "already_applied".into(),
+        other => format!("{other:?}"),
+    }
+}
+
+fn with_db_err<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce(&mut Connection) -> Result<T, DbOpError>,
+{
+    let path = crate::db::app_db_path().ok_or_else(|| "home dir".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create db dir: {e}"))?;
+    }
+    let mut conn = open(&path).map_err(|e| format!("{e:?}"))?;
+    migrate(&conn).map_err(|e| format!("{e:?}"))?;
+    crate::scheduler::seed_default_policy_if_needed(&conn).map_err(|e| format!("{e:?}"))?;
+    f(&mut conn).map_err(map_db_err)
 }
 
 fn with_db<F, T>(f: F) -> Result<T, String>
@@ -97,6 +122,14 @@ pub struct QuestView {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EntertainmentView {
+    pub name: String,
+    pub ends_at: i64,
+    pub remaining_secs: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LiveWindow {
     pub app: String,
     pub title: String,
@@ -104,6 +137,29 @@ pub struct LiveWindow {
     pub url: Option<String>,
     pub matched_quest_index: Option<usize>,
     pub trusted: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndedEntertainmentView {
+    pub name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerTailRow {
+    pub key: String,
+    pub coin: i64,
+    pub xp: i64,
+    pub ts: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedemptionView {
+    pub id: String,
+    pub name: String,
+    pub ts: i64,
 }
 
 #[derive(Serialize)]
@@ -127,6 +183,9 @@ pub struct TodayView {
     pub first_core_label: Option<String>,
     pub slots: Vec<TodaySlot>,
     pub gold_day: bool,
+    pub active_entertainment: Option<EntertainmentView>,
+    pub ended_entertainment: Option<EndedEntertainmentView>,
+    pub ledger_tail: Vec<LedgerTailRow>,
 }
 
 #[derive(Serialize)]
@@ -144,6 +203,9 @@ pub struct WeekView {
     pub coin_balance: i64,
     pub xp_today: i64,
     pub xp_shop_unlocked: bool,
+    pub active_entertainment: Option<EntertainmentView>,
+    pub ended_entertainment: Option<EndedEntertainmentView>,
+    pub redemptions: Vec<RedemptionView>,
 }
 
 #[derive(Serialize)]
@@ -230,12 +292,17 @@ fn activity_summary(a: &ActivitySeconds) -> String {
 
 pub fn tray_tooltip_for_today_db() -> Result<String, String> {
     with_db(|conn| {
-        let day = day_str_for_ts(now_secs());
-        tray_tooltip_for_today(conn, &day)
+        let now = now_secs();
+        let day = day_str_for_ts(now);
+        tray_tooltip_for_today(conn, &day, now)
     })
 }
 
-pub fn tray_tooltip_for_today(conn: &Connection, day: &str) -> Result<String, DbOpError> {
+pub fn tray_tooltip_for_today(
+    conn: &Connection,
+    day: &str,
+    now: i64,
+) -> Result<String, DbOpError> {
     let credited_seconds: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(credited_core_seconds), 0) FROM slots
@@ -244,10 +311,89 @@ pub fn tray_tooltip_for_today(conn: &Connection, day: &str) -> Result<String, Db
             |r| r.get(0),
         )
         .map_err(crate::db_error::map_rusqlite)?;
-    Ok(format!(
+    let mut label = format!(
         "{} / 8h",
         format_estimated_minutes(credited_seconds)
-    ))
+    );
+    if let Some((name, _ends_at, remaining)) = load_active_session(conn, now)? {
+        if let Some(mins) = tray_entertainment_minutes(remaining) {
+            label = format!("{label} · {name} {mins}m");
+        }
+    }
+    Ok(label)
+}
+
+fn load_active_entertainment(
+    conn: &Connection,
+    now: i64,
+) -> Result<Option<EntertainmentView>, DbOpError> {
+    Ok(load_active_session(conn, now)?.map(|(name, ends_at, remaining_secs)| EntertainmentView {
+        name,
+        ends_at,
+        remaining_secs,
+    }))
+}
+
+fn load_ended_entertainment(
+    conn: &Connection,
+    now: i64,
+    has_active: bool,
+) -> Result<Option<EndedEntertainmentView>, DbOpError> {
+    if has_active {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT name FROM entertainment_sessions
+         WHERE ends_at <= ?1 ORDER BY ends_at DESC LIMIT 1",
+        [now],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(crate::db_error::map_rusqlite)
+    .map(|name| name.map(|name| EndedEntertainmentView { name }))
+}
+
+fn load_ledger_tail(conn: &Connection, day: &str) -> Result<Vec<LedgerTailRow>, DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT reward_event_key, coin_delta, xp_delta, ts FROM ledger
+             WHERE day = ?1 ORDER BY ts, reward_event_key",
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let rows = stmt
+        .query_map(params![day], |r| {
+            Ok(LedgerTailRow {
+                key: r.get(0)?,
+                coin: r.get(1)?,
+                xp: r.get(2)?,
+                ts: r.get(3)?,
+            })
+        })
+        .map_err(crate::db_error::map_rusqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(crate::db_error::map_rusqlite)
+}
+
+fn load_redemptions(conn: &Connection) -> Result<Vec<RedemptionView>, DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.redemption_id, COALESCE(r.name, w.name, ''), r.ts
+             FROM redemptions r
+             LEFT JOIN wishes w ON r.wish_id = w.id
+             ORDER BY r.ts DESC LIMIT 20",
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(RedemptionView {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                ts: r.get(2)?,
+            })
+        })
+        .map_err(crate::db_error::map_rusqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(crate::db_error::map_rusqlite)
 }
 
 fn week_start_for(date: NaiveDate) -> NaiveDate {
@@ -255,7 +401,7 @@ fn week_start_for(date: NaiveDate) -> NaiveDate {
     date - chrono::Duration::days(offset as i64)
 }
 
-fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
+fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOpError> {
     let quests = load_quests_for_day(conn, day)?;
     let quest_views: Vec<QuestView> = quests
         .iter()
@@ -381,6 +527,10 @@ fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
     let gold_day = credited_seconds >= i64::try_from(GOLD_DAY_SECS).unwrap_or(28800);
     let freeze_candidates = list_freeze_candidates(conn)?;
     let default_freeze_date = freeze_candidates.first().cloned();
+    let active_entertainment = load_active_entertainment(conn, now)?;
+    let ended_entertainment =
+        load_ended_entertainment(conn, now, active_entertainment.is_some())?;
+    let ledger_tail = load_ledger_tail(conn, day)?;
     Ok(TodayView {
         day: day.to_string(),
         quests: quest_views,
@@ -408,6 +558,9 @@ fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
         first_core_label,
         slots,
         gold_day,
+        active_entertainment,
+        ended_entertainment,
+        ledger_tail,
     })
 }
 
@@ -439,7 +592,8 @@ fn first_core_label_for_day(
 fn load_wishes(conn: &Connection) -> Result<Vec<WishView>, DbOpError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, kind, price, duration_minutes FROM wishes ORDER BY name",
+            "SELECT id, name, kind, price, duration_minutes FROM wishes
+             WHERE COALESCE(archived, 0) = 0 ORDER BY name",
         )
         .map_err(crate::db_error::map_rusqlite)?;
     let rows = stmt
@@ -457,7 +611,7 @@ fn load_wishes(conn: &Connection) -> Result<Vec<WishView>, DbOpError> {
         .map_err(crate::db_error::map_rusqlite)
 }
 
-fn build_week(conn: &Connection, today: &str) -> Result<WeekView, DbOpError> {
+fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOpError> {
     let today_date =
         NaiveDate::parse_from_str(today, "%Y-%m-%d").map_err(|e| DbOpError::Fatal(e.to_string()))?;
     let week_start = week_start_for(today_date);
@@ -512,6 +666,10 @@ fn build_week(conn: &Connection, today: &str) -> Result<WeekView, DbOpError> {
         )
         .map_err(crate::db_error::map_rusqlite)?;
     let wishes = load_wishes(conn)?;
+    let active_entertainment = load_active_entertainment(conn, now)?;
+    let ended_entertainment =
+        load_ended_entertainment(conn, now, active_entertainment.is_some())?;
+    let redemptions = load_redemptions(conn)?;
     Ok(WeekView {
         core: secs_to_minutes(total.core),
         support: secs_to_minutes(total.support),
@@ -525,22 +683,27 @@ fn build_week(conn: &Connection, today: &str) -> Result<WeekView, DbOpError> {
         coin_balance,
         xp_today,
         xp_shop_unlocked: xp_shop_unlocked(credited_today),
+        active_entertainment,
+        ended_entertainment,
+        redemptions,
     })
 }
 
 #[tauri::command]
 pub fn get_today() -> Result<TodayView, String> {
     with_db(|conn| {
-        let day = day_str_for_ts(now_secs());
-        build_today(conn, &day)
+        let now = now_secs();
+        let day = day_str_for_ts(now);
+        build_today(conn, &day, now)
     })
 }
 
 #[tauri::command]
 pub fn get_week() -> Result<WeekView, String> {
     with_db(|conn| {
-        let day = day_str_for_ts(now_secs());
-        build_week(conn, &day)
+        let now = now_secs();
+        let day = day_str_for_ts(now);
+        build_week(conn, &day, now)
     })
 }
 
@@ -623,6 +786,44 @@ pub fn get_permission_status() -> PermissionStatus {
     }
 }
 
+fn load_wish_for_redeem(conn: &Connection, wish_id: &str) -> Result<(Wish, String), DbOpError> {
+    let row = conn
+        .query_row(
+            "SELECT id, name, kind, price, duration_minutes, COALESCE(archived, 0)
+             FROM wishes WHERE id = ?1",
+            params![wish_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(crate::db_error::map_rusqlite)?
+        .ok_or_else(|| DbOpError::Rejected("wish_missing".into()))?;
+    let (id, name, kind, price, duration, archived) = row;
+    if archived != 0 {
+        return Err(DbOpError::Rejected("wish_archived".into()));
+    }
+    let wish = Wish {
+        id,
+        kind: if kind == "coin" {
+            WishKind::Coin
+        } else {
+            WishKind::Xp {
+                duration_minutes: duration,
+            }
+        },
+        price,
+    };
+    Ok((wish, name))
+}
+
 #[tauri::command]
 pub fn request_screen_recording() -> bool {
     macos::request_screen_recording()
@@ -630,7 +831,7 @@ pub fn request_screen_recording() -> bool {
 
 #[tauri::command]
 pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
-    with_db(|conn| {
+    with_db_err(|conn| {
         let day = day_str_for_ts(now_secs());
         let credited_today: i64 = conn
             .query_row(
@@ -640,36 +841,43 @@ pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
                 |r| r.get(0),
             )
             .map_err(crate::db_error::map_rusqlite)?;
-        let row = conn
-            .query_row(
-                "SELECT id, kind, price, duration_minutes FROM wishes WHERE id = ?1",
-                params![wish_id],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, Option<i64>>(3)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(crate::db_error::map_rusqlite)?
-            .ok_or_else(|| DbOpError::Fatal("wish missing".into()))?;
-        let (id, kind, price, duration) = row;
-        let wish = Wish {
-            id,
-            kind: if kind == "coin" {
-                WishKind::Coin
-            } else {
-                WishKind::Xp {
-                    duration_minutes: duration,
-                }
-            },
-            price,
-        };
-        db_redeem(conn, credited_today, &day, &wish, &redemption_id)
+        let (wish, name) = load_wish_for_redeem(conn, &wish_id)?;
+        db_redeem(
+            conn,
+            credited_today,
+            &day,
+            &wish,
+            &name,
+            now_secs(),
+            &redemption_id,
+        )
     })
+}
+
+#[tauri::command]
+pub fn create_wish(
+    id: String,
+    name: String,
+    kind: String,
+    price: i64,
+    duration_minutes: Option<i64>,
+) -> Result<(), String> {
+    with_db_err(|conn| db_insert_wish(conn, &id, &name, &kind, price, duration_minutes))
+}
+
+#[tauri::command]
+pub fn update_wish(
+    id: String,
+    name: String,
+    price: i64,
+    duration_minutes: Option<i64>,
+) -> Result<(), String> {
+    with_db_err(|conn| db_update_wish(conn, &id, &name, price, duration_minutes))
+}
+
+#[tauri::command]
+pub fn archive_wish(id: String) -> Result<(), String> {
+    with_db_err(|conn| db_archive_wish(conn, &id))
 }
 
 #[tauri::command]
@@ -746,7 +954,23 @@ pub fn provider_key_status() -> Result<ProviderKeyStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{insert_ledger, migrate};
+    use crate::db::{archive_wish, insert_ledger, insert_wish, migrate};
+
+    #[test]
+    fn load_wish_for_redeem_rejects_archived_and_missing() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        insert_wish(&conn, "w1", "视频", "xp", 10, Some(30)).unwrap();
+        archive_wish(&conn, "w1").unwrap();
+
+        let archived = load_wish_for_redeem(&conn, "w1").unwrap_err();
+        assert_eq!(archived, DbOpError::Rejected("wish_archived".into()));
+        assert_eq!(map_db_err(archived), "wish_archived");
+
+        let missing = load_wish_for_redeem(&conn, "missing").unwrap_err();
+        assert_eq!(missing, DbOpError::Rejected("wish_missing".into()));
+        assert_eq!(map_db_err(missing), "wish_missing");
+    }
 
     #[test]
     fn report_misclassification_does_not_change_ledger_sum() {
@@ -795,7 +1019,8 @@ mod tests {
             [],
         )
         .unwrap();
-        let view = build_today(&conn, "2026-09-11").expect("open slot must not fail get_today");
+        let view =
+            build_today(&conn, "2026-09-11", 1_789_091_100).expect("open slot must not fail get_today");
         assert_eq!(view.slots.len(), 1);
         assert_eq!(view.slots[0].credited_minutes, 0);
         assert!(!view.slots[0].is_final);
@@ -811,7 +1036,8 @@ mod tests {
             [],
         )
         .unwrap();
-        let view = build_week(&conn, "2026-09-11").expect("open slot must not fail get_week");
+        let view =
+            build_week(&conn, "2026-09-11", 1_789_091_100).expect("open slot must not fail get_week");
         assert_eq!(view.unobserved, 0);
     }
 
@@ -853,7 +1079,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let view = build_today(&conn, day).unwrap();
+        let view = build_today(&conn, day, 10).unwrap();
         assert_eq!(view.quests[0].text, "HDP");
         assert_eq!(view.live.as_ref().unwrap().matched_quest_index, Some(0));
         assert!(view.live.as_ref().unwrap().trusted);
@@ -863,8 +1089,29 @@ mod tests {
     fn today_live_null_without_samples() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        let view = build_today(&conn, "2026-09-11").unwrap();
+        let view = build_today(&conn, "2026-09-11", 0).unwrap();
         assert!(view.live.is_none());
         assert!(view.previous_workday.is_none());
+    }
+
+    #[test]
+    fn tray_appends_entertainment_minutes() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        let wish = Wish {
+            id: "video".into(),
+            kind: WishKind::Xp {
+                duration_minutes: Some(30),
+            },
+            price: 10,
+        };
+        crate::db::redeem(&mut conn, 3600, day, &wish, "视频", now, "r1").unwrap();
+        let label = tray_tooltip_for_today(&conn, day, now + 12 * 60).unwrap();
+        assert!(label.ends_with(" · 视频 18m"), "{label}");
+        let label_done = tray_tooltip_for_today(&conn, day, now + 30 * 60).unwrap();
+        assert!(!label_done.contains("视频"), "{label_done}");
     }
 }
