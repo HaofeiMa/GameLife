@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod document;
 pub mod early_start;
 pub mod r#const;
 pub mod format;
@@ -40,4 +41,5 @@ pub use streak::{
 pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
 pub use url::strip_url_query_fragment;
+pub use document::normalize_document_path;
 pub use weekly::sum_activity;
