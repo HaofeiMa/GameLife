@@ -104,22 +104,27 @@ impl PauseControl {
 
 pub struct MacSampleSource {
     paused: Arc<AtomicBool>,
+    pub(crate) last: crate::macos::ObservationState,
 }
 
 impl MacSampleSource {
     pub fn new(paused: Arc<AtomicBool>) -> Self {
-        Self { paused }
+        Self {
+            paused,
+            last: crate::macos::ObservationState::new(),
+        }
     }
 }
 
 impl SampleSource for MacSampleSource {
     fn observe_window(&self) -> Result<ObservedWindow, ()> {
-        let (app, title) = crate::macos::frontmost_app().unwrap_or_default();
+        let snap = crate::macos::snapshot();
+        self.last.store(snap.clone());
         Ok(ObservedWindow {
-            app,
-            title,
-            bundle_id: crate::macos::bundle_id(),
-            document_path: crate::macos::document_path(),
+            app: snap.app,
+            title: snap.title,
+            bundle_id: snap.bundle_id,
+            document_path: snap.document_raw,
         })
     }
 
@@ -144,7 +149,10 @@ impl SampleSource for MacSampleSource {
     }
 
     fn optional_browser_url(&self) -> Option<String> {
-        crate::macos::optional_browser_url()
+        let last = self.last.last()?;
+        crate::macos::url_for(last.bundle_id.as_deref(), &last.app, || {
+            crate::macos::optional_browser_url()
+        })
     }
 
     fn paused(&self) -> bool {
@@ -168,7 +176,21 @@ impl SampleSource for MacSampleSource {
     }
 
     fn capture_context(&self) -> CaptureContext {
-        crate::macos::capture_context()
+        let snap = crate::macos::snapshot();
+        self.last.store(snap.clone());
+        let url = crate::macos::url_for(snap.bundle_id.as_deref(), &snap.app, || {
+            crate::macos::optional_browser_url()
+        });
+        CaptureContext {
+            app: snap.app,
+            bundle_id: snap.bundle_id,
+            title: snap.title,
+            document_path: snap
+                .document_raw
+                .and_then(|s| normalize_document_path(&s)),
+            url,
+            secure_input: crate::macos::secure_input_on(),
+        }
     }
 }
 
@@ -724,6 +746,18 @@ mod tests {
             })
             .unwrap();
         assert_eq!(secure, 1);
+    }
+
+    #[test]
+    fn mac_source_skips_browser_fetch_for_cursor_snapshot() {
+        let paused = Arc::new(AtomicBool::new(false));
+        let src = MacSampleSource::new(paused);
+        src.last.store(crate::macos::FrontmostSnapshot {
+            app: "Cursor".into(),
+            bundle_id: Some("com.todesktop.230313mzl4w4u92".into()),
+            ..Default::default()
+        });
+        assert_eq!(src.optional_browser_url(), None);
     }
 
     #[test]
