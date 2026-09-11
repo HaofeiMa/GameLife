@@ -875,6 +875,43 @@ mod tests {
     }
 
     #[test]
+    fn title_only_quests_with_manual_core_still_force_zero_credit() {
+        let samples = grid("Isaac Sim", "robot", 0, 40, 15, 2);
+        let base = |quests: &[Quest]| {
+            judge_slot(JudgeInput {
+                slot_start: 0,
+                slot_end: 900,
+                samples: &samples,
+                quests,
+                policy: &pol(),
+                capture: CaptureStatus::Captured,
+                vision: None,
+                manual_core: Some(true),
+            })
+        };
+        let title_only = base(&[Quest {
+            text: "robot".into(),
+            evidence: vec![],
+            hero: true,
+        }]);
+        assert_eq!(
+            title_only.credited_core_seconds,
+            0,
+            "empty evidence must gate credit even when manual_core would otherwise pay"
+        );
+        let with_evidence = base(&[Quest {
+            text: "robot".into(),
+            evidence: vec!["robot".into()],
+            hero: true,
+        }]);
+        assert!(
+            with_evidence.credited_core_seconds > 60,
+            "same slot with evidence must credit manual_core, got {}",
+            with_evidence.credited_core_seconds
+        );
+    }
+
+    #[test]
     fn metadata_core_vision_wechat_is_pending() {
         let samples = grid("Cursor", "main.tex", 0, 40, 15, 2);
         let out = judge_slot(JudgeInput {
