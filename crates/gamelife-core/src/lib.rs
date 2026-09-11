@@ -29,7 +29,8 @@ pub use judge::{
 pub use ledger::{RewardEvent, admin_xp_key, support_xp_key, tick_keys_for_credited};
 pub use observe::{Span, SpanKind, observed_seconds, spans_for_slot};
 pub use policy::{
-    Policy, builtin_never_capture, builtin_side_project_rules, never_capture_removable,
+    Policy, builtin_never_capture, builtin_side_project_rules, default_reading_apps,
+    default_trusted_apps, default_v01, matches_app_identity, never_capture_removable,
 };
 pub use shop::{
     RedeemError, Wish, WishKind, validate_redeem, xp_shop_unlocked,

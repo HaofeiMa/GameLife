@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn new_milestones_returns_crossed_thresholds() {
         assert_eq!(new_milestones(2, 5), vec![3, 5]);
-        assert_eq!(new_milestones(5, 5), vec![]);
+        assert_eq!(new_milestones(5, 5), Vec::<u32>::new());
         assert_eq!(new_milestones(10, 25), vec![20]);
     }
 
