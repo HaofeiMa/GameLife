@@ -398,19 +398,28 @@ pub fn credited_core_spans(
     out
 }
 
-fn sample_at(samples: &[Sample], ts: i64) -> Option<&Sample> {
-    samples.iter().filter(|s| s.ts <= ts).max_by_key(|s| s.ts)
+fn sample_for_span<'a>(samples: &'a [Sample], span: &Span) -> Option<&'a Sample> {
+    span.sample_index.and_then(|i| samples.get(i))
 }
 
-fn app_matches_context(sample_app: &str, context_app: &str) -> bool {
-    sample_app.eq_ignore_ascii_case(context_app)
+fn span_matches_capture(sample: &Sample, ctx: &VisionMatchContext) -> bool {
+    if !sample.app.eq_ignore_ascii_case(&ctx.app) {
+        return false;
+    }
+    match (&sample.document_path, &ctx.document_path) {
+        (Some(sample_path), Some(ctx_path)) => return sample_path == ctx_path,
+        _ => {}
+    }
+    if !sample.window_title.is_empty() && !ctx.title.is_empty() {
+        return sample.window_title == ctx.title;
+    }
+    true
 }
 
 fn span_context_matches(samples: &[Sample], ctx: &VisionMatchContext, spans: &[Span]) -> bool {
     spans.iter().any(|span| {
         matches!(span.kind, SpanKind::Observed(Hint::CoreCandidate | Hint::CoreReading))
-            && sample_at(samples, span.start)
-                .is_some_and(|s| app_matches_context(&s.app, &ctx.app))
+            && sample_for_span(samples, span).is_some_and(|s| span_matches_capture(s, ctx))
     })
 }
 
@@ -428,10 +437,10 @@ fn upgrade_verified_core(input: JudgeInput<'_>, spans: &[Span]) -> i64 {
             Some(ctx) => {
                 let mut total = 0_i64;
                 for span in spans {
-                    let Some(sample) = sample_at(input.samples, span.start) else {
+                    let Some(sample) = sample_for_span(input.samples, span) else {
                         continue;
                     };
-                    if !app_matches_context(&sample.app, &ctx.app) {
+                    if !span_matches_capture(sample, ctx) {
                         continue;
                     }
                     if let SpanKind::Observed(hint) = span.kind {
@@ -945,5 +954,77 @@ mod tests {
         )
         .unwrap();
         assert!(v.wants_core);
+    }
+
+    #[test]
+    fn chrome_tensorboard_screenshot_does_not_verify_personal_site() {
+        let mut samples = Vec::new();
+        for i in 0..20 {
+            samples.push(Sample {
+                ts: i * 15,
+                app: "Google Chrome".into(),
+                window_title: "personal site".into(),
+                url: Some("https://haofei.ma/".into()),
+                document_path: None,
+                bundle_id: None,
+                idle_seconds: 1,
+                screen_locked: false,
+                paused: false,
+                secure_input: false,
+            });
+        }
+        for i in 20..60 {
+            samples.push(Sample {
+                ts: i * 15,
+                app: "Google Chrome".into(),
+                window_title: "TensorBoard".into(),
+                url: Some("http://localhost:6006/".into()),
+                document_path: None,
+                bundle_id: None,
+                idle_seconds: 1,
+                screen_locked: false,
+                paused: false,
+                secure_input: false,
+            });
+        }
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "HDP".into(),
+                keywords: vec!["HDP".into()],
+            }],
+            policy: &Policy {
+                trusted_apps: vec!["Google Chrome".into()],
+                distraction_rules: vec![],
+                side_project_rules: vec![],
+                reading_apps: vec![],
+                never_capture_apps: vec![],
+            },
+            capture: CaptureStatus::Captured,
+            vision: Some(VisionResult {
+                wants_core: true,
+                confidence: 0.9,
+                match_context: Some(VisionMatchContext {
+                    app: "Google Chrome".into(),
+                    title: "TensorBoard".into(),
+                    document_path: None,
+                }),
+                category: "core_research".into(),
+            }),
+            manual_core: None,
+        });
+        assert!(!out.pending);
+        assert!(
+            out.credited_core_seconds >= 540,
+            "TensorBoard span should be verified, got {}",
+            out.credited_core_seconds
+        );
+        assert!(
+            out.credited_core_seconds <= 650,
+            "personal-site span must not be verified, got {}",
+            out.credited_core_seconds
+        );
     }
 }
