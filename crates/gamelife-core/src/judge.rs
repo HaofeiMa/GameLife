@@ -191,7 +191,7 @@ pub fn analyze_slot_evidence(
 /// 3. credited = min(observed, actual, strong + bridge + verified); quests empty → 0
 pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     let actual = input.slot_end - input.slot_start;
-    let quests_empty = input.quests.is_empty();
+    let quests_empty = !crate::quest::quest_list_has_evidence(input.quests);
     let ev = analyze_slot_evidence(
         input.samples,
         input.policy,
@@ -844,6 +844,27 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[],
+            policy: &pol(),
+            capture: CaptureStatus::Scheduled,
+            vision: None,
+            manual_core: None,
+        });
+        assert_eq!(out.credited_core_seconds, 0);
+        assert_ne!(out.dominant, Dominant::CoreResearch);
+    }
+
+    #[test]
+    fn title_only_quests_without_evidence_force_zero_credit() {
+        let samples = grid("Cursor", "main.tex", 0, 58, 15, 2);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "paper".into(),
+                evidence: vec![],
+                hero: true,
+            }],
             policy: &pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,

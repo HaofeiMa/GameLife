@@ -73,20 +73,13 @@ fn is_core_candidate(sample: &Sample, quests: &[Quest]) -> bool {
     if is_readme_or_settings_title(&sample.window_title) {
         return false;
     }
-
-    let title_lower = sample.window_title.to_ascii_lowercase();
-    let path_lower = sample
-        .document_path
-        .as_deref()
-        .map(|p| p.to_ascii_lowercase())
-        .unwrap_or_default();
-
-    quests.iter().any(|quest| {
-        quest.evidence.iter().any(|keyword| {
-            let needle = keyword.to_ascii_lowercase();
-            title_lower.contains(&needle) || path_lower.contains(&needle)
-        })
-    })
+    crate::quest::matched_quest_index(
+        &sample.window_title,
+        sample.document_path.as_deref(),
+        sample.url.as_deref(),
+        quests,
+    )
+    .is_some()
 }
 
 fn is_readme_or_settings_title(title: &str) -> bool {
@@ -224,6 +217,41 @@ mod tests {
         assert_eq!(
             hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
             Hint::CoreCandidate
+        );
+    }
+
+    #[test]
+    fn finish_in_title_without_hdp_evidence_is_unsure() {
+        let q = [Quest {
+            text: "Finish HDP tactile ablation".into(),
+            evidence: vec!["HDP".into()],
+            hero: true,
+        }];
+        let s = sample("Cursor", "Finish notes", 5);
+        assert_eq!(hint_sample(&s, &hdp_policy(), &q, None), Hint::Unsure);
+    }
+
+    #[test]
+    fn trusted_chrome_url_evidence_is_core() {
+        let p = Policy {
+            trusted_apps: vec!["Google Chrome".into()],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+        };
+        let q = [Quest::fixture("overleaf", "overleaf.com")];
+        let mut s = sample("Google Chrome", "Overleaf", 5);
+        s.url = Some("https://overleaf.com/project/abc".into());
+        assert_eq!(hint_sample(&s, &p, &q, None), Hint::CoreCandidate);
+    }
+
+    #[test]
+    fn untrusted_app_with_evidence_in_title_is_not_core() {
+        let s = sample("WeChat", "HDP chat", 5);
+        assert_eq!(
+            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            Hint::Unsure
         );
     }
 }
