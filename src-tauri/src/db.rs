@@ -50,12 +50,22 @@ CREATE TABLE IF NOT EXISTS ledger (
   xp_delta INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS wishes (
-  id TEXT PRIMARY KEY, name TEXT, kind TEXT, price INTEGER, duration_minutes INTEGER, notes TEXT
+  id TEXT PRIMARY KEY, name TEXT, kind TEXT, price INTEGER, duration_minutes INTEGER, notes TEXT,
+  archived INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS redemptions (
   redemption_id TEXT PRIMARY KEY,
   wish_id TEXT NOT NULL,
-  ts INTEGER NOT NULL
+  ts INTEGER NOT NULL,
+  name TEXT,
+  duration_minutes INTEGER
+);
+CREATE TABLE IF NOT EXISTS entertainment_sessions (
+  redemption_id TEXT PRIMARY KEY,
+  wish_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ends_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS freeze_uses (
   protected_date TEXT PRIMARY KEY
@@ -110,6 +120,19 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
         conn.pragma_update(None, "user_version", TARGET_USER_VERSION)
             .map_err(map_rusqlite)?;
     }
+    add_column_if_missing(conn, "wishes", "archived", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(conn, "redemptions", "name", "TEXT")?;
+    add_column_if_missing(conn, "redemptions", "duration_minutes", "INTEGER")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS entertainment_sessions (
+           redemption_id TEXT PRIMARY KEY,
+           wish_id TEXT NOT NULL,
+           name TEXT NOT NULL,
+           started_at INTEGER NOT NULL,
+           ends_at INTEGER NOT NULL
+         );",
+    )
+    .map_err(map_rusqlite)?;
     Ok(())
 }
 
@@ -365,6 +388,36 @@ mod tests {
             .unwrap()
             .map(|r| r.unwrap())
             .collect()
+    }
+
+    #[test]
+    fn migrate_adds_archived_and_sessions_on_existing_user_version_1() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE wishes (
+               id TEXT PRIMARY KEY, name TEXT, kind TEXT, price INTEGER,
+               duration_minutes INTEGER, notes TEXT
+             );
+             CREATE TABLE redemptions (
+               redemption_id TEXT PRIMARY KEY, wish_id TEXT NOT NULL, ts INTEGER NOT NULL
+             );
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let wishes = column_names(&conn, "wishes");
+        assert!(wishes.iter().any(|c| c == "archived"));
+        let redemptions = column_names(&conn, "redemptions");
+        assert!(redemptions.iter().any(|c| c == "name"));
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entertainment_sessions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(user_version(&conn), 1);
     }
 
     #[test]
