@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS samples (
   ts INTEGER PRIMARY KEY,
   day TEXT NOT NULL,
   app TEXT, title TEXT, url TEXT, path TEXT,
-  idle_seconds INTEGER, locked INTEGER, paused INTEGER
+  document_path TEXT,
+  bundle_id TEXT,
+  idle_seconds INTEGER, locked INTEGER, paused INTEGER,
+  secure_input INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS slots (
   day TEXT NOT NULL,
@@ -28,6 +31,9 @@ CREATE TABLE IF NOT EXISTS slots (
   policy_version_id INTEGER,
   capture_scheduled_at INTEGER,
   capture_status TEXT,
+  screenshot_path TEXT,
+  captured_at INTEGER,
+  capture_context_json TEXT,
   category TEXT,
   status TEXT,
   activity_json TEXT,
@@ -61,7 +67,22 @@ CREATE TABLE IF NOT EXISTS misclassification_reports (
   note TEXT NOT NULL,
   ts INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 ";
+
+const TARGET_USER_VERSION: i32 = 1;
+
+const WAVE1_COLUMNS: &[(&str, &str, &str)] = &[
+    ("samples", "document_path", "TEXT"),
+    ("samples", "bundle_id", "TEXT"),
+    ("samples", "secure_input", "INTEGER NOT NULL DEFAULT 0"),
+    ("slots", "screenshot_path", "TEXT"),
+    ("slots", "captured_at", "INTEGER"),
+    ("slots", "capture_context_json", "TEXT"),
+];
 
 pub fn open(path: &Path) -> Result<Connection, DbOpError> {
     let conn = Connection::open(path).map_err(map_rusqlite)?;
@@ -72,7 +93,71 @@ pub fn open(path: &Path) -> Result<Connection, DbOpError> {
 
 pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
     conn.execute_batch(SCHEMA).map_err(map_rusqlite)?;
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(map_rusqlite)?;
+    if version < TARGET_USER_VERSION {
+        for (table, column, decl) in WAVE1_COLUMNS {
+            add_column_if_missing(conn, table, column, decl)?;
+        }
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_meta (
+               key TEXT PRIMARY KEY,
+               value TEXT NOT NULL
+             );",
+        )
+        .map_err(map_rusqlite)?;
+        conn.pragma_update(None, "user_version", TARGET_USER_VERSION)
+            .map_err(map_rusqlite)?;
+    }
     Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, DbOpError> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(map_rusqlite)?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(map_rusqlite)?;
+    for name in names {
+        if name.map_err(map_rusqlite)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<(), DbOpError> {
+    if column_exists(conn, table, column)? {
+        return Ok(());
+    }
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {decl}");
+    let mut last_err = None;
+    for _ in 0..5 {
+        match conn.execute(&sql, []) {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                let msg = err.to_string().to_ascii_lowercase();
+                if msg.contains("duplicate column") {
+                    return Ok(());
+                }
+                match map_rusqlite(err) {
+                    DbOpError::Busy => {
+                        last_err = Some(DbOpError::Busy);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    other => return Err(other),
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| DbOpError::Busy))
 }
 
 pub fn app_db_path() -> Option<std::path::PathBuf> {
@@ -265,5 +350,82 @@ mod tests {
         let e = redeem(&mut conn, 3600, day, &wish, "r2").unwrap_err();
         assert!(matches!(e, DbOpError::Fatal(_)));
         assert_eq!(xp_sum(&conn, day), 10);
+    }
+
+    fn user_version(conn: &Connection) -> i32 {
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn column_names(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn migrate_new_db_sets_user_version_1() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 1);
+        let samples = column_names(&conn, "samples");
+        assert!(samples.iter().any(|c| c == "document_path"));
+        assert!(samples.iter().any(|c| c == "bundle_id"));
+        assert!(samples.iter().any(|c| c == "secure_input"));
+        let slots = column_names(&conn, "slots");
+        assert!(slots.iter().any(|c| c == "screenshot_path"));
+        assert!(slots.iter().any(|c| c == "captured_at"));
+        assert!(slots.iter().any(|c| c == "capture_context_json"));
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_meta'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn migrate_upgrades_legacy_schema_without_copying_path() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r"
+            CREATE TABLE samples (
+              ts INTEGER PRIMARY KEY,
+              day TEXT NOT NULL,
+              app TEXT, title TEXT, url TEXT, path TEXT,
+              idle_seconds INTEGER, locked INTEGER, paused INTEGER
+            );
+            CREATE TABLE slots (
+              day TEXT NOT NULL,
+              slot_start INTEGER NOT NULL,
+              PRIMARY KEY (day, slot_start)
+            );
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO samples (ts, day, app, title, path, idle_seconds, locked, paused)
+             VALUES (1, '2026-09-11', 'Cursor', 't', '/old/screenshot.jpg', 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 1);
+        let path: String = conn
+            .query_row("SELECT path FROM samples WHERE ts=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(path, "/old/screenshot.jpg");
+        let doc: Option<String> = conn
+            .query_row("SELECT document_path FROM samples WHERE ts=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(doc, None);
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 1);
     }
 }
