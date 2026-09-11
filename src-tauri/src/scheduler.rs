@@ -783,7 +783,8 @@ pub fn load_quests_for_version(
         .into_iter()
         .map(|q| Quest {
             text: q.text,
-            keywords: q.keywords,
+            evidence: q.keywords,
+            hero: true,
         })
         .collect())
 }
@@ -840,7 +841,8 @@ pub fn load_quests_for_day(conn: &Connection, day: &str) -> Result<Vec<Quest>, D
         .into_iter()
         .map(|q| Quest {
             text: q.text,
-            keywords: q.keywords,
+            evidence: q.keywords,
+            hero: true,
         })
         .collect())
 }

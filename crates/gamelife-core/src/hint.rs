@@ -82,7 +82,7 @@ fn is_core_candidate(sample: &Sample, quests: &[Quest]) -> bool {
         .unwrap_or_default();
 
     quests.iter().any(|quest| {
-        quest.keywords.iter().any(|keyword| {
+        quest.evidence.iter().any(|keyword| {
             let needle = keyword.to_ascii_lowercase();
             title_lower.contains(&needle) || path_lower.contains(&needle)
         })
@@ -138,10 +138,7 @@ mod tests {
             reading_apps: vec![],
             never_capture_apps: vec![],
         };
-        let q = [Quest {
-            text: "HDP".into(),
-            keywords: vec!["HDP".into()],
-        }];
+        let q = [Quest::fixture("HDP", "HDP")];
         let mut s = sample("Cursor", "README.md", 5);
         s.document_path = Some("/proj/HDP/README.md".into());
         assert_eq!(hint_sample(&s, &p, &q, None), Hint::Unsure);
@@ -156,10 +153,7 @@ mod tests {
             reading_apps: vec!["Preview".into()],
             never_capture_apps: vec![],
         };
-        let q = [Quest {
-            text: "paper".into(),
-            keywords: vec!["paper".into()],
-        }];
+        let q = [Quest::fixture("paper", "paper")];
         let mut s = sample("Preview", "paper.pdf", 200);
         s.ts = 1_000 + 200;
         assert_eq!(hint_sample(&s, &p, &q, Some(1_000)), Hint::CoreReading);
@@ -193,10 +187,7 @@ mod tests {
     }
 
     fn hdp_quest() -> [Quest; 1] {
-        [Quest {
-            text: "HDP".into(),
-            keywords: vec!["HDP".into()],
-        }]
+        [Quest::fixture("HDP", "HDP")]
     }
 
     #[test]

@@ -575,7 +575,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -606,7 +607,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -630,7 +632,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Missed,
@@ -650,7 +653,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Scheduled,
@@ -672,7 +676,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -701,7 +706,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -725,7 +731,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -751,7 +758,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Missed,
@@ -772,7 +780,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -793,7 +802,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -814,7 +824,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -851,7 +862,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "paper".into(),
-                keywords: vec!["main.tex".into()],
+                evidence: vec!["main.tex".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -878,7 +890,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "robot".into(),
-                keywords: vec!["robot".into()],
+                evidence: vec!["robot".into()],
+                hero: true,
             }],
             policy: &pol(),
             capture: CaptureStatus::Captured,
@@ -993,7 +1006,8 @@ mod tests {
             samples: &samples,
             quests: &[Quest {
                 text: "HDP".into(),
-                keywords: vec!["HDP".into()],
+                evidence: vec!["HDP".into()],
+                hero: true,
             }],
             policy: &Policy {
                 trusted_apps: vec!["Google Chrome".into()],
