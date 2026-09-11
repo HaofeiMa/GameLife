@@ -743,6 +743,24 @@ mod tests {
     }
 
     #[test]
+    fn load_active_session_tracks_timed_redeem_until_ends_at() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        let ends_at = now + 30 * 60;
+        let during = load_active_session(&conn, now + 100).unwrap();
+        assert_eq!(
+            during,
+            Some(("视频".into(), ends_at, ends_at - (now + 100)))
+        );
+        assert_eq!(load_active_session(&conn, ends_at).unwrap(), None);
+        assert_eq!(load_active_session(&conn, ends_at + 1).unwrap(), None);
+    }
+
+    #[test]
     fn insert_and_archive_wish_hides_from_active_list() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();

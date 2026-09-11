@@ -584,6 +584,44 @@ pub fn get_permission_status() -> PermissionStatus {
     }
 }
 
+fn load_wish_for_redeem(conn: &Connection, wish_id: &str) -> Result<(Wish, String), DbOpError> {
+    let row = conn
+        .query_row(
+            "SELECT id, name, kind, price, duration_minutes, COALESCE(archived, 0)
+             FROM wishes WHERE id = ?1",
+            params![wish_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(crate::db_error::map_rusqlite)?
+        .ok_or_else(|| DbOpError::Rejected("wish_missing".into()))?;
+    let (id, name, kind, price, duration, archived) = row;
+    if archived != 0 {
+        return Err(DbOpError::Rejected("wish_archived".into()));
+    }
+    let wish = Wish {
+        id,
+        kind: if kind == "coin" {
+            WishKind::Coin
+        } else {
+            WishKind::Xp {
+                duration_minutes: duration,
+            }
+        },
+        price,
+    };
+    Ok((wish, name))
+}
+
 #[tauri::command]
 pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
     with_db_err(|conn| {
@@ -596,40 +634,7 @@ pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
                 |r| r.get(0),
             )
             .map_err(crate::db_error::map_rusqlite)?;
-        let row = conn
-            .query_row(
-                "SELECT id, name, kind, price, duration_minutes, COALESCE(archived, 0)
-                 FROM wishes WHERE id = ?1",
-                params![wish_id],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, i64>(3)?,
-                        r.get::<_, Option<i64>>(4)?,
-                        r.get::<_, i64>(5)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(crate::db_error::map_rusqlite)?
-            .ok_or_else(|| DbOpError::Rejected("wish_missing".into()))?;
-        let (id, name, kind, price, duration, archived) = row;
-        if archived != 0 {
-            return Err(DbOpError::Rejected("wish_archived".into()));
-        }
-        let wish = Wish {
-            id,
-            kind: if kind == "coin" {
-                WishKind::Coin
-            } else {
-                WishKind::Xp {
-                    duration_minutes: duration,
-                }
-            },
-            price,
-        };
+        let (wish, name) = load_wish_for_redeem(conn, &wish_id)?;
         db_redeem(
             conn,
             credited_today,
@@ -717,7 +722,23 @@ pub fn has_api_key() -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{insert_ledger, migrate};
+    use crate::db::{archive_wish, insert_ledger, insert_wish, migrate};
+
+    #[test]
+    fn load_wish_for_redeem_rejects_archived_and_missing() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        insert_wish(&conn, "w1", "视频", "xp", 10, Some(30)).unwrap();
+        archive_wish(&conn, "w1").unwrap();
+
+        let archived = load_wish_for_redeem(&conn, "w1").unwrap_err();
+        assert_eq!(archived, DbOpError::Rejected("wish_archived".into()));
+        assert_eq!(map_db_err(archived), "wish_archived");
+
+        let missing = load_wish_for_redeem(&conn, "missing").unwrap_err();
+        assert_eq!(missing, DbOpError::Rejected("wish_missing".into()));
+        assert_eq!(map_db_err(missing), "wish_missing");
+    }
 
     #[test]
     fn report_misclassification_does_not_change_ledger_sum() {
