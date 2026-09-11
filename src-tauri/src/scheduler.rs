@@ -866,6 +866,51 @@ pub fn save_quests_for_day(
     Ok(())
 }
 
+fn previous_nonempty_quest_snapshot(
+    conn: &Connection,
+    today: &str,
+) -> Result<Option<(String, Vec<Quest>)>, DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT day, json FROM quest_versions WHERE day < ?1 ORDER BY day DESC, id DESC",
+        )
+        .map_err(map_rusqlite)?;
+    let rows = stmt
+        .query_map(params![today], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(map_rusqlite)?;
+    for row in rows {
+        let (day, json) = row.map_err(map_rusqlite)?;
+        match parse_quest_versions_json(&json) {
+            Ok(quests) if !quests.is_empty() => return Ok(Some((day, quests))),
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+pub fn previous_quest_day(conn: &Connection, today: &str) -> Result<Option<String>, DbOpError> {
+    Ok(previous_nonempty_quest_snapshot(conn, today)?.map(|(day, _)| day))
+}
+
+pub fn continue_previous_workday_for_day(
+    conn: &Connection,
+    today: &str,
+    now: i64,
+) -> Result<String, DbOpError> {
+    let (from_day, quests) = previous_nonempty_quest_snapshot(conn, today)?
+        .ok_or_else(|| DbOpError::Fatal("no previous quests".into()))?;
+    let drafts = quests
+        .into_iter()
+        .map(|q| QuestDraft {
+            text: q.text,
+            evidence: q.evidence,
+            hero: q.hero,
+        })
+        .collect();
+    save_quests_for_day(conn, today, drafts, now)?;
+    Ok(from_day)
+}
+
 fn credited_before_slot(conn: &Connection, day: &str, slot_start: i64) -> Result<i64, DbOpError> {
     conn.query_row(
         "SELECT COALESCE(SUM(credited_core_seconds), 0) FROM slots
@@ -2280,6 +2325,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(used, 0);
+    }
+
+    #[test]
+    fn previous_quest_day_skips_empty_json() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at) VALUES ('2026-09-10', '[]', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at) VALUES ('2026-09-09', ?1, 1)",
+            rusqlite::params![r#"[{"text":"HDP","evidence":["HDP"],"hero":true}]"#],
+        )
+        .unwrap();
+        assert_eq!(
+            previous_quest_day(&conn, "2026-09-11").unwrap().as_deref(),
+            Some("2026-09-09")
+        );
+    }
+
+    #[test]
+    fn continue_copies_hero_and_evidence() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at) VALUES ('2026-09-10', ?1, 1)",
+            rusqlite::params![r#"[{"text":"HDP","evidence":["HDP"],"hero":true}]"#],
+        )
+        .unwrap();
+        let from = continue_previous_workday_for_day(&conn, "2026-09-11", 2).unwrap();
+        assert_eq!(from, "2026-09-10");
+        let qs = load_quests_for_day(&conn, "2026-09-11").unwrap();
+        assert_eq!(qs[0].text, "HDP");
+        assert_eq!(qs[0].evidence, vec!["HDP".to_string()]);
+        assert!(qs[0].hero);
+    }
+
+    #[test]
+    fn continue_without_history_errors() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let err = continue_previous_workday_for_day(&conn, "2026-09-11", 1).unwrap_err();
+        assert!(format!("{err:?}").contains("no previous quests"));
     }
 
     #[test]

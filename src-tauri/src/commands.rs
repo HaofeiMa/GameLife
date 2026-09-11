@@ -18,8 +18,9 @@ use crate::keychain::{get_openai_api_key, set_openai_api_key};
 use crate::macos;
 use crate::sampler::PauseControl;
 use crate::scheduler::{
-    day_str_for_ts, default_screenshot_retention, list_freeze_candidates, load_quests_for_day,
-    review_pending_slot, sampling_allowed, save_quests_for_day, streak_from_db,
+    continue_previous_workday_for_day, day_str_for_ts, default_screenshot_retention,
+    list_freeze_candidates, load_quests_for_day, review_pending_slot, sampling_allowed,
+    save_quests_for_day, streak_from_db,
 };
 
 fn now_secs() -> i64 {
@@ -477,6 +478,17 @@ pub fn set_quests(quests: Vec<QuestDraft>) -> Result<(), String> {
             return Err(DbOpError::Fatal("day ended".into()));
         }
         save_quests_for_day(conn, &day, quests, now_secs())
+    })
+}
+
+#[tauri::command]
+pub fn continue_previous_workday() -> Result<String, String> {
+    with_db(|conn| {
+        let day = day_str_for_ts(now_secs());
+        if !sampling_allowed(conn, &day)? {
+            return Err(DbOpError::Fatal("day ended".into()));
+        }
+        continue_previous_workday_for_day(conn, &day, now_secs())
     })
 }
 
