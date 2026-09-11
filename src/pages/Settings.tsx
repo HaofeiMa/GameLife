@@ -167,6 +167,10 @@ export function Settings() {
       <h2>设置</h2>
       <PermissionBanner />
       <p className="muted">采样间隔固定 15s，此处不提供调节。</p>
+      <p className="muted">
+        Chrome / Safari / Arc 的当前标签 URL 需要「自动化」权限；拒绝则 URL
+        为空，不影响采样与截图。不要把这项做成缺了就无法观测。
+      </p>
 
       <ListEditor
         label="Trusted 应用"

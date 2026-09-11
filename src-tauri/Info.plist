@@ -5,6 +5,6 @@
   <key>NSScreenCaptureUsageDescription</key>
   <string>GameLife 需要屏幕录制权限，以便在灰区截取当前窗口，用于科研时间校验。</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>GameLife 需要自动化权限以读取前台应用名称和窗口标题。</string>
+  <string>GameLife 需要自动化权限，以便在 Chrome、Safari 或 Arc 前台时读取当前标签 URL。拒绝授权时仍会采样，只是没有网址。</string>
 </dict>
 </plist>

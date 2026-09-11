@@ -21,6 +21,7 @@ GameLife 需要以下 macOS 权限才能正常观测前台应用：
 | --- | --- |
 | **辅助功能** | 读取前台应用名与窗口标题 |
 | **屏幕录制** | 灰区槽结束时截取前台窗口供视觉判定 |
+| 自动化（可选） | 读取 Chrome / Safari / Arc 当前标签 URL |
 
 在 **系统设置 → 隐私与安全性** 中分别授权。若缺少任一权限：
 
@@ -66,5 +67,9 @@ OpenAI API Key 仅存 macOS 钥匙串（账号 `GameLife`，服务 `ma.haofei.ga
 - [ ] final 槽 Report misclassification 不改 ledger（自动化测试已覆盖）
 - [ ] 内置 Never Capture 不可删
 - [ ] 缺权限横幅显示，时段记 unobserved 非 Away
+- [ ] Preview 打开本地 PDF：样本有真实 document_path
+- [ ] Chrome / Safari / Arc：有去 query 的当前 URL；关闭自动化后 URL 空、样本仍在
+- [ ] Cursor：有 app 与标题，document_path 允许空
+- [ ] 到点截图：JPEG 是当时前台窗口（不是 AX window id）
 
 自动化测试：`cargo test -p gamelife --offline`
