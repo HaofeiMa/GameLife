@@ -9,9 +9,9 @@ use serde::Deserialize;
 use gamelife_core::{
     analyze_slot_evidence, builtin_never_capture, builtin_side_project_rules, can_use_freeze,
     capture_on_resume, credited_core_spans, early_start_anchor, early_start_coins_for_local_secs,
-    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, new_milestones, recompute_streak,
-    schedule_capture, slot_end_exclusive, slot_start, spans_for_slot, CaptureStatus, DayOutcome,
-    JudgeInput, Policy, Quest, Sample, CHEST_SECS,
+    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity, new_milestones,
+    recompute_streak, schedule_capture, slot_end_exclusive, slot_start, spans_for_slot,
+    CaptureContext, CaptureStatus, DayOutcome, JudgeInput, Policy, Quest, Sample, CHEST_SECS,
 };
 use gamelife_core::types::Hint;
 use gamelife_core::judge::{Dominant, JudgeOutput, VisionMatchContext, VisionResult};
@@ -96,21 +96,19 @@ pub fn purge_expired_screenshots(retention: ScreenshotRetention, now: i64) {
     }
 }
 
-/// `secure||locked||paused||never.iter().any(|n| app.contains(n))` → Skipped; else Scheduled.
+/// Never Capture / secure input / lock / pause → Skipped; else Scheduled.
 pub fn decide_capture(
     app: &str,
+    bundle_id: Option<&str>,
     secure: bool,
     locked: bool,
     paused: bool,
     never: &[String],
 ) -> CaptureStatus {
-    let app_lower = app.to_ascii_lowercase();
     if secure
         || locked
         || paused
-        || never
-            .iter()
-            .any(|n| app_lower.contains(&n.to_ascii_lowercase()))
+        || matches_app_identity(app, bundle_id, never)
     {
         CaptureStatus::Skipped
     } else {
@@ -204,36 +202,6 @@ pub fn apply_screenshot_retention(path: &Path, retention: ScreenshotRetention) {
         }
         ScreenshotRetention::Hours24 | ScreenshotRetention::Days3 | ScreenshotRetention::Days14 => {}
     }
-}
-
-fn attach_screenshot_path_to_latest_sample(
-    conn: &Connection,
-    day: &str,
-    slot_start_ts: i64,
-    path: &Path,
-) -> Result<(), DbOpError> {
-    let slot_end = slot_end_exclusive(slot_start_ts);
-    let path_str = path.to_string_lossy().to_string();
-    let updated = conn
-        .execute(
-            "UPDATE samples SET path = ?1
-             WHERE ts = (
-               SELECT ts FROM samples
-               WHERE day = ?2 AND ts >= ?3 AND ts < ?4
-               ORDER BY ts DESC LIMIT 1
-             )",
-            params![path_str, day, slot_start_ts, slot_end],
-        )
-        .map_err(map_rusqlite)?;
-    if updated == 0 {
-        conn.execute(
-            "INSERT INTO samples (ts, day, app, title, path, idle_seconds, locked, paused)
-             VALUES (?1, ?2, '', '', ?3, 0, 0, 0)",
-            params![slot_start_ts, day, path.to_string_lossy().to_string()],
-        )
-        .map_err(map_rusqlite)?;
-    }
-    Ok(())
 }
 
 type CaptureFn = fn(&Path) -> Result<(), ()>;
@@ -448,31 +416,31 @@ pub fn apply_capture_on_resume(conn: &Connection, now: i64) -> Result<(), DbOpEr
 }
 
 pub fn should_skip_capture(app: &str, secure: bool, locked: bool, paused: bool) -> bool {
-    decide_capture(app, secure, locked, paused, &builtin_never_capture()) == CaptureStatus::Skipped
+    decide_capture(app, None, secure, locked, paused, &builtin_never_capture())
+        == CaptureStatus::Skipped
 }
 
 /// At/after scheduled time: skip → Skipped; else attempt frontmost capture → Captured or Missed.
+/// `capture_context` is invoked only when a capture is actually due.
 pub fn tick_capture(
     conn: &Connection,
     day: &str,
     slot_start_ts: i64,
     now: i64,
-    app: &str,
-    secure: bool,
     locked: bool,
     paused: bool,
     screen_recording: bool,
+    capture_context: impl Fn() -> CaptureContext,
 ) -> Result<(), DbOpError> {
     tick_capture_impl(
         conn,
         day,
         slot_start_ts,
         now,
-        app,
-        secure,
         locked,
         paused,
         screen_recording,
+        capture_context,
         default_capture_fn(),
     )
 }
@@ -482,11 +450,10 @@ fn tick_capture_impl(
     day: &str,
     slot_start_ts: i64,
     now: i64,
-    app: &str,
-    secure: bool,
     locked: bool,
     paused: bool,
     screen_recording: bool,
+    capture_context: impl Fn() -> CaptureContext,
     capture_fn: CaptureFn,
 ) -> Result<(), DbOpError> {
     let row: Option<(i64, String)> = conn
@@ -507,32 +474,74 @@ fn tick_capture_impl(
     if now < scheduled_at {
         return Ok(());
     }
+    if !screen_recording || locked || paused {
+        conn.execute(
+            "UPDATE slots SET capture_status = ?1 WHERE day = ?2 AND slot_start = ?3",
+            params![capture_status_to_str(CaptureStatus::Skipped), day, slot_start_ts],
+        )
+        .map_err(map_rusqlite)?;
+        return Ok(());
+    }
+
+    let mut ctx = capture_context();
+    ctx.document_path = ctx
+        .document_path
+        .as_deref()
+        .and_then(gamelife_core::normalize_document_path);
     let policy = load_policy(conn)?;
     let never = merged_never_capture(&policy);
-    let next = if !screen_recording
-        || decide_capture(app, secure, locked, paused, &never) == CaptureStatus::Skipped
+    if decide_capture(
+        &ctx.app,
+        ctx.bundle_id.as_deref(),
+        ctx.secure_input,
+        locked,
+        paused,
+        &never,
+    ) == CaptureStatus::Skipped
     {
-        CaptureStatus::Skipped
-    } else if let Some(path) = screenshot_path_for(day, slot_start_ts, now) {
+        conn.execute(
+            "UPDATE slots SET capture_status = ?1 WHERE day = ?2 AND slot_start = ?3",
+            params![capture_status_to_str(CaptureStatus::Skipped), day, slot_start_ts],
+        )
+        .map_err(map_rusqlite)?;
+        return Ok(());
+    }
+
+    let next = if let Some(path) = screenshot_path_for(day, slot_start_ts, now) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         if capture_fn(&path).is_ok() {
-            attach_screenshot_path_to_latest_sample(conn, day, slot_start_ts, &path)?;
-            CaptureStatus::Captured
-        } else {
-            CaptureStatus::Missed
+            let json = serde_json::to_string(&ctx)
+                .map_err(|e| DbOpError::Fatal(format!("capture_context json: {e}")))?;
+            conn.execute(
+                "UPDATE slots SET
+                    screenshot_path = ?1,
+                    captured_at = ?2,
+                    capture_context_json = ?3,
+                    capture_status = ?4
+                 WHERE day = ?5 AND slot_start = ?6",
+                params![
+                    path.to_string_lossy().to_string(),
+                    now,
+                    json,
+                    capture_status_to_str(CaptureStatus::Captured),
+                    day,
+                    slot_start_ts,
+                ],
+            )
+            .map_err(map_rusqlite)?;
+            return Ok(());
         }
+        CaptureStatus::Missed
     } else {
         CaptureStatus::Missed
     };
-    if next != CaptureStatus::Scheduled {
-        conn.execute(
-            "UPDATE slots SET capture_status = ?1 WHERE day = ?2 AND slot_start = ?3",
-            params![capture_status_to_str(next), day, slot_start_ts],
-        )
-        .map_err(map_rusqlite)?;
-    }
+    conn.execute(
+        "UPDATE slots SET capture_status = ?1 WHERE day = ?2 AND slot_start = ?3",
+        params![capture_status_to_str(next), day, slot_start_ts],
+    )
+    .map_err(map_rusqlite)?;
     Ok(())
 }
 
@@ -715,10 +724,6 @@ fn credited_before_slot(conn: &Connection, day: &str, slot_start: i64) -> Result
     .map_err(map_rusqlite)
 }
 
-fn capture_app_from_samples(samples: &[Sample]) -> Option<String> {
-    samples.last().map(|s| s.app.clone())
-}
-
 fn load_samples_for_slot(
     conn: &Connection,
     day: &str,
@@ -727,7 +732,7 @@ fn load_samples_for_slot(
 ) -> Result<Vec<Sample>, DbOpError> {
     let mut stmt = conn
         .prepare(
-            "SELECT ts, app, title, url, idle_seconds, locked, paused
+            "SELECT ts, app, title, url, document_path, bundle_id, idle_seconds, locked, paused, secure_input
              FROM samples WHERE day = ?1 AND ts >= ?2 AND ts < ?3 ORDER BY ts",
         )
         .map_err(map_rusqlite)?;
@@ -738,12 +743,12 @@ fn load_samples_for_slot(
                 app: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 window_title: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 url: r.get(3)?,
-                document_path: None,
-                bundle_id: None,
-                idle_seconds: r.get(4)?,
-                screen_locked: r.get::<_, i64>(5)? != 0,
-                paused: r.get::<_, i64>(6)? != 0,
-                secure_input: false,
+                document_path: r.get(4)?,
+                bundle_id: r.get(5)?,
+                idle_seconds: r.get(6)?,
+                screen_locked: r.get::<_, i64>(7)? != 0,
+                paused: r.get::<_, i64>(8)? != 0,
+                secure_input: r.get::<_, i64>(9)? != 0,
             })
         })
         .map_err(map_rusqlite)?;
@@ -989,12 +994,9 @@ pub fn finalize_slot_end(
 
     let screenshot_path: Option<PathBuf> = None;
 
-    let capture_app = capture_app_from_samples(&samples);
     let api_key = crate::keychain::get_openai_api_key().ok();
     let vision = screenshot_path.as_ref().and_then(|path| {
-        capture_app.as_deref().and_then(|app| {
-            maybe_vision_for_gray_zone(decidable, capture, path, app, api_key.as_deref())
-        })
+        maybe_vision_for_gray_zone(decidable, capture, path, "", api_key.as_deref())
     });
 
     let output = judge_slot(JudgeInput {
@@ -1526,7 +1528,7 @@ mod tests {
     fn decide_capture_skips_1password() {
         let never = builtin_never_capture();
         assert_eq!(
-            decide_capture("1Password", false, false, false, &never),
+            decide_capture("1Password", None, false, false, false, &never),
             CaptureStatus::Skipped
         );
     }
@@ -1535,7 +1537,7 @@ mod tests {
     fn decide_capture_scheduled_for_normal_app() {
         let never = builtin_never_capture();
         assert_eq!(
-            decide_capture("Cursor", false, false, false, &never),
+            decide_capture("Cursor", None, false, false, false, &never),
             CaptureStatus::Scheduled
         );
     }
@@ -1544,7 +1546,7 @@ mod tests {
     fn decide_capture_skips_when_paused() {
         let never = builtin_never_capture();
         assert_eq!(
-            decide_capture("Cursor", false, false, true, &never),
+            decide_capture("Cursor", None, false, false, true, &never),
             CaptureStatus::Skipped
         );
     }
@@ -1642,6 +1644,17 @@ mod tests {
         assert_eq!(unobs, 0);
     }
 
+    fn capture_ctx(app: &str) -> CaptureContext {
+        CaptureContext {
+            app: app.into(),
+            bundle_id: None,
+            title: String::new(),
+            document_path: None,
+            url: None,
+            secure_input: false,
+        }
+    }
+
     #[test]
     fn tick_capture_marks_missed_when_past_scheduled() {
         let conn = Connection::open_in_memory().unwrap();
@@ -1654,7 +1667,7 @@ mod tests {
             params![day, ss],
         )
         .unwrap();
-        tick_capture(&conn, day, ss, 200, "Cursor", false, false, false, true).unwrap();
+        tick_capture(&conn, day, ss, 200, false, false, true, || capture_ctx("Cursor")).unwrap();
         let status: String = conn
             .query_row(
                 "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -1677,7 +1690,12 @@ mod tests {
             params![day, ss],
         )
         .unwrap();
-        tick_capture(&conn, day, ss, 100, "Cursor", false, false, true, true).unwrap();
+        let calls = std::cell::Cell::new(0u32);
+        tick_capture(&conn, day, ss, 100, false, true, true, || {
+            calls.set(calls.get() + 1);
+            capture_ctx("Cursor")
+        })
+        .unwrap();
         let status: String = conn
             .query_row(
                 "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -1686,6 +1704,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "Skipped");
+        assert_eq!(calls.get(), 0);
     }
 
     #[test]
@@ -1700,7 +1719,8 @@ mod tests {
             params![day, ss],
         )
         .unwrap();
-        tick_capture(&conn, day, ss, 100, "1Password", false, false, false, true).unwrap();
+        tick_capture(&conn, day, ss, 100, false, false, true, || capture_ctx("1Password"))
+            .unwrap();
         let status: String = conn
             .query_row(
                 "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -1709,6 +1729,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "Skipped");
+        let path: Option<String> = conn
+            .query_row(
+                "SELECT screenshot_path FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT capture_context_json FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(path.is_none());
+        assert!(json.is_none());
     }
 
     #[test]
@@ -1730,8 +1766,8 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO samples (ts, day, app, title, idle_seconds, locked, paused)
-             VALUES (?1, ?2, 'Cursor', 'lib.rs', 0, 0, 0)",
+            "INSERT INTO samples (ts, day, app, title, document_path, idle_seconds, locked, paused)
+             VALUES (?1, ?2, 'Cursor', 'train.py — HDP', '/Users/me/HDP/train.py', 0, 0, 0)",
             params![sample_ts, day],
         )
         .unwrap();
@@ -1740,11 +1776,17 @@ mod tests {
             day,
             ss,
             capture_ts,
-            "Cursor",
-            false,
             false,
             false,
             true,
+            || CaptureContext {
+                app: "WeChat".into(),
+                bundle_id: None,
+                title: "chat".into(),
+                document_path: None,
+                url: None,
+                secure_input: false,
+            },
             test_capture_ok,
         )
         .unwrap();
@@ -1756,24 +1798,70 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "Captured");
-        let path: Option<String> = conn
+        let shot: String = conn
             .query_row(
-                "SELECT path FROM samples WHERE ts = ?1",
+                "SELECT screenshot_path FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(shot.contains(".jpg"));
+        let json: String = conn
+            .query_row(
+                "SELECT capture_context_json FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let ctx: CaptureContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(ctx.app, "WeChat");
+        let doc: String = conn
+            .query_row(
+                "SELECT document_path FROM samples WHERE ts = ?1",
                 [sample_ts],
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(path.as_deref().is_some_and(|p| p.contains(".jpg")));
-        let missing: Option<String> = conn
+        assert_eq!(doc, "/Users/me/HDP/train.py");
+        let sample_path: Option<String> = conn
+            .query_row("SELECT path FROM samples WHERE ts = ?1", [sample_ts], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(sample_path.is_none());
+        let extra_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(extra_rows, 1);
+    }
+
+    #[test]
+    fn tick_capture_before_schedule_does_not_call_capture_context() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status)
+             VALUES (?1, ?2, 100, 'Scheduled')",
+            params![day, ss],
+        )
+        .unwrap();
+        let calls = std::cell::Cell::new(0u32);
+        tick_capture(&conn, day, ss, 50, false, false, true, || {
+            calls.set(calls.get() + 1);
+            capture_ctx("Cursor")
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 0);
+        let status: String = conn
             .query_row(
-                "SELECT path FROM samples WHERE ts = ?1",
-                [capture_ts],
+                "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
                 |r| r.get(0),
             )
-            .optional()
-            .unwrap()
-            .flatten();
-        assert!(missing.is_none());
+            .unwrap();
+        assert_eq!(status, "Scheduled");
     }
 
     #[test]

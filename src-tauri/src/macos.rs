@@ -142,7 +142,16 @@ mod imp {
     }
 
     pub fn capture_context() -> gamelife_core::CaptureContext {
-        super::empty_capture_context()
+        let (app, title) = frontmost_app().unwrap_or_else(|_| (String::new(), String::new()));
+        gamelife_core::CaptureContext {
+            app,
+            bundle_id: bundle_id(),
+            title,
+            document_path: document_path()
+                .and_then(|raw| gamelife_core::normalize_document_path(&raw)),
+            url: optional_browser_url(),
+            secure_input: secure_input_on(),
+        }
     }
 
     pub fn accessibility_granted() -> bool {
@@ -207,6 +216,7 @@ mod imp {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn empty_capture_context() -> gamelife_core::CaptureContext {
     gamelife_core::CaptureContext {
         app: String::new(),

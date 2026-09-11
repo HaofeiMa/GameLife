@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -148,6 +148,7 @@ impl SampleSource for MacSampleSource {
     }
 }
 
+#[derive(Default)]
 pub struct FakeSampleSource {
     pub app: String,
     pub title: String,
@@ -160,6 +161,10 @@ pub struct FakeSampleSource {
     pub paused: bool,
     pub metadata_observation_available: bool,
     pub capture_observation_available: bool,
+    pub capture_app: Option<String>,
+    pub capture_title: Option<String>,
+    pub capture_document_path: Option<String>,
+    pub capture_context_calls: AtomicU32,
 }
 
 impl SampleSource for FakeSampleSource {
@@ -204,11 +209,21 @@ impl SampleSource for FakeSampleSource {
     }
 
     fn capture_context(&self) -> CaptureContext {
+        self.capture_context_calls.fetch_add(1, Ordering::Relaxed);
         CaptureContext {
-            app: self.app.clone(),
+            app: self
+                .capture_app
+                .clone()
+                .unwrap_or_else(|| self.app.clone()),
             bundle_id: self.bundle_id.clone(),
-            title: self.title.clone(),
-            document_path: self.document_path.clone(),
+            title: self
+                .capture_title
+                .clone()
+                .unwrap_or_else(|| self.title.clone()),
+            document_path: self
+                .capture_document_path
+                .clone()
+                .or_else(|| self.document_path.clone()),
             url: self.url.clone(),
             secure_input: self.secure,
         }
@@ -334,11 +349,10 @@ pub fn sample_once(
         &day,
         ss,
         ts,
-        &app,
-        secure,
         locked,
         paused,
         source.capture_observation_available(),
+        || source.capture_context(),
     )?;
     state.last_day = Some(day);
     state.last_slot = Some(ss);
@@ -408,6 +422,7 @@ mod tests {
             paused: false,
             metadata_observation_available: true,
             capture_observation_available: true,
+            ..Default::default()
         };
         let ts = 1_700_000_000i64;
         let mut state = SamplerState::default();
@@ -448,6 +463,7 @@ mod tests {
             paused: false,
             metadata_observation_available: true,
             capture_observation_available: true,
+            ..Default::default()
         };
         let ts = 1_700_000_015i64;
         let mut state = SamplerState::default();
@@ -479,6 +495,7 @@ mod tests {
             paused: false,
             metadata_observation_available: false,
             capture_observation_available: true,
+            ..Default::default()
         };
         let ts = 1_700_000_000i64;
         let mut state = SamplerState::default();
@@ -521,6 +538,7 @@ mod tests {
             paused: false,
             metadata_observation_available: true,
             capture_observation_available: false,
+            ..Default::default()
         };
         let ts = 1_700_000_000i64;
         let mut state = SamplerState::default();
@@ -556,6 +574,7 @@ mod tests {
             paused: false,
             metadata_observation_available: true,
             capture_observation_available: true,
+            ..Default::default()
         };
         let ts = 1_700_000_000i64;
         let mut state = SamplerState::default();
@@ -588,6 +607,7 @@ mod tests {
             paused: false,
             metadata_observation_available: true,
             capture_observation_available: true,
+            ..Default::default()
         };
         let ts = 1_700_000_000i64;
         let mut state = SamplerState::default();
@@ -616,6 +636,7 @@ mod tests {
             paused: false,
             metadata_observation_available: true,
             capture_observation_available: true,
+            ..Default::default()
         };
         let ts = 1_700_000_000i64;
         let mut state = SamplerState::default();
