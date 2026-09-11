@@ -13,6 +13,7 @@ pub mod policy;
 pub mod quest;
 pub mod shop;
 pub mod streak;
+pub mod task;
 pub mod time;
 pub mod types;
 pub mod url;
@@ -51,6 +52,12 @@ pub use shop::{
 pub use streak::{
     DayOutcome, FREEZE_PER_MONTH, can_use_freeze, freeze_month_key, freeze_quota_used,
     new_milestones, recompute_streak,
+};
+pub use task::{
+    ListRole, Task, TaskList, TaskListError, TaskRange, TaskSnapshot, MAX_JUDGMENT_TASKS,
+    PRESET_CHORE_ID, PRESET_LONGTERM_ID, PRESET_MAINLINE_ID, PRESET_SIDE_ID, align_range,
+    in_judgment_set, judgment_tasks, parse_task_snapshot_json, preset_lists, snapshot_of,
+    validate_lists,
 };
 pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
