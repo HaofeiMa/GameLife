@@ -15,14 +15,15 @@ use gamelife_core::{
     heartbeat_unobserved, hint_sample, is_weekday, judge_slot, judgment_tasks, matches_app_identity,
     new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
     quest_list_has_evidence, recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
-    snapshot_of, spans_for_slot, vision_quest_label, CaptureContext, CaptureStatus, DayOutcome,
-    JudgeInput, Policy, Quest, QuestDraft, QuestListError, Sample, TaskListError, TaskSnapshot,
-    VisionContext, CHEST_SECS,
+    snapshot_of, spans_for_slot, vision_quest_label, apply_task_match, parse_task_match_json,
+    CaptureContext, CaptureStatus, DayOutcome, JudgeInput, Policy, Quest, QuestDraft, QuestListError,
+    Sample, TASK_MATCH_MIN, TaskListError, TaskSnapshot, VisionContext, CHEST_SECS,
 };
 
 use crate::db::{app_db_path, insert_ledger, load_task_lists, load_tasks, migrate, open};
 use crate::db_error::{map_rusqlite, DbOpError};
 use crate::resolve::resolve_slot;
+use crate::text_ai::{call_text_task_match, sample_summary_lines, SampleLine};
 use crate::vision;
 
 const LOW_INPUT_IDLE_SECS: i64 = 180;
@@ -1296,29 +1297,8 @@ pub fn finalize_slot_end(
     let (primary, fallback) = vision::endpoints_from_settings(&settings, |id| {
         crate::keychain::get_provider_api_key(id).ok()
     });
-    let vision = match (screenshot_path.as_ref(), capture_ctx) {
-        (Some(path), Some(capture_ctx)) => {
-            let ctx = VisionContext {
-                slot_start,
-                slot_end,
-                quests: quests.iter().map(vision_quest_label).collect(),
-                capture: capture_ctx,
-                activity_summary: activity_summary_for_vision(&evidence, &samples),
-            };
-            maybe_vision_for_gray_zone(
-                decidable,
-                capture,
-                Path::new(path),
-                ctx,
-                &never,
-                primary.as_ref(),
-                fallback.as_ref(),
-            )
-        }
-        _ => None,
-    };
 
-    let output = judge_slot(JudgeInput {
+    let mut output = judge_slot(JudgeInput {
         slot_start,
         slot_end,
         samples: &samples,
@@ -1326,9 +1306,78 @@ pub fn finalize_slot_end(
         tasks: &tasks,
         policy: &policy,
         capture,
-        vision,
+        vision: None,
         manual_core: None,
     });
+
+    let lines: Vec<SampleLine> = samples
+        .iter()
+        .map(|s| SampleLine {
+            app: s.app.clone(),
+            title: s.window_title.clone(),
+            url: s.url.clone(),
+            document_path: s.document_path.clone(),
+            idle_seconds: s.idle_seconds,
+            protected: s.secure_input
+                || matches_app_identity(&s.app, s.bundle_id.as_deref(), &never),
+        })
+        .collect();
+    let summary = sample_summary_lines(&lines);
+    let gray = output.pending
+        || matches!(
+            output.dominant,
+            Dominant::PendingReview | Dominant::Unknown
+        );
+    let mut matched_text = false;
+    if gray && !tasks.is_empty() && !summary.is_empty() {
+        if let Some(ep) = primary.as_ref().or(fallback.as_ref()) {
+            if let Ok(raw) = call_text_task_match(ep, &tasks, &summary) {
+                if let Ok(Some(m)) = parse_task_match_json(&raw, &tasks) {
+                    if m.confidence >= TASK_MATCH_MIN {
+                        output = apply_task_match(output, &evidence, &m);
+                        matched_text = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if !matched_text && gray {
+        let vision = match (screenshot_path.as_ref(), capture_ctx) {
+            (Some(path), Some(capture_ctx)) => {
+                let ctx = VisionContext {
+                    slot_start,
+                    slot_end,
+                    quests: quests.iter().map(vision_quest_label).collect(),
+                    capture: capture_ctx,
+                    activity_summary: activity_summary_for_vision(&evidence, &samples),
+                };
+                maybe_vision_for_gray_zone(
+                    decidable,
+                    capture,
+                    Path::new(path),
+                    ctx,
+                    &never,
+                    primary.as_ref(),
+                    fallback.as_ref(),
+                )
+            }
+            _ => None,
+        };
+        if vision.is_some() {
+            output = judge_slot(JudgeInput {
+                slot_start,
+                slot_end,
+                samples: &samples,
+                quests: &quests,
+                tasks: &tasks,
+                policy: &policy,
+                capture,
+                vision,
+                manual_core: None,
+            });
+        }
+    }
 
     let include_verified = output.used_vision || output.credited_core_seconds > 0;
     let early_coins = compute_early_coins(
