@@ -1,7 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use gamelife_core::judge::{Dominant, JudgeOutput};
-use gamelife_core::ledger::tick_keys_for_credited;
+use gamelife_core::ledger::{admin_xp_key, support_xp_key, tick_keys_for_credited};
+use gamelife_core::GOLD_DAY_SECS;
 use gamelife_core::types::ActivitySeconds;
 
 use crate::db::insert_ledger;
@@ -43,11 +44,31 @@ pub fn resolve_slot(
         }
     }
 
-    if credited_before < 900 && after >= 900 {
+    if credited_before < 900 && after >= 900 && early_coins > 0 {
         let key = format!("early_start:{day}");
         if let Err(e) = insert_ledger(&tx, &key, day, early_coins, 0) {
             if e != DbOpError::AlreadyApplied {
                 return Err(e);
+            }
+        }
+    }
+
+    let gold_day = i64::try_from(GOLD_DAY_SECS).unwrap_or(28800);
+    if after < gold_day {
+        if output.dominant == Dominant::ResearchSupport {
+            let ev = support_xp_key(day, slot_start);
+            if let Err(e) = insert_ledger(&tx, &ev.key, day, ev.coin, ev.xp) {
+                if e != DbOpError::AlreadyApplied {
+                    return Err(e);
+                }
+            }
+        }
+        if output.dominant == Dominant::Admin && admin_xp_slots_today(&tx, day)? < 4 {
+            let ev = admin_xp_key(day, slot_start);
+            if let Err(e) = insert_ledger(&tx, &ev.key, day, ev.coin, ev.xp) {
+                if e != DbOpError::AlreadyApplied {
+                    return Err(e);
+                }
             }
         }
     }
@@ -116,6 +137,16 @@ fn dominant_category(d: Dominant) -> &'static str {
         Dominant::PendingReview => "pending_review",
         Dominant::Unknown => "unknown",
     }
+}
+
+fn admin_xp_slots_today(conn: &Connection, day: &str) -> Result<i64, DbOpError> {
+    let prefix = format!("xp_admin:{day}:%");
+    conn.query_row(
+        "SELECT COUNT(*) FROM ledger WHERE reward_event_key LIKE ?1",
+        params![prefix],
+        |r| r.get(0),
+    )
+    .map_err(map_rusqlite)
 }
 
 fn activity_json(a: &ActivitySeconds) -> String {

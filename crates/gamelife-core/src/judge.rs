@@ -17,6 +17,7 @@ pub struct VisionResult {
     pub wants_core: bool,
     pub confidence: f64,
     pub context_app: Option<String>,
+    pub category: String,
 }
 
 pub struct JudgeInput<'a> {
@@ -135,10 +136,12 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
         };
     } else {
         // Gray zone
-        let vision_wants_core = input
-            .vision
-            .as_ref()
-            .is_some_and(|v| v.wants_core && v.confidence >= VISION_CONFIDENCE_MIN);
+        let vision = input.vision.as_ref();
+        let vision_confident = vision.is_some_and(|v| v.confidence >= VISION_CONFIDENCE_MIN);
+        let vision_wants_core =
+            vision_confident && vision.is_some_and(|v| v.wants_core);
+        let vision_rejects_core =
+            vision_confident && vision.is_some_and(|v| !v.wants_core);
         let manual_core = input.manual_core == Some(true);
 
         if vision_wants_core && strong_core > 0 {
@@ -150,6 +153,14 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
             if !context_matches && input.manual_core.is_none() {
                 pending = true;
             }
+        }
+
+        if vision_rejects_core
+            && strong_core + reading_bridge > 0
+            && strong_core + reading_bridge > activity.side + activity.distraction
+            && input.manual_core.is_none()
+        {
+            pending = true;
         }
 
         if !pending
@@ -176,6 +187,19 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
             credited_raw = strong_core + reading_bridge + verified_core;
             if credited_raw > 0 {
                 dominant = Dominant::CoreResearch;
+            }
+        } else if !pending && vision_confident && vision_rejects_core && input.manual_core.is_none() {
+            let unsure_secs = sum_unsure_spans(&spans);
+            match vision.map(|v| v.category.as_str()) {
+                Some("research_support") if unsure_secs > 0 => {
+                    activity.support += unsure_secs;
+                    dominant = Dominant::ResearchSupport;
+                }
+                Some("admin") if unsure_secs > 0 => {
+                    activity.admin += unsure_secs;
+                    dominant = Dominant::Admin;
+                }
+                _ => {}
             }
         }
     }
@@ -216,6 +240,63 @@ fn accumulate_hint_activity(activity: &mut ActivitySeconds, hint: Hint, secs: i6
         Hint::CoreCandidate | Hint::CoreReading => activity.core += secs,
         Hint::UnsureReading | Hint::Unsure => {}
     }
+}
+
+/// Seconds from unsure / unsure_reading spans (for vision support/admin mapping).
+pub fn sum_unsure_spans(spans: &[Span]) -> i64 {
+    spans
+        .iter()
+        .filter_map(|span| {
+            if let SpanKind::Observed(hint) = span.kind {
+                if matches!(hint, Hint::Unsure | Hint::UnsureReading) {
+                    return Some(span.end - span.start);
+                }
+            }
+            None
+        })
+        .sum()
+}
+
+/// Extract up to `limit` seconds of credited-core time spans (unix timestamps).
+pub fn credited_core_spans(
+    samples: &[Sample],
+    spans: &[Span],
+    limit: i64,
+    include_verified_unsure: bool,
+) -> Vec<(i64, i64)> {
+    if limit <= 0 {
+        return vec![];
+    }
+    let mut out = Vec::new();
+    let mut total = 0_i64;
+    for span in spans {
+        if total >= limit {
+            break;
+        }
+        let secs = span.end - span.start;
+        if secs <= 0 {
+            continue;
+        }
+        let creditable = match span.kind {
+            SpanKind::Unobserved => false,
+            SpanKind::Observed(hint) => {
+                let idle = sample_idle_at(samples, span.start);
+                match hint {
+                    Hint::CoreCandidate if idle < LOW_INPUT_IDLE_SECS => true,
+                    Hint::CoreReading => true,
+                    Hint::Unsure | Hint::UnsureReading if include_verified_unsure => true,
+                    _ => false,
+                }
+            }
+        };
+        if !creditable {
+            continue;
+        }
+        let take = (limit - total).min(secs);
+        out.push((span.start, span.start + take));
+        total += take;
+    }
+    out
 }
 
 fn sample_idle_at(samples: &[Sample], ts: i64) -> i64 {
@@ -393,6 +474,7 @@ mod tests {
                 wants_core: true,
                 confidence: 0.9,
                 context_app: Some("Isaac Sim".into()),
+                category: "core_research".into(),
             }),
             manual_core: None,
         });
@@ -423,6 +505,7 @@ mod tests {
                 wants_core: true,
                 confidence: 0.95,
                 context_app: Some("Cursor".into()),
+                category: "core_research".into(),
             }),
             manual_core: None,
         });
@@ -488,6 +571,7 @@ mod tests {
                 wants_core: true,
                 confidence: 0.95,
                 context_app: Some("Cursor".into()),
+                category: "core_research".into(),
             }),
             manual_core: None,
         });
@@ -540,6 +624,7 @@ mod tests {
                 wants_core: true,
                 confidence: 0.9,
                 context_app: Some("WeChat".into()),
+                category: "core_research".into(),
             }),
             manual_core: None,
         });
@@ -646,6 +731,32 @@ mod tests {
         });
         assert_eq!(out.credited_core_seconds, 0);
         assert_ne!(out.dominant, Dominant::CoreResearch);
+    }
+
+    #[test]
+    fn metadata_core_vision_wechat_is_pending() {
+        let samples = grid("Cursor", "main.tex", 0, 40, 15, 2);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "paper".into(),
+                keywords: vec!["main.tex".into()],
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Captured,
+            vision: Some(VisionResult {
+                wants_core: false,
+                confidence: 0.9,
+                context_app: Some("WeChat".into()),
+                category: "distraction".into(),
+            }),
+            manual_core: None,
+        });
+        assert!(out.pending);
+        assert_eq!(out.dominant, Dominant::PendingReview);
+        assert_eq!(out.credited_core_seconds, 0);
     }
 
     #[test]

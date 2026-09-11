@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, NaiveDate, TimeZone};
@@ -7,16 +8,17 @@ use serde::Deserialize;
 
 use gamelife_core::{
     builtin_never_capture, builtin_side_project_rules, can_use_freeze, capture_on_resume,
-    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, new_milestones, recompute_streak,
-    schedule_capture, slot_end_exclusive, slot_start, spans_for_slot, CaptureStatus, DayOutcome,
-    JudgeInput, Policy, Quest, Sample, CHEST_SECS,
+    credited_core_spans, early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved,
+    hint_sample, is_weekday, judge_slot, new_milestones, recompute_streak, schedule_capture,
+    slot_end_exclusive, slot_start, spans_for_slot, CaptureStatus, DayOutcome, JudgeInput, Policy,
+    Quest, Sample, CHEST_SECS,
 };
 use gamelife_core::types::Hint;
 use gamelife_core::judge::{Dominant, JudgeOutput, VisionResult};
 use gamelife_core::observe::SpanKind;
 use gamelife_core::types::ActivitySeconds;
 
-use crate::db::{insert_ledger, migrate};
+use crate::db::{app_db_path, insert_ledger, migrate, open};
 use crate::db_error::{map_rusqlite, DbOpError};
 use crate::resolve::resolve_slot;
 use crate::vision;
@@ -104,7 +106,14 @@ pub fn decide_capture(
     paused: bool,
     never: &[String],
 ) -> CaptureStatus {
-    if secure || locked || paused || never.iter().any(|n| app.contains(n)) {
+    let app_lower = app.to_ascii_lowercase();
+    if secure
+        || locked
+        || paused
+        || never
+            .iter()
+            .any(|n| app_lower.contains(&n.to_ascii_lowercase()))
+    {
         CaptureStatus::Skipped
     } else {
         CaptureStatus::Scheduled
@@ -286,11 +295,35 @@ pub fn ensure_slot(
 ) -> Result<(), DbOpError> {
     migrate(conn)?;
     let scheduled = schedule_capture(slot_start_ts, rng);
+    let quest_vid: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM quest_versions WHERE day = ?1 ORDER BY id DESC LIMIT 1",
+            params![day],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    let policy_vid: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM policy_versions ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
     conn.execute(
-        "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status)
-         VALUES (?1, ?2, ?3, 'Scheduled')
+        "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, quest_version_id, policy_version_id)
+         VALUES (?1, ?2, ?3, 'Scheduled', ?4, ?5)
          ON CONFLICT(day, slot_start) DO NOTHING",
-        params![day, slot_start_ts, scheduled],
+        params![day, slot_start_ts, scheduled, quest_vid, policy_vid],
+    )
+    .map_err(map_rusqlite)?;
+    conn.execute(
+        "UPDATE slots SET
+           quest_version_id = COALESCE(quest_version_id, ?3),
+           policy_version_id = COALESCE(policy_version_id, ?4)
+         WHERE day = ?1 AND slot_start = ?2",
+        params![day, slot_start_ts, quest_vid, policy_vid],
     )
     .map_err(map_rusqlite)?;
     Ok(())
@@ -376,6 +409,12 @@ pub fn fill_heartbeat_unobserved(conn: &Connection, last_heartbeat: i64, now: i6
             let secs = overlap_end - t;
             if secs > 0 {
                 let day = day_str_for_ts(ss);
+                if let Ok(date) = parse_day(&day) {
+                    if !is_weekday(date) {
+                        t = overlap_end;
+                        continue;
+                    }
+                }
                 let rng = slot_rng(&day, ss);
                 add_unobserved_secs(conn, &day, ss, secs, rng)?;
             }
@@ -385,12 +424,17 @@ pub fn fill_heartbeat_unobserved(conn: &Connection, last_heartbeat: i64, now: i6
     Ok(())
 }
 
-pub fn startup_from_heartbeat(conn: &Connection, now: i64) -> Result<(), DbOpError> {
+pub fn startup_from_heartbeat(
+    conn: &mut Connection,
+    now: i64,
+    retention: ScreenshotRetention,
+) -> Result<(), DbOpError> {
     migrate(conn)?;
     if let Some(last) = read_heartbeat_ts(conn)? {
         fill_heartbeat_unobserved(conn, last, now)?;
     }
     apply_capture_on_resume(conn, now)?;
+    finalize_ended_open_slots(conn, now, retention)?;
     Ok(())
 }
 
@@ -453,6 +497,7 @@ pub fn tick_capture(
     secure: bool,
     locked: bool,
     paused: bool,
+    screen_recording: bool,
 ) -> Result<(), DbOpError> {
     tick_capture_impl(
         conn,
@@ -463,6 +508,7 @@ pub fn tick_capture(
         secure,
         locked,
         paused,
+        screen_recording,
         default_capture_fn(),
     )
 }
@@ -476,6 +522,7 @@ fn tick_capture_impl(
     secure: bool,
     locked: bool,
     paused: bool,
+    screen_recording: bool,
     capture_fn: CaptureFn,
 ) -> Result<(), DbOpError> {
     let row: Option<(i64, String)> = conn
@@ -496,8 +543,11 @@ fn tick_capture_impl(
     if now < scheduled_at {
         return Ok(());
     }
-    let never = builtin_never_capture();
-    let next = if decide_capture(app, secure, locked, paused, &never) == CaptureStatus::Skipped {
+    let policy = load_policy(conn)?;
+    let never = merged_never_capture(&policy);
+    let next = if !screen_recording
+        || decide_capture(app, secure, locked, paused, &never) == CaptureStatus::Skipped
+    {
         CaptureStatus::Skipped
     } else if let Some(path) = screenshot_path_for(day, slot_start_ts, now) {
         if let Some(parent) = path.parent() {
@@ -558,6 +608,99 @@ pub fn load_policy(conn: &Connection) -> Result<Policy, DbOpError> {
         .map_err(map_rusqlite)?;
     let Some(json) = json else {
         return Ok(default_policy());
+    };
+    let parsed: PolicyJson = serde_json::from_str(&json).map_err(|e| {
+        DbOpError::Fatal(format!("policy json: {e}"))
+    })?;
+    Ok(Policy {
+        trusted_apps: parsed.trusted_apps.unwrap_or_default(),
+        distraction_rules: parsed.distraction_rules.unwrap_or_default(),
+        side_project_rules: parsed
+            .side_project_rules
+            .unwrap_or_else(builtin_side_project_rules),
+        reading_apps: parsed.reading_apps.unwrap_or_default(),
+        never_capture_apps: parsed
+            .never_capture_apps
+            .unwrap_or_else(builtin_never_capture),
+    })
+}
+
+fn merged_never_capture(policy: &Policy) -> Vec<String> {
+    let mut out = builtin_never_capture();
+    for app in &policy.never_capture_apps {
+        if !out.iter().any(|b| b.eq_ignore_ascii_case(app)) {
+            out.push(app.clone());
+        }
+    }
+    out
+}
+
+fn slot_version_ids(
+    conn: &Connection,
+    day: &str,
+    slot_start: i64,
+) -> Result<(Option<i64>, Option<i64>), DbOpError> {
+    Ok(conn
+        .query_row(
+            "SELECT quest_version_id, policy_version_id FROM slots WHERE day = ?1 AND slot_start = ?2",
+            params![day, slot_start],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(map_rusqlite)?
+        .unwrap_or((None, None)))
+}
+
+pub fn load_quests_for_version(
+    conn: &Connection,
+    day: &str,
+    quest_version_id: Option<i64>,
+) -> Result<Vec<Quest>, DbOpError> {
+    let json: Option<String> = if let Some(id) = quest_version_id {
+        conn.query_row(
+            "SELECT json FROM quest_versions WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?
+    } else {
+        None
+    };
+    let json = match json {
+        Some(j) => j,
+        None => {
+            return load_quests_for_day(conn, day);
+        }
+    };
+    let parsed: Vec<QuestJson> =
+        serde_json::from_str(&json).map_err(|e| DbOpError::Fatal(format!("quest json: {e}")))?;
+    Ok(parsed
+        .into_iter()
+        .map(|q| Quest {
+            text: q.text,
+            keywords: q.keywords,
+        })
+        .collect())
+}
+
+pub fn load_policy_for_version(
+    conn: &Connection,
+    policy_version_id: Option<i64>,
+) -> Result<Policy, DbOpError> {
+    let json: Option<String> = if let Some(id) = policy_version_id {
+        conn.query_row(
+            "SELECT json FROM policy_versions WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?
+    } else {
+        None
+    };
+    let Some(json) = json else {
+        return load_policy(conn);
     };
     let parsed: PolicyJson = serde_json::from_str(&json).map_err(|e| {
         DbOpError::Fatal(format!("policy json: {e}"))
@@ -646,6 +789,180 @@ fn load_samples_for_slot(
     rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
 }
 
+fn hints_for_slot(
+    samples: &[Sample],
+    policy: &Policy,
+    quests: &[Quest],
+) -> Vec<Hint> {
+    let mut last_core_interaction_ts: Option<i64> = None;
+    let mut hints = Vec::with_capacity(samples.len());
+    for sample in samples {
+        let hint = hint_sample(sample, policy, quests, last_core_interaction_ts);
+        if sample.idle_seconds < LOW_INPUT_IDLE_SECS && hint == Hint::CoreCandidate {
+            last_core_interaction_ts = Some(sample.ts);
+        }
+        hints.push(hint);
+    }
+    hints
+}
+
+fn credited_spans_for_final_slot(
+    conn: &Connection,
+    day: &str,
+    slot_start: i64,
+    slot_end: i64,
+    credited_limit: i64,
+    include_verified_unsure: bool,
+) -> Result<Vec<(i64, i64)>, DbOpError> {
+    if credited_limit <= 0 {
+        return Ok(vec![]);
+    }
+    let (quest_vid, policy_vid) = slot_version_ids(conn, day, slot_start)?;
+    let policy = load_policy_for_version(conn, policy_vid)?;
+    let quests = load_quests_for_version(conn, day, quest_vid)?;
+    let samples = load_samples_for_slot(conn, day, slot_start, slot_end)?;
+    let hints = hints_for_slot(&samples, &policy, &quests);
+    let spans = spans_for_slot(&samples, &hints, slot_start, slot_end);
+    Ok(credited_core_spans(
+        &samples,
+        &spans,
+        credited_limit,
+        include_verified_unsure,
+    ))
+}
+
+/// Compute early-start coins when `credited_before + current_credited` first crosses 900.
+pub fn compute_early_coins(
+    conn: &Connection,
+    day: &str,
+    through_slot_start: i64,
+    through_slot_end: i64,
+    current_credited: i64,
+    current_include_verified: bool,
+) -> Result<i64, DbOpError> {
+    let credited_before = credited_before_slot(conn, day, through_slot_start)?;
+    let after = credited_before + current_credited;
+    if credited_before >= 900 || after < 900 {
+        return Ok(0);
+    }
+
+    let mut all_spans: Vec<(i64, i64)> = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT slot_start, credited_core_seconds FROM slots
+             WHERE day = ?1 AND slot_start < ?2 AND status = 'final'
+             ORDER BY slot_start",
+        )
+        .map_err(map_rusqlite)?;
+    let rows = stmt
+        .query_map(params![day, through_slot_start], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })
+        .map_err(map_rusqlite)?;
+    for row in rows {
+        let (ss, credited) = row.map_err(map_rusqlite)?;
+        let se = slot_end_exclusive(ss);
+        all_spans.extend(credited_spans_for_final_slot(
+            conn,
+            day,
+            ss,
+            se,
+            credited,
+            false,
+        )?);
+    }
+
+    let (quest_vid, policy_vid) = slot_version_ids(conn, day, through_slot_start)?;
+    let policy = load_policy_for_version(conn, policy_vid)?;
+    let quests = load_quests_for_version(conn, day, quest_vid)?;
+    let samples = load_samples_for_slot(conn, day, through_slot_start, through_slot_end)?;
+    let hints = hints_for_slot(&samples, &policy, &quests);
+    let spans = spans_for_slot(&samples, &hints, through_slot_start, through_slot_end);
+    all_spans.extend(credited_core_spans(
+        &samples,
+        &spans,
+        current_credited,
+        current_include_verified,
+    ));
+
+    let Some(anchor) = early_start_anchor(&all_spans) else {
+        return Ok(0);
+    };
+    let local_secs = anchor - start_of_local_day(anchor);
+    Ok(early_start_coins_for_local_secs(local_secs))
+}
+
+pub fn finalize_ended_open_slots(
+    conn: &mut Connection,
+    now: i64,
+    retention: ScreenshotRetention,
+) -> Result<(), DbOpError> {
+    let rows: Vec<(String, i64)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT day, slot_start FROM slots
+             WHERE (status IS NULL OR status NOT IN ('final', 'unknown'))
+               AND slot_start + 900 <= ?1
+             ORDER BY day, slot_start",
+            )
+            .map_err(map_rusqlite)?;
+        let mapped = stmt
+            .query_map(params![now], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(map_rusqlite)?;
+        mapped.filter_map(|r| r.ok()).collect()
+    };
+    for (day, slot_start) in rows {
+        if slot_is_final(conn, &day, slot_start)? {
+            continue;
+        }
+        let slot_end = slot_end_exclusive(slot_start);
+        if slot_end > now {
+            continue;
+        }
+        let credited_before = credited_before_slot(conn, &day, slot_start)?;
+        finalize_slot_end(
+            conn,
+            &day,
+            slot_start,
+            slot_end,
+            retention,
+            credited_before,
+        )?;
+    }
+    Ok(())
+}
+
+fn spawn_async_finalize(
+    day: String,
+    slot_start: i64,
+    slot_end: i64,
+    retention: ScreenshotRetention,
+) {
+    let Some(db_path) = app_db_path() else {
+        return;
+    };
+    thread::spawn(move || {
+        let mut conn = match open(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("async finalize: open db failed: {e:?}");
+                return;
+            }
+        };
+        let credited_before = credited_before_slot(&conn, &day, slot_start).unwrap_or(0);
+        if let Err(e) = finalize_slot_end(
+            &mut conn,
+            &day,
+            slot_start,
+            slot_end,
+            retention,
+            credited_before,
+        ) {
+            eprintln!("async finalize failed: {e:?}");
+        }
+    });
+}
+
 /// Finalize the previous slot when the sampler crosses a slot (or day) boundary.
 pub fn maybe_finalize_previous_slot(
     conn: &mut Connection,
@@ -669,16 +986,8 @@ pub fn maybe_finalize_previous_slot(
     } else {
         slot_end_exclusive(prev_slot)
     };
-    let credited_before = credited_before_slot(conn, prev_day, prev_slot)?;
-    finalize_slot_end(
-        conn,
-        prev_day,
-        prev_slot,
-        slot_end,
-        retention,
-        credited_before,
-        0,
-    )
+    spawn_async_finalize(prev_day.to_string(), prev_slot, slot_end, retention);
+    Ok(())
 }
 
 /// Slot end: strong metadata → no upload; gray zone + Captured → vision HTTP; then judge + resolve.
@@ -689,7 +998,6 @@ pub fn finalize_slot_end(
     slot_end: i64,
     retention: ScreenshotRetention,
     credited_before: i64,
-    early_coins: i64,
 ) -> Result<(), DbOpError> {
     if slot_is_final(conn, day, slot_start)? {
         return Ok(());
@@ -709,8 +1017,9 @@ pub fn finalize_slot_end(
         .unwrap_or(CaptureStatus::Scheduled);
 
     let samples = load_samples_for_slot(conn, day, slot_start, slot_end)?;
-    let policy = load_policy(conn)?;
-    let quests = load_quests_for_day(conn, day)?;
+    let (quest_vid, policy_vid) = slot_version_ids(conn, day, slot_start)?;
+    let policy = load_policy_for_version(conn, policy_vid)?;
+    let quests = load_quests_for_version(conn, day, quest_vid)?;
     let actual = slot_end - slot_start;
     let (activity, strong_core, reading_bridge) =
         compute_slot_activity(&samples, &policy, &quests, slot_start, slot_end);
@@ -740,6 +1049,17 @@ pub fn finalize_slot_end(
         vision,
         manual_core: None,
     });
+
+    let include_verified = output.used_vision || output.credited_core_seconds > 0;
+    let early_coins = compute_early_coins(
+        conn,
+        day,
+        slot_start,
+        slot_end,
+        output.credited_core_seconds,
+        include_verified,
+    )
+    .unwrap_or(0);
 
     resolve_slot(conn, day, slot_start, &output, credited_before, early_coins)?;
 
@@ -902,15 +1222,7 @@ fn finalize_yesterday_last_slot(
         return Ok(());
     }
     let credited_before = credited_before_slot(conn, yesterday, last_ss)?;
-    finalize_slot_end(
-        conn,
-        yesterday,
-        last_ss,
-        day_end,
-        retention,
-        credited_before,
-        0,
-    )
+    finalize_slot_end(conn, yesterday, last_ss, day_end, retention, credited_before)
 }
 
 /// Settle a calendar day: pending→unknown, compute outcome, idempotent.
@@ -1122,12 +1434,16 @@ pub fn end_today(
     let ss = gamelife_core::slot_start(now);
     mark_scheduled_capture_missed(conn, &day, ss)?;
     let credited_before = credited_before_slot(conn, &day, ss)?;
-    finalize_slot_end(conn, &day, ss, now, retention, credited_before, 0)?;
+    finalize_slot_end(conn, &day, ss, now, retention, credited_before)?;
     settle_day(conn, &day, now)
 }
 
 pub fn sampling_allowed(conn: &Connection, day: &str) -> Result<bool, DbOpError> {
-    Ok(!day_is_settled(conn, day)?)
+    if day_is_settled(conn, day)? {
+        return Ok(false);
+    }
+    let date = parse_day(day)?;
+    Ok(is_weekday(date))
 }
 
 fn category_to_dominant(category: &str) -> Dominant {
@@ -1157,8 +1473,9 @@ pub fn review_pending_slot(
     }
     let slot_end = slot_end_exclusive(slot_start);
     let samples = load_samples_for_slot(conn, day, slot_start, slot_end)?;
-    let policy = load_policy(conn)?;
-    let quests = load_quests_for_day(conn, day)?;
+    let (quest_vid, policy_vid) = slot_version_ids(conn, day, slot_start)?;
+    let policy = load_policy_for_version(conn, policy_vid)?;
+    let quests = load_quests_for_version(conn, day, quest_vid)?;
     let capture_status_str: Option<String> = conn
         .query_row(
             "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -1196,16 +1513,35 @@ pub fn review_pending_slot(
             vision: None,
             manual_core: None,
         });
+        let mut activity = judged.activity;
+        match category {
+            "research_support" => {
+                activity.support = judged.observed_seconds;
+            }
+            "admin" => {
+                activity.admin = judged.observed_seconds;
+            }
+            _ => {}
+        }
         JudgeOutput {
             dominant: category_to_dominant(category),
-            activity: judged.activity,
+            activity,
             credited_core_seconds: 0,
             observed_seconds: judged.observed_seconds,
             used_vision: false,
             pending: false,
         }
     };
-    resolve_slot(conn, day, slot_start, &output, credited_before, 0)?;
+    let early_coins = compute_early_coins(
+        conn,
+        day,
+        slot_start,
+        slot_end,
+        output.credited_core_seconds,
+        output.used_vision,
+    )
+    .unwrap_or(0);
+    resolve_slot(conn, day, slot_start, &output, credited_before, early_coins)?;
     if let Some(path) = samples
         .iter()
         .rev()
@@ -1366,7 +1702,7 @@ mod tests {
             params![day, ss],
         )
         .unwrap();
-        tick_capture(&conn, day, ss, 200, "Cursor", false, false, false).unwrap();
+        tick_capture(&conn, day, ss, 200, "Cursor", false, false, false, true).unwrap();
         let status: String = conn
             .query_row(
                 "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -1389,7 +1725,7 @@ mod tests {
             params![day, ss],
         )
         .unwrap();
-        tick_capture(&conn, day, ss, 100, "Cursor", false, false, true).unwrap();
+        tick_capture(&conn, day, ss, 100, "Cursor", false, false, true, true).unwrap();
         let status: String = conn
             .query_row(
                 "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -1412,7 +1748,7 @@ mod tests {
             params![day, ss],
         )
         .unwrap();
-        tick_capture(&conn, day, ss, 100, "1Password", false, false, false).unwrap();
+        tick_capture(&conn, day, ss, 100, "1Password", false, false, false, true).unwrap();
         let status: String = conn
             .query_row(
                 "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -1456,6 +1792,7 @@ mod tests {
             false,
             false,
             false,
+            true,
             test_capture_ok,
         )
         .unwrap();
@@ -1527,16 +1864,7 @@ mod tests {
         )
         .unwrap();
 
-        finalize_slot_end(
-            &mut conn,
-            day,
-            ss,
-            900,
-            ScreenshotRetention::None,
-            0,
-            0,
-        )
-        .unwrap();
+        finalize_slot_end(&mut conn, day, ss, 900, ScreenshotRetention::None, 0).unwrap();
 
         let status: String = conn
             .query_row(
@@ -1644,15 +1972,7 @@ mod tests {
         )
         .unwrap();
 
-        maybe_finalize_previous_slot(
-            &mut conn,
-            Some(day),
-            Some(0),
-            day,
-            900,
-            ScreenshotRetention::None,
-        )
-        .unwrap();
+        finalize_slot_end(&mut conn, day, 0, 900, ScreenshotRetention::None, 0).unwrap();
 
         let status: String = conn
             .query_row(
@@ -1932,6 +2252,114 @@ mod tests {
             .unwrap();
         assert!(settled > 0);
         assert!(!sampling_allowed(&conn, day).unwrap());
+    }
+
+    #[test]
+    fn sampling_not_allowed_on_weekend() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        assert!(!sampling_allowed(&conn, "2026-09-12").unwrap());
+        assert!(sampling_allowed(&conn, "2026-09-11").unwrap());
+    }
+
+    #[test]
+    fn early_start_coins_from_contiguous_morning_core() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        let day_start = day_start_ts(day);
+        let ss = day_start + 8 * 3600 + 25 * 60;
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at)
+             VALUES ('{\"trusted_apps\":[\"Cursor\"],\"distraction_rules\":[],\"side_project_rules\":[],\"reading_apps\":[],\"never_capture_apps\":[]}', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"paper\",\"keywords\":[\"main.tex\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, quest_version_id, policy_version_id)
+             VALUES (?1, ?2, ?3, 'Missed', 1, 1)",
+            params![day, ss, ss + 60],
+        )
+        .unwrap();
+        for i in 0..60 {
+            conn.execute(
+                "INSERT INTO samples (ts, day, app, title, path, idle_seconds, locked, paused)
+                 VALUES (?1, ?2, 'Cursor', 'main.tex', '/x/main.tex', 2, 0, 0)",
+                params![ss + i * 15, day],
+            )
+            .unwrap();
+        }
+        finalize_slot_end(&mut conn, day, ss, ss + 900, ScreenshotRetention::None, 0).unwrap();
+        let coin: i64 = conn
+            .query_row(
+                "SELECT coin_delta FROM ledger WHERE reward_event_key = ?1",
+                params![format!("early_start:{day}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(coin, 8);
+    }
+
+    #[test]
+    fn early_start_no_ledger_when_gap_breaks_anchor() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        let day_start = day_start_ts(day);
+        let ss1 = day_start + 8 * 3600 + 25 * 60;
+        let ss2 = day_start + 10 * 3600 + 30 * 60;
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at)
+             VALUES ('{\"trusted_apps\":[\"Cursor\"],\"distraction_rules\":[],\"side_project_rules\":[],\"reading_apps\":[],\"never_capture_apps\":[]}', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"paper\",\"keywords\":[\"main.tex\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+        for (ss, n) in [(ss1, 4), (ss2, 56)] {
+            conn.execute(
+                "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, quest_version_id, policy_version_id, status, credited_core_seconds, observed_seconds, used_vision)
+                 VALUES (?1, ?2, ?3, 'Missed', 1, 1, NULL, 0, 0, 0)",
+                params![day, ss, ss + 60],
+            )
+            .unwrap();
+            for i in 0..n {
+                conn.execute(
+                    "INSERT INTO samples (ts, day, app, title, path, idle_seconds, locked, paused)
+                     VALUES (?1, ?2, 'Cursor', 'main.tex', '/x/main.tex', 2, 0, 0)",
+                    params![ss + i * 15, day],
+                )
+                .unwrap();
+            }
+        }
+        finalize_slot_end(&mut conn, day, ss1, ss1 + 900, ScreenshotRetention::None, 0).unwrap();
+        finalize_slot_end(
+            &mut conn,
+            day,
+            ss2,
+            ss2 + 900,
+            ScreenshotRetention::None,
+            60,
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ledger WHERE reward_event_key = ?1",
+                params![format!("early_start:{day}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

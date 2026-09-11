@@ -21,7 +21,10 @@ pub use r#const::*;
 pub use format::format_estimated_minutes;
 pub use heartbeat::heartbeat_unobserved;
 pub use hint::hint_sample;
-pub use judge::{Dominant, JudgeInput, JudgeOutput, VisionResult, judge_slot};
+pub use judge::{
+    Dominant, JudgeInput, JudgeOutput, VisionResult, credited_core_spans, judge_slot,
+    sum_unsure_spans,
+};
 pub use ledger::{RewardEvent, admin_xp_key, support_xp_key, tick_keys_for_credited};
 pub use observe::{Span, SpanKind, observed_seconds, spans_for_slot};
 pub use policy::{
