@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmEndDay } from "../components/ConfirmEndDay";
+import { PermissionBanner } from "../components/PermissionBanner";
 import { Progress32 } from "../components/Progress32";
 import {
   endToday,
@@ -91,6 +92,7 @@ export function Today() {
   return (
     <div className="page">
       <h2>今日</h2>
+      <PermissionBanner />
       {error && <p className="error">{error}</p>}
       <section>
         <h3>Quest（1–3 条）</h3>

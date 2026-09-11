@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -32,7 +32,11 @@ pub trait SampleSource: Send + Sync {
     fn secure_input_on(&self) -> bool;
     fn optional_browser_url(&self) -> Option<String>;
     fn paused(&self) -> bool;
-    fn observation_available(&self) -> bool {
+    fn metadata_observation_available(&self) -> bool {
+        true
+    }
+
+    fn capture_observation_available(&self) -> bool {
         true
     }
 }
@@ -40,12 +44,16 @@ pub trait SampleSource: Send + Sync {
 #[derive(Clone)]
 pub struct PauseControl {
     paused: Arc<AtomicBool>,
+    resume_at: Arc<AtomicI64>,
+    generation: Arc<AtomicU64>,
 }
 
 impl PauseControl {
     pub fn new() -> Self {
         Self {
             paused: Arc::new(AtomicBool::new(false)),
+            resume_at: Arc::new(AtomicI64::new(0)),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -57,13 +65,22 @@ impl PauseControl {
         self.paused.load(Ordering::Relaxed)
     }
 
-    /// Pause sampling/capture for `secs`, then auto-clear.
+    /// Pause sampling/capture for `secs`, then auto-clear (latest pause wins).
     pub fn pause_for(&self, secs: u64) {
+        let gen = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let deadline = now_secs() + secs as i64;
+        self.resume_at.store(deadline, Ordering::Relaxed);
         self.paused.store(true, Ordering::Relaxed);
         let flag = self.paused.clone();
+        let resume_at = self.resume_at.clone();
+        let generation = self.generation.clone();
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(secs));
-            flag.store(false, Ordering::Relaxed);
+            if generation.load(Ordering::Relaxed) == gen
+                && now_secs() >= resume_at.load(Ordering::Relaxed)
+            {
+                flag.store(false, Ordering::Relaxed);
+            }
         });
     }
 }
@@ -103,8 +120,12 @@ impl SampleSource for MacSampleSource {
         self.paused.load(Ordering::Relaxed)
     }
 
-    fn observation_available(&self) -> bool {
-        crate::macos::observation_available()
+    fn metadata_observation_available(&self) -> bool {
+        crate::macos::metadata_observation_available()
+    }
+
+    fn capture_observation_available(&self) -> bool {
+        crate::macos::capture_observation_available()
     }
 }
 
@@ -116,7 +137,8 @@ pub struct FakeSampleSource {
     pub locked: bool,
     pub secure: bool,
     pub paused: bool,
-    pub observation_available: bool,
+    pub metadata_observation_available: bool,
+    pub capture_observation_available: bool,
 }
 
 impl SampleSource for FakeSampleSource {
@@ -144,8 +166,12 @@ impl SampleSource for FakeSampleSource {
         self.paused
     }
 
-    fn observation_available(&self) -> bool {
-        self.observation_available
+    fn metadata_observation_available(&self) -> bool {
+        self.metadata_observation_available
+    }
+
+    fn capture_observation_available(&self) -> bool {
+        self.capture_observation_available
     }
 }
 
@@ -214,7 +240,7 @@ pub fn sample_once(
     let rng = slot_rng(&day, ss);
     ensure_slot(conn, &day, ss, rng)?;
 
-    if !source.observation_available() {
+    if !source.metadata_observation_available() {
         add_unobserved_secs(conn, &day, ss, SAMPLE_INTERVAL_SECS as i64, rng)?;
         write_heartbeat(conn)?;
         state.last_day = Some(day);
@@ -248,7 +274,17 @@ pub fn sample_once(
         paused,
     )?;
     write_heartbeat(conn)?;
-    tick_capture(conn, &day, ss, ts, &app, secure, locked, paused)?;
+    tick_capture(
+        conn,
+        &day,
+        ss,
+        ts,
+        &app,
+        secure,
+        locked,
+        paused,
+        source.capture_observation_available(),
+    )?;
     state.last_day = Some(day);
     state.last_slot = Some(ss);
     Ok(())
@@ -267,11 +303,11 @@ pub fn run_sampler_loop(db_path: PathBuf, source: &dyn SampleSource) {
         return;
     }
     let now = now_secs();
-    if let Err(e) = startup_from_heartbeat(&conn, now) {
-        eprintln!("sampler: startup heartbeat fill failed: {e:?}");
-    }
     let settings = load_settings();
     let retention = retention_from_str(&settings.screenshot_retention);
+    if let Err(e) = startup_from_heartbeat(&mut conn, now, retention) {
+        eprintln!("sampler: startup heartbeat fill failed: {e:?}");
+    }
     purge_expired_screenshots(retention, now);
     if let Err(e) = purge_old_samples(&conn, settings.sample_keep_days, now) {
         eprintln!("sampler: purge_old_samples failed: {e:?}");
@@ -313,7 +349,8 @@ mod tests {
             locked: false,
             secure: false,
             paused: false,
-            observation_available: true,
+            metadata_observation_available: true,
+            capture_observation_available: true,
         };
         let ts = 1_700_000_000i64;
         let mut state = SamplerState::default();
@@ -350,7 +387,8 @@ mod tests {
             locked: false,
             secure: false,
             paused: false,
-            observation_available: true,
+            metadata_observation_available: true,
+            capture_observation_available: true,
         };
         let ts = 1_700_000_015i64;
         let mut state = SamplerState::default();
@@ -378,7 +416,8 @@ mod tests {
             locked: false,
             secure: false,
             paused: false,
-            observation_available: false,
+            metadata_observation_available: false,
+            capture_observation_available: true,
         };
         let ts = 1_700_000_000i64;
         let mut state = SamplerState::default();
@@ -403,6 +442,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(away, 0);
+    }
+
+    #[test]
+    fn metadata_without_screen_recording_still_samples() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let source = FakeSampleSource {
+            app: "Cursor".into(),
+            title: "lib.rs".into(),
+            url: None,
+            idle: 3,
+            locked: false,
+            secure: false,
+            paused: false,
+            metadata_observation_available: true,
+            capture_observation_available: false,
+        };
+        let ts = 1_700_000_000i64;
+        let mut state = SamplerState::default();
+        sample_once(&mut conn, &source, ts, &mut state).unwrap();
+        let samples: i64 = conn
+            .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(samples, 1);
+        let status: String = conn
+            .query_row(
+                "SELECT capture_status FROM slots WHERE day = ?1",
+                [day_str_for_ts(ts)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "Skipped");
+    }
+
+    #[test]
+    fn overlapping_pause_only_latest_resumes() {
+        let pc = PauseControl::new();
+        pc.pause_for(90 * 60);
+        pc.pause_for(30 * 60);
+        pc.paused_flag().store(true, Ordering::Relaxed);
+        thread::sleep(Duration::from_millis(50));
+        assert!(pc.is_paused());
     }
 
     #[test]

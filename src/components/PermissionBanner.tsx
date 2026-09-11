@@ -5,9 +5,22 @@ export function PermissionBanner() {
   const [perms, setPerms] = useState<PermissionStatus | null>(null);
 
   useEffect(() => {
-    getPermissionStatus()
-      .then(setPerms)
-      .catch(() => setPerms(null));
+    let cancelled = false;
+    const refresh = () => {
+      getPermissionStatus()
+        .then((p) => {
+          if (!cancelled) setPerms(p);
+        })
+        .catch(() => {
+          if (!cancelled) setPerms(null);
+        });
+    };
+    refresh();
+    const id = setInterval(refresh, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
   if (!perms) return null;

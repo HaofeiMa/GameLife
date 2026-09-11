@@ -11,7 +11,7 @@ npm run tauri dev
 
 发布构建：`npm run tauri build`
 
-数据目录：`~/Library/Application Support/ma.haofei.gamelife/`
+数据目录：`~/Library/Application Support/GameLife/`（与 bundle identifier 无关）
 
 ## 系统权限（必须）
 
@@ -24,7 +24,7 @@ GameLife 需要以下 macOS 权限才能正常观测前台应用：
 
 在 **系统设置 → 隐私与安全性** 中分别授权。若缺少任一权限：
 
-- 主窗口与时间轴会显示橙色横幅提示；
+- 今日页、时间轴与设置页会显示橙色权限横幅；
 - 该时段记为 **unobserved / missing**，**不会**记为 Away；
 - 心跳缺口同样记为 unobserved。
 

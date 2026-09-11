@@ -9,6 +9,62 @@ import {
   type AppSettings,
 } from "../lib/api";
 
+function ListEditor({
+  label,
+  items,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  items: string[];
+  disabled: boolean;
+  onChange: (items: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  function add() {
+    const v = draft.trim();
+    if (!v) return;
+    if (items.some((x) => x.toLowerCase() === v.toLowerCase())) {
+      setDraft("");
+      return;
+    }
+    onChange([...items, v]);
+    setDraft("");
+  }
+
+  return (
+    <section>
+      <h3>{label}</h3>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>
+            {item}
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(items.filter((x) => x !== item))}
+            >
+              删除
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="slot-actions">
+        <input
+          value={draft}
+          disabled={disabled}
+          placeholder="新增一项"
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <button type="button" disabled={disabled || !draft.trim()} onClick={add}>
+          添加
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [apiKey, setApiKeyLocal] = useState("");
@@ -42,11 +98,38 @@ export function Settings() {
     }
   }
 
+  const userNeverCapture = settings.neverCaptureApps.filter(
+    (n) => !BUILTIN_NEVER_CAPTURE.some((b) => b.toLowerCase() === n.toLowerCase()),
+  );
+
   return (
     <div className="page">
       <h2>设置</h2>
       <PermissionBanner />
       <p className="muted">采样间隔固定 15s，此处不提供调节。</p>
+
+      <ListEditor
+        label="Trusted 应用"
+        items={settings.trustedApps}
+        disabled={busy}
+        onChange={(trustedApps) => setSettings({ ...settings, trustedApps })}
+      />
+
+      <ListEditor
+        label="Distraction 规则"
+        items={settings.distractionRules}
+        disabled={busy}
+        onChange={(distractionRules) =>
+          setSettings({ ...settings, distractionRules })
+        }
+      />
+
+      <ListEditor
+        label="Reading 应用"
+        items={settings.readingApps}
+        disabled={busy}
+        onChange={(readingApps) => setSettings({ ...settings, readingApps })}
+      />
 
       <section>
         <h3>Never Capture（内置只读）</h3>
@@ -55,7 +138,20 @@ export function Settings() {
             <li key={n}>{n}</li>
           ))}
         </ul>
+        <p className="muted">GameLife 侧项目规则内置，不可删除。</p>
       </section>
+
+      <ListEditor
+        label="额外 Never Capture"
+        items={userNeverCapture}
+        disabled={busy}
+        onChange={(extra) =>
+          setSettings({
+            ...settings,
+            neverCaptureApps: [...BUILTIN_NEVER_CAPTURE, ...extra],
+          })
+        }
+      />
 
       <section>
         <label>

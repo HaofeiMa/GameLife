@@ -58,10 +58,24 @@ pub struct ChestGold {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SlotActivityMinutes {
+    pub core: i64,
+    pub support: i64,
+    pub admin: i64,
+    pub side: i64,
+    pub distraction: i64,
+    pub away: i64,
+    pub unobserved: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TodaySlot {
     pub start: i64,
     pub dominant: String,
     pub credited_minutes: i64,
+    pub activity: SlotActivityMinutes,
+    pub activity_summary: String,
     pub pending: bool,
     #[serde(rename = "final")]
     pub is_final: bool,
@@ -153,6 +167,62 @@ fn secs_to_minutes(secs: i64) -> i64 {
     secs.max(0) / 60
 }
 
+fn activity_to_minutes(a: &ActivitySeconds) -> SlotActivityMinutes {
+    SlotActivityMinutes {
+        core: secs_to_minutes(a.core),
+        support: secs_to_minutes(a.support),
+        admin: secs_to_minutes(a.admin),
+        side: secs_to_minutes(a.side),
+        distraction: secs_to_minutes(a.distraction),
+        away: secs_to_minutes(a.away),
+        unobserved: secs_to_minutes(a.unobserved),
+    }
+}
+
+fn activity_summary(a: &ActivitySeconds) -> String {
+    let mut parts = Vec::new();
+    let mut push = |label: &str, secs: i64| {
+        let m = secs_to_minutes(secs);
+        if m > 0 {
+            parts.push(format!("{m}m {label}"));
+        }
+    };
+    push("Core", a.core);
+    push("Support", a.support);
+    push("Admin", a.admin);
+    push("Side", a.side);
+    push("Distraction", a.distraction);
+    push("Away", a.away);
+    push("Unobserved", a.unobserved);
+    if parts.is_empty() {
+        "—".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+pub fn tray_tooltip_for_today_db() -> Result<String, String> {
+    with_db(|conn| {
+        let day = day_str_for_ts(now_secs());
+        tray_tooltip_for_today(conn, &day)
+    })
+}
+
+pub fn tray_tooltip_for_today(conn: &Connection, day: &str) -> Result<String, DbOpError> {
+    let credited_seconds: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(credited_core_seconds), 0) FROM slots
+             WHERE day = ?1 AND status = 'final'",
+            params![day],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    Ok(format!(
+        "{} / 8h",
+        format_estimated_minutes(credited_seconds)
+    ))
+}
+
 fn week_start_for(date: NaiveDate) -> NaiveDate {
     let offset = date.weekday().num_days_from_monday();
     date - chrono::Duration::days(offset as i64)
@@ -200,7 +270,7 @@ fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
     let first_core_label = first_core_label_for_day(conn, day, credited_seconds);
     let mut stmt = conn
         .prepare(
-            "SELECT slot_start, category, credited_core_seconds, status
+            "SELECT slot_start, category, credited_core_seconds, status, activity_json
              FROM slots WHERE day = ?1 ORDER BY slot_start",
         )
         .map_err(crate::db_error::map_rusqlite)?;
@@ -211,19 +281,25 @@ fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
                 r.get::<_, Option<String>>(1)?,
                 r.get::<_, i64>(2)?,
                 r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
             ))
         })
         .map_err(crate::db_error::map_rusqlite)?;
     let mut slots = Vec::new();
     for row in rows {
-        let (start, category, credited, status) = row.map_err(crate::db_error::map_rusqlite)?;
+        let (start, category, credited, status, activity_json) =
+            row.map_err(crate::db_error::map_rusqlite)?;
         let status = status.unwrap_or_default();
         let pending = status == "pending_review";
         let is_final = status == "final" || status == "unknown";
+        let activity_secs = parse_activity_json(activity_json);
+        let activity = activity_to_minutes(&activity_secs);
         slots.push(TodaySlot {
             start,
             dominant: category.unwrap_or_else(|| "unknown".into()),
             credited_minutes: secs_to_minutes(credited),
+            activity,
+            activity_summary: activity_summary(&activity_secs),
             pending,
             is_final,
         });
@@ -268,15 +344,17 @@ fn first_core_label_for_day(
         return None;
     }
     let key = format!("early_start:{day}");
-    let exists: i64 = conn
+    let coin: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM ledger WHERE reward_event_key = ?1",
+            "SELECT COALESCE(coin_delta, 0) FROM ledger WHERE reward_event_key = ?1",
             params![key],
             |r| r.get(0),
         )
+        .optional()
         .map_err(crate::db_error::map_rusqlite)
+        .unwrap_or(None)
         .unwrap_or(0);
-    if exists > 0 {
+    if coin > 0 {
         return Some("Early start".into());
     }
     None
@@ -403,7 +481,19 @@ pub fn set_quests(quests: Vec<String>) -> Result<(), String> {
         let json = serde_json::to_string(
             &quests
                 .into_iter()
-                .map(|text| serde_json::json!({ "text": text, "keywords": [] }))
+                .map(|text| {
+                    let keywords: Vec<String> = text
+                        .split_whitespace()
+                        .map(|w| w.to_string())
+                        .filter(|w| !w.is_empty())
+                        .collect();
+                    let keywords = if keywords.is_empty() {
+                        vec![text.clone()]
+                    } else {
+                        keywords
+                    };
+                    serde_json::json!({ "text": text, "keywords": keywords })
+                })
                 .collect::<Vec<_>>(),
         )
         .map_err(|e| DbOpError::Fatal(e.to_string()))?;

@@ -18,6 +18,10 @@ pub use scheduler::ensure_slot;
 pub use db_error::{map_rusqlite, DbOpError};
 pub use resolve::resolve_slot;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
+
 use sampler::PauseControl;
 
 use commands::{
@@ -28,8 +32,26 @@ use commands::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WindowEvent,
+    AppHandle, Manager, RunEvent, WindowEvent,
 };
+
+static ALLOW_EXIT: AtomicBool = AtomicBool::new(false);
+
+fn update_tray_tooltip(app: &AppHandle) {
+    let label = crate::commands::tray_tooltip_for_today_db().unwrap_or_else(|_| "0h 0m / 8h".into());
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(&label));
+    }
+}
+
+fn start_tray_tooltip_updater(app: AppHandle) {
+    thread::spawn(move || {
+        loop {
+            update_tray_tooltip(&app);
+            thread::sleep(Duration::from_secs(30));
+        }
+    });
+}
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -101,7 +123,7 @@ pub fn run() {
                 .default_window_icon()
                 .cloned()
                 .ok_or("missing default window icon")?;
-            let _tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::with_id("main")
                 .icon(icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -137,6 +159,7 @@ pub fn run() {
                     }
                     "quit" => {
                         write_quit_heartbeat();
+                        ALLOW_EXIT.store(true, Ordering::Relaxed);
                         app.exit(0);
                     }
                     _ => {}
@@ -153,6 +176,9 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            update_tray_tooltip(app.handle());
+            start_tray_tooltip_updater(app.handle().clone());
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -165,7 +191,20 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, event| {
             if let RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+                if !ALLOW_EXIT.load(Ordering::Relaxed) {
+                    api.prevent_exit();
+                }
             }
         });
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+
+    #[test]
+    fn allow_exit_starts_false() {
+        ALLOW_EXIT.store(false, Ordering::Relaxed);
+        assert!(!ALLOW_EXIT.load(Ordering::Relaxed));
+    }
 }

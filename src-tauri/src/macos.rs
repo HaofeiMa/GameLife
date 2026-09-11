@@ -215,6 +215,14 @@ pub fn screen_recording_granted() -> bool {
     imp::screen_recording_granted()
 }
 
+pub fn metadata_observation_available() -> bool {
+    accessibility_granted()
+}
+
+pub fn capture_observation_available() -> bool {
+    screen_recording_granted()
+}
+
 pub fn observation_available() -> bool {
-    accessibility_granted() && screen_recording_granted()
+    metadata_observation_available()
 }

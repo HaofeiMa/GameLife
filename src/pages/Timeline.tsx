@@ -73,8 +73,11 @@ function SlotRow({
       <div className="slot-head">
         <span>{slotTimeLabel(slot.start)}</span>
         <span>{dominantLabel(slot.dominant)}</span>
-        <span>{slot.creditedMinutes}m</span>
+        <span>{slot.creditedMinutes}m credited</span>
       </div>
+      {slot.activitySummary && slot.activitySummary !== "—" && (
+        <p className="muted slot-activity">{slot.activitySummary}</p>
+      )}
       {err && <p className="error">{err}</p>}
       {slot.pending && (
         <div className="slot-actions">

@@ -6,10 +6,22 @@ export interface ChestGold {
   need: number;
 }
 
+export interface SlotActivityMinutes {
+  core: number;
+  support: number;
+  admin: number;
+  side: number;
+  distraction: number;
+  away: number;
+  unobserved: number;
+}
+
 export interface TodaySlot {
   start: number;
   dominant: string;
   creditedMinutes: number;
+  activity: SlotActivityMinutes;
+  activitySummary: string;
   pending: boolean;
   final: boolean;
 }

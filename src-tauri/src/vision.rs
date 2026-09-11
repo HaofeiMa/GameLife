@@ -34,6 +34,7 @@ pub fn map_vision_payload(
         wants_core,
         confidence,
         context_app,
+        category: category.to_string(),
     }
 }
 
