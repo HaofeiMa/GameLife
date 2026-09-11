@@ -272,7 +272,6 @@ pub fn redeem(
             |r| r.get(0),
         )
         .map_err(map_rusqlite)?;
-    validate_redeem(credited_today, coin, xp, wish).map_err(map_redeem_error)?;
     let redemption_exists: bool = tx
         .query_row(
             "SELECT 1 FROM redemptions WHERE redemption_id = ?1",
@@ -285,6 +284,7 @@ pub fn redeem(
     if redemption_exists {
         return Err(DbOpError::AlreadyApplied);
     }
+    validate_redeem(credited_today, coin, xp, wish).map_err(map_redeem_error)?;
     let active_ends_at: Option<i64> = tx
         .query_row(
             "SELECT MAX(ends_at) FROM entertainment_sessions",
@@ -427,6 +427,20 @@ mod tests {
         let e = redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap_err();
         assert!(matches!(e, DbOpError::AlreadyApplied));
         assert_eq!(xp_sum(&conn, day), 40);
+    }
+
+    #[test]
+    fn redeem_retry_same_id_after_insufficient_balance_returns_already_applied() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let wish = xp_wish(40);
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap_err();
+        assert_eq!(e, DbOpError::AlreadyApplied);
+        assert_eq!(xp_sum(&conn, day), 10);
     }
 
     #[test]
