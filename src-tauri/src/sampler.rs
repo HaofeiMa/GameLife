@@ -377,7 +377,9 @@ pub fn run_sampler_loop(db_path: PathBuf, source: &dyn SampleSource) {
     if let Err(e) = startup_from_heartbeat(&mut conn, now, retention) {
         eprintln!("sampler: startup heartbeat fill failed: {e:?}");
     }
-    purge_expired_screenshots(retention, now);
+    if let Err(e) = purge_expired_screenshots(&conn, retention, now) {
+        eprintln!("sampler: purge_expired_screenshots failed: {e:?}");
+    }
     if let Err(e) = purge_old_samples(&conn, settings.sample_keep_days, now) {
         eprintln!("sampler: purge_old_samples failed: {e:?}");
     }

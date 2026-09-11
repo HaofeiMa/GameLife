@@ -66,15 +66,19 @@ pub fn purge_old_samples(conn: &Connection, keep_days: i64, now: i64) -> Result<
     Ok(deleted as u64)
 }
 
-pub fn purge_expired_screenshots(retention: ScreenshotRetention, now: i64) {
+pub fn purge_expired_screenshots(
+    conn: &Connection,
+    retention: ScreenshotRetention,
+    now: i64,
+) -> Result<(), DbOpError> {
     let Some(ttl) = retention_ttl_secs(retention) else {
-        return;
+        return Ok(());
     };
     let Some(dir) = screenshots_dir() else {
-        return;
+        return Ok(());
     };
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
+        return Ok(());
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -92,9 +96,21 @@ pub fn purge_expired_screenshots(retention: ScreenshotRetention, now: i64) {
             .unwrap_or_default()
             .as_secs() as i64;
         if now - mtime > ttl {
-            let _ = std::fs::remove_file(&path);
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    let path_str = path.to_string_lossy().to_string();
+                    conn.execute(
+                        "UPDATE slots SET screenshot_path = NULL, capture_context_json = NULL
+                         WHERE screenshot_path = ?1",
+                        params![path_str],
+                    )
+                    .map_err(map_rusqlite)?;
+                }
+                Err(_) => {}
+            }
         }
     }
+    Ok(())
 }
 
 /// Never Capture / secure input / lock / pause → Skipped; else Scheduled.
@@ -195,6 +211,61 @@ pub fn apply_screenshot_retention(path: &Path, retention: ScreenshotRetention) {
         }
         ScreenshotRetention::Hours24 | ScreenshotRetention::Days3 | ScreenshotRetention::Days14 => {}
     }
+}
+
+fn clear_capture_columns(
+    conn: &Connection,
+    day: &str,
+    slot_start: i64,
+) -> Result<(), DbOpError> {
+    conn.execute(
+        "UPDATE slots SET screenshot_path = NULL, capture_context_json = NULL
+         WHERE day = ?1 AND slot_start = ?2",
+        params![day, slot_start],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+pub fn apply_capture_retention(
+    conn: &Connection,
+    day: &str,
+    slot_start: i64,
+    retention: ScreenshotRetention,
+    slot_status: &str,
+) -> Result<(), DbOpError> {
+    if slot_status == "pending_review" {
+        return Ok(());
+    }
+    if slot_status != "final" && slot_status != "unknown" {
+        return Ok(());
+    }
+    match retention {
+        ScreenshotRetention::None => {
+            let path: Option<String> = conn
+                .query_row(
+                    "SELECT screenshot_path FROM slots WHERE day = ?1 AND slot_start = ?2",
+                    params![day, slot_start],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(map_rusqlite)?
+                .flatten();
+            if let Some(p) = path {
+                match std::fs::remove_file(&p) {
+                    Ok(()) => clear_capture_columns(conn, day, slot_start)?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        clear_capture_columns(conn, day, slot_start)?;
+                    }
+                    Err(_) => {}
+                }
+            } else {
+                clear_capture_columns(conn, day, slot_start)?;
+            }
+        }
+        ScreenshotRetention::Hours24 | ScreenshotRetention::Days3 | ScreenshotRetention::Days14 => {}
+    }
+    Ok(())
 }
 
 type CaptureFn = fn(&Path) -> Result<(), ()>;
@@ -1057,10 +1128,9 @@ pub fn finalize_slot_end(
 
     resolve_slot(conn, day, slot_start, &output, credited_before, early_coins)?;
 
-    if let Some(path) = screenshot_path.as_ref() {
-        apply_screenshot_retention(Path::new(path), retention);
-    }
-    purge_expired_screenshots(retention, now_secs());
+    let status = slot_status(conn, day, slot_start)?.unwrap_or_default();
+    apply_capture_retention(conn, day, slot_start, retention, &status)?;
+    purge_expired_screenshots(conn, retention, now_secs())?;
     Ok(())
 }
 
@@ -1220,13 +1290,34 @@ fn finalize_yesterday_last_slot(
 }
 
 /// Settle a calendar day: pending→unknown, compute outcome, idempotent.
-pub fn settle_day(conn: &mut Connection, day: &str, settled_at: i64) -> Result<(), DbOpError> {
+pub fn settle_day(
+    conn: &mut Connection,
+    day: &str,
+    settled_at: i64,
+    retention: ScreenshotRetention,
+) -> Result<(), DbOpError> {
     migrate(conn)?;
     if day_is_settled(conn, day)? {
         return Ok(());
     }
     let old_streak = streak_from_db(conn)?;
     convert_pending_to_unknown(conn, day)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT slot_start FROM slots
+             WHERE day = ?1 AND status = 'unknown'
+               AND (screenshot_path IS NOT NULL OR capture_context_json IS NOT NULL)",
+        )
+        .map_err(map_rusqlite)?;
+    let starts: Vec<i64> = stmt
+        .query_map(params![day], |r| r.get(0))
+        .map_err(map_rusqlite)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_rusqlite)?;
+    drop(stmt);
+    for ss in starts {
+        apply_capture_retention(conn, day, ss, retention, "unknown")?;
+    }
     let credited = day_total_credited(conn, day)?;
     let outcome = if credited >= i64::try_from(CHEST_SECS).unwrap_or(i64::MAX) {
         "completed"
@@ -1269,7 +1360,7 @@ pub fn midnight_tick(
     let yesterday = yesterday_str_for_ts(now);
     finalize_yesterday_last_slot(conn, &yesterday, today_start, retention)?;
     if now >= today_start + 5 {
-        settle_day(conn, &yesterday, now)?;
+        settle_day(conn, &yesterday, now, retention)?;
     }
     Ok(())
 }
@@ -1429,7 +1520,7 @@ pub fn end_today(
     mark_scheduled_capture_missed(conn, &day, ss)?;
     let credited_before = credited_before_slot(conn, &day, ss)?;
     finalize_slot_end(conn, &day, ss, now, retention, credited_before)?;
-    settle_day(conn, &day, now)
+    settle_day(conn, &day, now, retention)
 }
 
 pub fn sampling_allowed(conn: &Connection, day: &str) -> Result<bool, DbOpError> {
@@ -1536,7 +1627,8 @@ pub fn review_pending_slot(
     )
     .unwrap_or(0);
     resolve_slot(conn, day, slot_start, &output, credited_before, early_coins)?;
-    let _ = retention;
+    let status = slot_status(conn, day, slot_start)?.unwrap_or_default();
+    apply_capture_retention(conn, day, slot_start, retention, &status)?;
     Ok(())
 }
 
@@ -2144,6 +2236,135 @@ mod tests {
         assert!(path.exists());
     }
 
+    fn slot_capture_cols(
+        conn: &Connection,
+        day: &str,
+        ss: i64,
+    ) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT screenshot_path, capture_context_json, capture_status, status
+             FROM slots WHERE day = ?1 AND slot_start = ?2",
+            params![day, ss],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn pending_slot_keeps_screenshot_and_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("pending.jpg");
+        std::fs::write(&shot, b"x").unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, screenshot_path, capture_context_json)
+             VALUES (?1, ?2, 50, 'Captured', ?3, ?4)",
+            params![day, ss, shot.to_string_lossy().to_string(), isaac_capture_json()],
+        )
+        .unwrap();
+        for i in 0..30 {
+            conn.execute(
+                "INSERT INTO samples (ts, day, app, title, idle_seconds, locked, paused)
+                 VALUES (?1, ?2, 'Isaac Sim', 'robot', 2, 0, 0)",
+                params![i * 15, day],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"robot\",\"keywords\":[\"robot\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+        finalize_slot_end(&mut conn, day, ss, 900, ScreenshotRetention::None, 0).unwrap();
+        let (path, json, capture_status, status) = slot_capture_cols(&conn, day, ss);
+        assert_eq!(status.as_deref(), Some("pending_review"));
+        assert_eq!(capture_status.as_deref(), Some("Captured"));
+        assert!(path.is_some());
+        assert!(json.is_some());
+        assert!(shot.exists());
+    }
+
+    #[test]
+    fn finalize_final_none_clears_capture_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("final.jpg");
+        std::fs::write(&shot, b"x").unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        let json = serde_json::to_string(&CaptureContext {
+            app: "Cursor".into(),
+            bundle_id: None,
+            title: "main.tex".into(),
+            document_path: Some("/paper/main.tex".into()),
+            url: None,
+            secure_input: false,
+        })
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, screenshot_path, capture_context_json)
+             VALUES (?1, ?2, 50, 'Captured', ?3, ?4)",
+            params![day, ss, shot.to_string_lossy().to_string(), json],
+        )
+        .unwrap();
+        for i in 0..58 {
+            conn.execute(
+                "INSERT INTO samples (ts, day, app, title, document_path, idle_seconds, locked, paused)
+                 VALUES (?1, ?2, 'Cursor', 'main.tex', '/paper/main.tex', 2, 0, 0)",
+                params![i * 15, day],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"paper\",\"keywords\":[\"main.tex\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at)
+             VALUES ('{\"trusted_apps\":[\"Cursor\"],\"distraction_rules\":[],\"side_project_rules\":[],\"reading_apps\":[],\"never_capture_apps\":[]}', 1)",
+            [],
+        )
+        .unwrap();
+        finalize_slot_end(&mut conn, day, ss, 900, ScreenshotRetention::None, 0).unwrap();
+        let (path, json, capture_status, status) = slot_capture_cols(&conn, day, ss);
+        assert_eq!(status.as_deref(), Some("final"));
+        assert_eq!(capture_status.as_deref(), Some("Captured"));
+        assert!(path.is_none());
+        assert!(json.is_none());
+        assert!(!shot.exists());
+    }
+
+    #[test]
+    fn settle_day_clears_capture_after_pending_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("settle.jpg");
+        std::fs::write(&shot, b"x").unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, capture_status, screenshot_path, capture_context_json, credited_core_seconds, observed_seconds, used_vision)
+             VALUES (?1, ?2, 'pending_review', 'Captured', ?3, ?4, 0, 600, 0)",
+            params![day, ss, shot.to_string_lossy().to_string(), isaac_capture_json()],
+        )
+        .unwrap();
+        settle_day(&mut conn, day, 1, ScreenshotRetention::None).unwrap();
+        let (path, json, capture_status, status) = slot_capture_cols(&conn, day, ss);
+        assert_eq!(status.as_deref(), Some("unknown"));
+        assert_eq!(capture_status.as_deref(), Some("Captured"));
+        assert!(path.is_none());
+        assert!(json.is_none());
+        assert!(!shot.exists());
+    }
+
     #[test]
     fn is_screenshot_expired_respects_ttl() {
         let now = 1_000_000i64;
@@ -2167,8 +2388,32 @@ mod tests {
             &old,
             filetime::FileTime::from_unix_time(old_mtime, 0),
         );
-        purge_expired_screenshots(ScreenshotRetention::Days3, now);
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, screenshot_path, capture_context_json, capture_status)
+             VALUES ('2026-09-10', 0, ?1, '{}', 'Captured')",
+            params![old.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        purge_expired_screenshots(&conn, ScreenshotRetention::Days3, now).unwrap();
         assert!(!old.exists());
+        let path: Option<String> = conn
+            .query_row(
+                "SELECT screenshot_path FROM slots WHERE day = '2026-09-10' AND slot_start = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT capture_context_json FROM slots WHERE day = '2026-09-10' AND slot_start = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(path.is_none());
+        assert!(json.is_none());
     }
 
     #[test]
@@ -2263,7 +2508,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        settle_day(&mut conn, yesterday, today_start + 10).unwrap();
+        settle_day(&mut conn, yesterday, today_start + 10, ScreenshotRetention::None).unwrap();
         let outcome_after: String = conn
             .query_row(
                 "SELECT outcome FROM days WHERE day = ?1",
@@ -2328,7 +2573,7 @@ mod tests {
             params![day, chest],
         )
         .unwrap();
-        settle_day(&mut conn, day, 1).unwrap();
+        settle_day(&mut conn, day, 1, ScreenshotRetention::None).unwrap();
         let outcome: String = conn
             .query_row(
                 "SELECT outcome FROM days WHERE day = ?1",
@@ -2355,7 +2600,7 @@ mod tests {
             params![day],
         )
         .unwrap();
-        settle_day(&mut conn, day, 1).unwrap();
+        settle_day(&mut conn, day, 1, ScreenshotRetention::None).unwrap();
         let outcome: String = conn
             .query_row(
                 "SELECT outcome FROM days WHERE day = ?1",
@@ -2386,7 +2631,7 @@ mod tests {
             params![day, chest],
         )
         .unwrap();
-        settle_day(&mut conn, day, 3).unwrap();
+        settle_day(&mut conn, day, 3, ScreenshotRetention::None).unwrap();
         assert_eq!(streak_from_db(&conn).unwrap(), 3);
         let count: i64 = conn
             .query_row(
