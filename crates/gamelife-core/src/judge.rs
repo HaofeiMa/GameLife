@@ -1,5 +1,5 @@
 use crate::capture::CaptureStatus;
-use crate::hint::hint_sample;
+use crate::hint::{hint_sample, is_grounded_core_sample};
 use crate::observe::{Span, SpanKind, observed_seconds, spans_for_slot};
 use crate::policy::Policy;
 use crate::r#const::READING_BRIDGE_SECS;
@@ -123,6 +123,7 @@ pub struct SlotEvidence {
     pub spans: Vec<Span>,
     pub activity: ActivitySeconds,
     pub strong_core_seconds: i64,
+    pub grounded_strong_core_seconds: i64,
     pub reading_bridge_seconds: i64,
     pub observed_seconds: i64,
 }
@@ -147,6 +148,7 @@ pub fn analyze_slot_evidence(
     let spans = spans_for_slot(samples, &hints, slot_start, slot_end);
     let mut activity = ActivitySeconds::default();
     let mut strong_core = 0_i64;
+    let mut grounded_strong = 0_i64;
     let mut reading_bridge = 0_i64;
 
     for span in &spans {
@@ -163,6 +165,11 @@ pub fn analyze_slot_evidence(
                 match hint {
                     Hint::CoreCandidate if idle < LOW_INPUT_IDLE_SECS => {
                         strong_core += secs;
+                        if let Some(sample) = span.sample_index.and_then(|i| samples.get(i)) {
+                            if is_grounded_core_sample(sample, quests) {
+                                grounded_strong += secs;
+                            }
+                        }
                     }
                     Hint::CoreReading => {
                         reading_bridge += secs;
@@ -180,6 +187,7 @@ pub fn analyze_slot_evidence(
         spans,
         activity,
         strong_core_seconds: strong_core,
+        grounded_strong_core_seconds: grounded_strong,
         reading_bridge_seconds: reading_bridge,
         observed_seconds: observed,
     }
@@ -202,6 +210,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     let spans = ev.spans;
     let mut activity = ev.activity;
     let strong_core = ev.strong_core_seconds;
+    let grounded_strong_core = ev.grounded_strong_core_seconds;
     let reading_bridge = ev.reading_bridge_seconds;
     let observed = ev.observed_seconds;
 
@@ -216,11 +225,11 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     } else if activity.away >= AWAY_DOMINANT_SECS && strong_core < 300 {
         dominant = Dominant::BreakAway;
     } else if !quests_empty
-        && strong_core >= STRONG_CORE_AUTO_SECS
+        && grounded_strong_core >= STRONG_CORE_AUTO_SECS
         && activity.side + activity.distraction <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
     {
         dominant = Dominant::CoreResearch;
-        credited_raw = strong_core + reading_bridge;
+        credited_raw = grounded_strong_core + reading_bridge;
     } else if activity.side + activity.distraction >= SIDE_DISTRACTION_DOMINANT_SECS
         && activity.side + activity.distraction > strong_core + reading_bridge
     {
@@ -529,7 +538,9 @@ fn activity_total_observed(activity: &ActivitySeconds) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{Policy, builtin_never_capture, builtin_side_project_rules};
+    use crate::policy::{
+        Policy, builtin_never_capture, builtin_side_project_rules, default_distraction_rules,
+    };
 
     fn pol() -> Policy {
         Policy {
@@ -1026,5 +1037,210 @@ mod tests {
             "personal-site span must not be verified, got {}",
             out.credited_core_seconds
         );
+    }
+
+    fn title_only_grid(
+        app: &str,
+        title: &str,
+        start: i64,
+        n: usize,
+        every: i64,
+        idle: i64,
+    ) -> Vec<Sample> {
+        (0..n)
+            .map(|i| Sample {
+                ts: start + i as i64 * every,
+                app: app.into(),
+                window_title: title.into(),
+                url: None,
+                document_path: None,
+                bundle_id: None,
+                idle_seconds: idle,
+                screen_locked: false,
+                paused: false,
+                secure_input: false,
+            })
+            .collect()
+    }
+
+    fn browser_pol() -> Policy {
+        Policy {
+            trusted_apps: vec!["Safari".into(), "Cursor".into()],
+            distraction_rules: default_distraction_rules(),
+            side_project_rules: builtin_side_project_rules(),
+            reading_apps: vec!["Preview".into()],
+            never_capture_apps: builtin_never_capture(),
+        }
+    }
+
+    #[test]
+    fn title_only_thirteen_minutes_is_pending() {
+        let samples = title_only_grid("Cursor", "train.py — HDP", 0, 58, 15, 2);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "HDP".into(),
+                keywords: vec!["HDP".into()],
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Missed,
+            vision: None,
+            manual_core: None,
+        });
+        assert!(out.pending);
+        assert_eq!(out.credited_core_seconds, 0);
+    }
+
+    #[test]
+    fn overleaf_thirteen_minutes_auto_cores_without_keyword() {
+        let samples: Vec<Sample> = (0..58)
+            .map(|i| Sample {
+                ts: i as i64 * 15,
+                app: "Safari".into(),
+                window_title: "Overleaf".into(),
+                url: Some("https://www.overleaf.com/project/abc".into()),
+                document_path: None,
+                bundle_id: None,
+                idle_seconds: 2,
+                screen_locked: false,
+                paused: false,
+                secure_input: false,
+            })
+            .collect();
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "HDP".into(),
+                keywords: vec!["HDP".into()],
+            }],
+            policy: &browser_pol(),
+            capture: CaptureStatus::Scheduled,
+            vision: None,
+            manual_core: None,
+        });
+        assert!(!out.pending);
+        assert!(out.credited_core_seconds >= 780);
+        assert_eq!(out.dominant, Dominant::CoreResearch);
+    }
+
+    #[test]
+    fn idle_overleaf_does_not_auto_core() {
+        let samples: Vec<Sample> = (0..58)
+            .map(|i| Sample {
+                ts: i as i64 * 15,
+                app: "Safari".into(),
+                window_title: "Overleaf".into(),
+                url: Some("https://www.overleaf.com/project/abc".into()),
+                document_path: None,
+                bundle_id: None,
+                idle_seconds: 400,
+                screen_locked: false,
+                paused: false,
+                secure_input: false,
+            })
+            .collect();
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "HDP".into(),
+                keywords: vec!["HDP".into()],
+            }],
+            policy: &browser_pol(),
+            capture: CaptureStatus::Missed,
+            vision: None,
+            manual_core: None,
+        });
+        assert!(out.pending || out.credited_core_seconds < 780);
+        assert_eq!(out.credited_core_seconds, 0);
+    }
+
+    #[test]
+    fn two_min_grounded_plus_ten_min_idle_not_auto_core() {
+        let mut samples = grid("Cursor", "main.tex", 0, 8, 15, 2);
+        samples.extend(grid("Cursor", "main.tex", 120, 40, 15, 400));
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "paper".into(),
+                keywords: vec!["main.tex".into()],
+            }],
+            policy: &pol(),
+            capture: CaptureStatus::Missed,
+            vision: None,
+            manual_core: None,
+        });
+        assert_eq!(out.credited_core_seconds, 0);
+        assert!(out.pending);
+    }
+
+    #[test]
+    fn youtube_dominant_is_distraction_zero_credit() {
+        let samples: Vec<Sample> = (0..52)
+            .map(|i| Sample {
+                ts: i as i64 * 15,
+                app: "Safari".into(),
+                window_title: "HDP lecture".into(),
+                url: Some("https://www.youtube.com/watch?v=1".into()),
+                document_path: None,
+                bundle_id: None,
+                idle_seconds: 2,
+                screen_locked: false,
+                paused: false,
+                secure_input: false,
+            })
+            .collect();
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[Quest {
+                text: "HDP".into(),
+                keywords: vec!["HDP".into()],
+            }],
+            policy: &browser_pol(),
+            capture: CaptureStatus::Scheduled,
+            vision: None,
+            manual_core: None,
+        });
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::Distraction);
+        assert_eq!(out.credited_core_seconds, 0);
+    }
+
+    #[test]
+    fn overleaf_without_quests_credits_zero() {
+        let samples: Vec<Sample> = (0..58)
+            .map(|i| Sample {
+                ts: i as i64 * 15,
+                app: "Safari".into(),
+                window_title: "Overleaf".into(),
+                url: Some("https://www.overleaf.com/project/abc".into()),
+                document_path: None,
+                bundle_id: None,
+                idle_seconds: 2,
+                screen_locked: false,
+                paused: false,
+                secure_input: false,
+            })
+            .collect();
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[],
+            policy: &browser_pol(),
+            capture: CaptureStatus::Scheduled,
+            vision: None,
+            manual_core: None,
+        });
+        assert_eq!(out.credited_core_seconds, 0);
     }
 }
