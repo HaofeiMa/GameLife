@@ -1963,6 +1963,56 @@ mod tests {
     }
 
     #[test]
+    fn tick_capture_err_is_missed_without_json() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status)
+             VALUES (?1, ?2, 100, 'Scheduled')",
+            params![day, ss],
+        )
+        .unwrap();
+        tick_capture_impl(
+            &conn,
+            day,
+            ss,
+            100,
+            false,
+            false,
+            true,
+            || capture_ctx("Cursor"),
+            |_| Err(()),
+        )
+        .unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "Missed");
+        let path: Option<String> = conn
+            .query_row(
+                "SELECT screenshot_path FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT capture_context_json FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(path.is_none());
+        assert!(json.is_none());
+    }
+
+    #[test]
     fn tick_capture_marks_captured_when_capture_succeeds() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().to_path_buf();

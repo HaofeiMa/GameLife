@@ -129,7 +129,8 @@ impl SampleSource for MacSampleSource {
     }
 
     fn capture_frontmost_window(&self, path: &std::path::Path) -> Result<(), ()> {
-        crate::macos::capture_frontmost_window(path)
+        let id = self.last.take_cg_window_id().ok_or(())?;
+        crate::macos::capture_window(id, path)
     }
 
     fn frontmost_app(&self) -> Result<(String, String), ()> {
@@ -746,6 +747,15 @@ mod tests {
             })
             .unwrap();
         assert_eq!(secure, 1);
+    }
+
+    #[test]
+    fn capture_without_window_id_is_err() {
+        let src = MacSampleSource::new(Arc::new(AtomicBool::new(false)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.jpg");
+        assert!(src.capture_frontmost_window(&path).is_err());
+        assert!(!path.exists());
     }
 
     #[test]

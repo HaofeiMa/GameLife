@@ -1,10 +1,12 @@
 mod browser;
+mod capture;
 mod document;
 mod input;
 mod snapshot;
 mod state;
 mod window_id;
 pub use browser::url_for;
+pub use capture::{capture_window, CAPTURE_TIMEOUT};
 pub use document::ax_document_raw;
 pub use input::{
     accessibility_granted, idle_seconds, request_screen_recording, screen_locked,
@@ -46,55 +48,12 @@ mod browser_os {
             Some(url)
         }
     }
-
-    pub fn capture_frontmost_window(path: &std::path::Path) -> Result<(), ()> {
-        let wid = frontmost_window_id()?;
-        let status = Command::new("/usr/sbin/screencapture")
-            .args([
-                "-x",
-                "-t",
-                "jpg",
-                "-l",
-                &wid.to_string(),
-                &path.to_string_lossy(),
-            ])
-            .status()
-            .map_err(|_| ())?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(())
-        }
-    }
-
-    fn frontmost_window_id() -> Result<u32, ()> {
-        let script = r#"
-            tell application "System Events"
-                set p to first application process whose frontmost is true
-                return id of front window of p
-            end tell
-        "#;
-        let out = Command::new("osascript")
-            .args(["-e", script])
-            .output()
-            .map_err(|_| ())?;
-        if !out.status.success() {
-            return Err(());
-        }
-        let binding = String::from_utf8_lossy(&out.stdout);
-        let s = binding.trim();
-        s.parse().map_err(|_| ())
-    }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod browser_os {
     pub fn optional_browser_url() -> Option<String> {
         None
-    }
-
-    pub fn capture_frontmost_window(_path: &std::path::Path) -> Result<(), ()> {
-        Err(())
     }
 }
 
@@ -144,8 +103,8 @@ pub fn capture_context() -> gamelife_core::CaptureContext {
     }
 }
 
-pub fn capture_frontmost_window(path: &std::path::Path) -> Result<(), ()> {
-    browser_os::capture_frontmost_window(path)
+pub fn capture_frontmost_window(_path: &std::path::Path) -> Result<(), ()> {
+    Err(())
 }
 
 pub fn current_process_label() -> String {

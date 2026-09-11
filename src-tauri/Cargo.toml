@@ -30,8 +30,11 @@ base64 = "0.22"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = "0.3"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "libc"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "libc", "NSBitmapImageRep", "NSImageRep", "objc2-core-graphics"] }
 objc2-core-foundation = "0.3"
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGImage", "objc2"] }
+block2 = "0.6"
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = ["std", "SCScreenshotManager", "SCShareableContent", "SCStream", "block2", "objc2-core-graphics", "objc2-core-foundation"] }
 
 [dev-dependencies]
 filetime = "0.2"
