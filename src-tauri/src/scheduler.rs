@@ -6,17 +6,18 @@ use chrono::{Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 
-use gamelife_core::{
-    analyze_slot_evidence, activity_summary_for_vision, builtin_never_capture,
-    builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
-    default_v01, early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved,
-    hint_sample, is_weekday, judge_slot, matches_app_identity, new_milestones, recompute_streak,
-    schedule_capture, slot_end_exclusive, slot_start, spans_for_slot, CaptureContext,
-    CaptureStatus, DayOutcome, JudgeInput, Policy, Quest, Sample, VisionContext, CHEST_SECS,
-};
-use gamelife_core::types::Hint;
 use gamelife_core::judge::{Dominant, JudgeOutput, VisionResult};
 use gamelife_core::types::ActivitySeconds;
+use gamelife_core::types::Hint;
+use gamelife_core::{
+    activity_summary_for_vision, analyze_slot_evidence, builtin_never_capture,
+    builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
+    default_distraction_rules, default_v01, early_start_anchor, early_start_coins_for_local_secs,
+    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity,
+    new_milestones, recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
+    spans_for_slot, CaptureContext, CaptureStatus, DayOutcome, JudgeInput, Policy, Quest, Sample,
+    VisionContext, CHEST_SECS,
+};
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
 use crate::db_error::{map_rusqlite, DbOpError};
@@ -122,11 +123,7 @@ pub fn decide_capture(
     paused: bool,
     never: &[String],
 ) -> CaptureStatus {
-    if secure
-        || locked
-        || paused
-        || matches_app_identity(app, bundle_id, never)
-    {
+    if secure || locked || paused || matches_app_identity(app, bundle_id, never) {
         CaptureStatus::Skipped
     } else {
         CaptureStatus::Scheduled
@@ -134,9 +131,8 @@ pub fn decide_capture(
 }
 
 pub fn app_support_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| {
-        PathBuf::from(home).join("Library/Application Support/GameLife")
-    })
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library/Application Support/GameLife"))
 }
 
 pub fn screenshots_dir() -> Option<PathBuf> {
@@ -150,6 +146,7 @@ fn screenshot_path_for(day: &str, slot_start_ts: i64, ts: i64) -> Option<PathBuf
 pub fn metadata_decidable(
     activity: &ActivitySeconds,
     strong_core: i64,
+    grounded_strong_core: i64,
     reading_bridge: i64,
     actual: i64,
     quests_empty: bool,
@@ -161,7 +158,7 @@ pub fn metadata_decidable(
         return true;
     }
     if !quests_empty
-        && strong_core >= STRONG_CORE_AUTO_SECS
+        && grounded_strong_core >= STRONG_CORE_AUTO_SECS
         && activity.side + activity.distraction <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
     {
         return true;
@@ -209,15 +206,12 @@ pub fn apply_screenshot_retention(path: &Path, retention: ScreenshotRetention) {
         ScreenshotRetention::None => {
             let _ = std::fs::remove_file(path);
         }
-        ScreenshotRetention::Hours24 | ScreenshotRetention::Days3 | ScreenshotRetention::Days14 => {}
+        ScreenshotRetention::Hours24 | ScreenshotRetention::Days3 | ScreenshotRetention::Days14 => {
+        }
     }
 }
 
-fn clear_capture_columns(
-    conn: &Connection,
-    day: &str,
-    slot_start: i64,
-) -> Result<(), DbOpError> {
+fn clear_capture_columns(conn: &Connection, day: &str, slot_start: i64) -> Result<(), DbOpError> {
     conn.execute(
         "UPDATE slots SET screenshot_path = NULL, capture_context_json = NULL
          WHERE day = ?1 AND slot_start = ?2",
@@ -263,7 +257,8 @@ pub fn apply_capture_retention(
                 clear_capture_columns(conn, day, slot_start)?;
             }
         }
-        ScreenshotRetention::Hours24 | ScreenshotRetention::Days3 | ScreenshotRetention::Days14 => {}
+        ScreenshotRetention::Hours24 | ScreenshotRetention::Days3 | ScreenshotRetention::Days14 => {
+        }
     }
     Ok(())
 }
@@ -386,7 +381,11 @@ pub fn add_unobserved_secs(
 }
 
 /// Distribute heartbeat gap seconds into slot `activity_json.unobserved` (non-final slots only).
-pub fn fill_heartbeat_unobserved(conn: &Connection, last_heartbeat: i64, now: i64) -> Result<(), DbOpError> {
+pub fn fill_heartbeat_unobserved(
+    conn: &Connection,
+    last_heartbeat: i64,
+    now: i64,
+) -> Result<(), DbOpError> {
     let same_day = same_local_day(last_heartbeat, now);
     let end_day = end_of_local_day(last_heartbeat);
     let ranges = heartbeat_unobserved(last_heartbeat, now, same_day, end_day);
@@ -536,7 +535,11 @@ fn tick_capture_impl(
     if !screen_recording || locked || paused {
         conn.execute(
             "UPDATE slots SET capture_status = ?1 WHERE day = ?2 AND slot_start = ?3",
-            params![capture_status_to_str(CaptureStatus::Skipped), day, slot_start_ts],
+            params![
+                capture_status_to_str(CaptureStatus::Skipped),
+                day,
+                slot_start_ts
+            ],
         )
         .map_err(map_rusqlite)?;
         return Ok(());
@@ -560,7 +563,11 @@ fn tick_capture_impl(
     {
         conn.execute(
             "UPDATE slots SET capture_status = ?1 WHERE day = ?2 AND slot_start = ?3",
-            params![capture_status_to_str(CaptureStatus::Skipped), day, slot_start_ts],
+            params![
+                capture_status_to_str(CaptureStatus::Skipped),
+                day,
+                slot_start_ts
+            ],
         )
         .map_err(map_rusqlite)?;
         return Ok(());
@@ -628,14 +635,8 @@ fn user_policy_lists_empty(json: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<PolicyJson>(json) else {
         return false;
     };
-    parsed
-        .trusted_apps
-        .as_ref()
-        .is_none_or(|v| v.is_empty())
-        && parsed
-            .reading_apps
-            .as_ref()
-            .is_none_or(|v| v.is_empty())
+    parsed.trusted_apps.as_ref().is_none_or(|v| v.is_empty())
+        && parsed.reading_apps.as_ref().is_none_or(|v| v.is_empty())
         && parsed
             .distraction_rules
             .as_ref()
@@ -646,16 +647,42 @@ fn user_policy_lists_empty(json: &str) -> bool {
             .is_none_or(|v| v.is_empty())
 }
 
-/// One-time V0.1 policy seed. After `policy_seed_version=1`, a cleared Trusted list stays empty.
+/// Seed V0.1 policy, then D2 once. After `policy_seed_version=2`, a cleared list stays empty.
 pub fn seed_default_policy_if_needed(conn: &Connection) -> Result<(), DbOpError> {
     migrate(conn)?;
     let seeded = app_meta_get(conn, "policy_seed_version")?
         .as_deref()
         .and_then(|v| v.parse::<i32>().ok())
         .unwrap_or(0);
-    if seeded >= 1 {
+    if seeded >= 2 {
         return Ok(());
     }
+    if seeded == 0 {
+        let latest: Option<String> = conn
+            .query_row(
+                "SELECT json FROM policy_versions ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(map_rusqlite)?;
+        let insert_default = match latest.as_deref() {
+            None => true,
+            Some(json) => user_policy_lists_empty(json),
+        };
+        if insert_default {
+            let json = serde_json::to_string(&default_v01())
+                .map_err(|e| DbOpError::Fatal(format!("policy seed json: {e}")))?;
+            conn.execute(
+                "INSERT INTO policy_versions (json, created_at) VALUES (?1, ?2)",
+                params![json, now_secs()],
+            )
+            .map_err(map_rusqlite)?;
+        }
+        app_meta_set(conn, "policy_seed_version", "2")?;
+        return Ok(());
+    }
+
     let latest: Option<String> = conn
         .query_row(
             "SELECT json FROM policy_versions ORDER BY id DESC LIMIT 1",
@@ -664,20 +691,21 @@ pub fn seed_default_policy_if_needed(conn: &Connection) -> Result<(), DbOpError>
         )
         .optional()
         .map_err(map_rusqlite)?;
-    let insert_default = match latest.as_deref() {
-        None => true,
-        Some(json) => user_policy_lists_empty(json),
-    };
-    if insert_default {
-        let json = serde_json::to_string(&default_v01())
-            .map_err(|e| DbOpError::Fatal(format!("policy seed json: {e}")))?;
-        conn.execute(
-            "INSERT INTO policy_versions (json, created_at) VALUES (?1, ?2)",
-            params![json, now_secs()],
-        )
-        .map_err(map_rusqlite)?;
+    if let Some(json) = latest {
+        let mut policy: Policy = serde_json::from_str(&json)
+            .map_err(|e| DbOpError::Fatal(format!("policy json: {e}")))?;
+        if policy.distraction_rules.is_empty() {
+            policy.distraction_rules = default_distraction_rules();
+            let new_json = serde_json::to_string(&policy)
+                .map_err(|e| DbOpError::Fatal(format!("policy seed json: {e}")))?;
+            conn.execute(
+                "INSERT INTO policy_versions (json, created_at) VALUES (?1, ?2)",
+                params![new_json, now_secs()],
+            )
+            .map_err(map_rusqlite)?;
+        }
     }
-    app_meta_set(conn, "policy_seed_version", "1")?;
+    app_meta_set(conn, "policy_seed_version", "2")?;
     Ok(())
 }
 
@@ -708,9 +736,8 @@ pub fn load_policy(conn: &Connection) -> Result<Policy, DbOpError> {
     let Some(json) = json else {
         return Ok(default_v01());
     };
-    let parsed: PolicyJson = serde_json::from_str(&json).map_err(|e| {
-        DbOpError::Fatal(format!("policy json: {e}"))
-    })?;
+    let parsed: PolicyJson =
+        serde_json::from_str(&json).map_err(|e| DbOpError::Fatal(format!("policy json: {e}")))?;
     Ok(Policy {
         trusted_apps: parsed.trusted_apps.unwrap_or_default(),
         distraction_rules: parsed.distraction_rules.unwrap_or_default(),
@@ -801,9 +828,8 @@ pub fn load_policy_for_version(
     let Some(json) = json else {
         return load_policy(conn);
     };
-    let parsed: PolicyJson = serde_json::from_str(&json).map_err(|e| {
-        DbOpError::Fatal(format!("policy json: {e}"))
-    })?;
+    let parsed: PolicyJson =
+        serde_json::from_str(&json).map_err(|e| DbOpError::Fatal(format!("policy json: {e}")))?;
     Ok(Policy {
         trusted_apps: parsed.trusted_apps.unwrap_or_default(),
         distraction_rules: parsed.distraction_rules.unwrap_or_default(),
@@ -881,11 +907,7 @@ fn load_samples_for_slot(
     rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
 }
 
-fn hints_for_slot(
-    samples: &[Sample],
-    policy: &Policy,
-    quests: &[Quest],
-) -> Vec<Hint> {
+fn hints_for_slot(samples: &[Sample], policy: &Policy, quests: &[Quest]) -> Vec<Hint> {
     let mut last_core_interaction_ts: Option<i64> = None;
     let mut hints = Vec::with_capacity(samples.len());
     for sample in samples {
@@ -955,12 +977,7 @@ pub fn compute_early_coins(
         let (ss, credited) = row.map_err(map_rusqlite)?;
         let se = slot_end_exclusive(ss);
         all_spans.extend(credited_spans_for_final_slot(
-            conn,
-            day,
-            ss,
-            se,
-            credited,
-            false,
+            conn, day, ss, se, credited, false,
         )?);
     }
 
@@ -1012,14 +1029,7 @@ pub fn finalize_ended_open_slots(
             continue;
         }
         let credited_before = credited_before_slot(conn, &day, slot_start)?;
-        finalize_slot_end(
-            conn,
-            &day,
-            slot_start,
-            slot_end,
-            retention,
-            credited_before,
-        )?;
+        finalize_slot_end(conn, &day, slot_start, slot_end, retention, credited_before)?;
     }
     Ok(())
 }
@@ -1117,6 +1127,7 @@ pub fn finalize_slot_end(
     let decidable = metadata_decidable(
         &evidence.activity,
         evidence.strong_core_seconds,
+        evidence.grounded_strong_core_seconds,
         evidence.reading_bridge_seconds,
         actual,
         quests.is_empty(),
@@ -1264,7 +1275,9 @@ fn outcome_from_str(s: &str) -> Option<DayOutcome> {
     }
 }
 
-fn load_settled_days_newest_first(conn: &Connection) -> Result<Vec<(NaiveDate, DayOutcome)>, DbOpError> {
+fn load_settled_days_newest_first(
+    conn: &Connection,
+) -> Result<Vec<(NaiveDate, DayOutcome)>, DbOpError> {
     let mut stmt = conn
         .prepare(
             "SELECT day, outcome FROM days
@@ -1352,7 +1365,14 @@ fn finalize_yesterday_last_slot(
         return Ok(());
     }
     let credited_before = credited_before_slot(conn, yesterday, last_ss)?;
-    finalize_slot_end(conn, yesterday, last_ss, day_end, retention, credited_before)
+    finalize_slot_end(
+        conn,
+        yesterday,
+        last_ss,
+        day_end,
+        retention,
+        credited_before,
+    )
 }
 
 /// Settle a calendar day: pending→unknown, compute outcome, idempotent.
@@ -1438,9 +1458,8 @@ fn load_freeze_dates(conn: &Connection) -> Result<Vec<NaiveDate>, DbOpError> {
     let rows = stmt
         .query_map([], |r| {
             let s: String = r.get(0)?;
-            NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|e| {
-                rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-            })
+            NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })
         .map_err(map_rusqlite)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
@@ -1509,11 +1528,7 @@ pub fn list_freeze_candidates(conn: &Connection) -> Result<Vec<String>, DbOpErro
 }
 
 /// Freeze a failed settled day; quota by protected_date's calendar month.
-pub fn freeze_day(
-    conn: &mut Connection,
-    protected_date: &str,
-    _now: i64,
-) -> Result<(), DbOpError> {
+pub fn freeze_day(conn: &mut Connection, protected_date: &str, _now: i64) -> Result<(), DbOpError> {
     migrate(conn)?;
     let protected = parse_day(protected_date)?;
     if !day_is_settled(conn, protected_date)? {
@@ -1751,7 +1766,7 @@ mod tests {
             distraction: 30,
             ..Default::default()
         };
-        assert!(metadata_decidable(&activity, 800, 0, 900, false));
+        assert!(metadata_decidable(&activity, 800, 800, 0, 900, false));
     }
 
     #[test]
@@ -1761,7 +1776,18 @@ mod tests {
             distraction: 50,
             ..Default::default()
         };
-        assert!(!metadata_decidable(&activity, 200, 0, 900, false));
+        assert!(!metadata_decidable(&activity, 200, 200, 0, 900, false));
+    }
+
+    #[test]
+    fn metadata_not_decidable_for_title_only_strong_core() {
+        let activity = ActivitySeconds {
+            core: 800,
+            side: 0,
+            distraction: 30,
+            ..Default::default()
+        };
+        assert!(!metadata_decidable(&activity, 800, 0, 0, 900, false));
     }
 
     #[test]
@@ -1859,9 +1885,17 @@ mod tests {
             params![day, ss],
         )
         .unwrap();
-        tick_capture(&conn, day, ss, 200, false, false, true, || capture_ctx("Cursor"), |_| {
-            Err(())
-        })
+        tick_capture(
+            &conn,
+            day,
+            ss,
+            200,
+            false,
+            false,
+            true,
+            || capture_ctx("Cursor"),
+            |_| Err(()),
+        )
         .unwrap();
         let status: String = conn
             .query_row(
@@ -2016,7 +2050,9 @@ mod tests {
     fn tick_capture_marks_captured_when_capture_succeeds() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().to_path_buf();
-        unsafe { std::env::set_var("HOME", &home); }
+        unsafe {
+            std::env::set_var("HOME", &home);
+        }
 
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
@@ -2142,7 +2178,9 @@ mod tests {
     #[test]
     fn finalize_does_not_treat_sample_path_as_screenshot() {
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", dir.path()); }
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+        }
 
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
@@ -2368,12 +2406,13 @@ mod tests {
     }
 
     #[test]
-    fn seed_empty_db_inserts_default_v01_and_marks_version() {
+    fn seed_empty_db_marks_version_2_and_has_d2() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         seed_default_policy_if_needed(&conn).unwrap();
         let policy = load_policy(&conn).unwrap();
         assert!(policy.trusted_apps.iter().any(|a| a == "Cursor"));
+        assert!(policy.distraction_rules.iter().any(|r| r == "youtube.com"));
         let version: String = conn
             .query_row(
                 "SELECT value FROM app_meta WHERE key = 'policy_seed_version'",
@@ -2381,7 +2420,114 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, "1");
+        assert_eq!(version, "2");
+    }
+
+    #[test]
+    fn seed_v1_empty_distraction_inserts_d2_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let old = Policy {
+            trusted_apps: vec!["Cursor".into()],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec!["Preview".into()],
+            never_capture_apps: builtin_never_capture(),
+        };
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at) VALUES (?1, 1)",
+            params![serde_json::to_string(&old).unwrap()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_meta (key, value) VALUES ('policy_seed_version', '1')",
+            [],
+        )
+        .unwrap();
+        seed_default_policy_if_needed(&conn).unwrap();
+        let policy = load_policy(&conn).unwrap();
+        assert!(policy.distraction_rules.iter().any(|r| r == "youtube.com"));
+        assert_eq!(policy.trusted_apps, vec!["Cursor".to_string()]);
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = 'policy_seed_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "2");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM policy_versions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn seed_v1_custom_distraction_not_replaced() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let old = Policy {
+            trusted_apps: vec!["Cursor".into()],
+            distraction_rules: vec!["reddit.com".into()],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: builtin_never_capture(),
+        };
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at) VALUES (?1, 1)",
+            params![serde_json::to_string(&old).unwrap()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_meta (key, value) VALUES ('policy_seed_version', '1')",
+            [],
+        )
+        .unwrap();
+        seed_default_policy_if_needed(&conn).unwrap();
+        let policy = load_policy(&conn).unwrap();
+        assert_eq!(policy.distraction_rules, vec!["reddit.com".to_string()]);
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = 'policy_seed_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "2");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM policy_versions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn seed_v2_empty_distraction_not_refilled() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let empty = Policy {
+            trusted_apps: vec!["Cursor".into()],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: builtin_never_capture(),
+        };
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at) VALUES (?1, 1)",
+            params![serde_json::to_string(&empty).unwrap()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_meta (key, value) VALUES ('policy_seed_version', '2')",
+            [],
+        )
+        .unwrap();
+        seed_default_policy_if_needed(&conn).unwrap();
+        let policy = load_policy(&conn).unwrap();
+        assert!(policy.distraction_rules.is_empty());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM policy_versions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -2444,7 +2590,12 @@ mod tests {
         conn: &Connection,
         day: &str,
         ss: i64,
-    ) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
         conn.query_row(
             "SELECT screenshot_path, capture_context_json, capture_status, status
              FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -2572,10 +2723,26 @@ mod tests {
     #[test]
     fn is_screenshot_expired_respects_ttl() {
         let now = 1_000_000i64;
-        assert!(!is_screenshot_expired(now - 3600, now, ScreenshotRetention::Hours24));
-        assert!(is_screenshot_expired(now - 86401, now, ScreenshotRetention::Hours24));
-        assert!(is_screenshot_expired(now - 86400 * 4, now, ScreenshotRetention::Days3));
-        assert!(!is_screenshot_expired(now - 86400, now, ScreenshotRetention::Days14));
+        assert!(!is_screenshot_expired(
+            now - 3600,
+            now,
+            ScreenshotRetention::Hours24
+        ));
+        assert!(is_screenshot_expired(
+            now - 86401,
+            now,
+            ScreenshotRetention::Hours24
+        ));
+        assert!(is_screenshot_expired(
+            now - 86400 * 4,
+            now,
+            ScreenshotRetention::Days3
+        ));
+        assert!(!is_screenshot_expired(
+            now - 86400,
+            now,
+            ScreenshotRetention::Days14
+        ));
     }
 
     #[test]
@@ -2588,10 +2755,7 @@ mod tests {
         std::fs::write(&old, b"x").unwrap();
         let now = 1_000_000i64;
         let old_mtime = now - 86400 * 5;
-        let _ = filetime::set_file_mtime(
-            &old,
-            filetime::FileTime::from_unix_time(old_mtime, 0),
-        );
+        let _ = filetime::set_file_mtime(&old, filetime::FileTime::from_unix_time(old_mtime, 0));
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         conn.execute(
@@ -2681,12 +2845,7 @@ mod tests {
         )
         .unwrap();
 
-        midnight_tick(
-            &mut conn,
-            today_start + 5,
-            ScreenshotRetention::None,
-        )
-        .unwrap();
+        midnight_tick(&mut conn, today_start + 5, ScreenshotRetention::None).unwrap();
 
         let status: String = conn
             .query_row(
@@ -2712,7 +2871,13 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        settle_day(&mut conn, yesterday, today_start + 10, ScreenshotRetention::None).unwrap();
+        settle_day(
+            &mut conn,
+            yesterday,
+            today_start + 10,
+            ScreenshotRetention::None,
+        )
+        .unwrap();
         let outcome_after: String = conn
             .query_row(
                 "SELECT outcome FROM days WHERE day = ?1",
@@ -2742,11 +2907,7 @@ mod tests {
         freeze_day(&mut conn, protected, now).unwrap();
 
         let row: String = conn
-            .query_row(
-                "SELECT protected_date FROM freeze_uses",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT protected_date FROM freeze_uses", [], |r| r.get(0))
             .unwrap();
         assert_eq!(row, "2026-03-31");
         let outcome: String = conn
@@ -2963,7 +3124,7 @@ mod tests {
         .unwrap();
         for i in 0..60 {
             conn.execute(
-                "INSERT INTO samples (ts, day, app, title, path, idle_seconds, locked, paused)
+                "INSERT INTO samples (ts, day, app, title, document_path, idle_seconds, locked, paused)
                  VALUES (?1, ?2, 'Cursor', 'main.tex', '/x/main.tex', 2, 0, 0)",
                 params![ss + i * 15, day],
             )
