@@ -1,6 +1,6 @@
 use crate::r#const::READING_BRIDGE_SECS;
 use crate::policy::{
-    Policy, all_side_project_rules, matches_any_rule, matches_app_name, matches_rule_fields,
+    Policy, all_side_project_rules, matches_any_rule, matches_app_identity, matches_rule_fields,
 };
 use crate::types::{Hint, Quest, Sample};
 
@@ -27,7 +27,8 @@ pub fn hint_sample(
         return Hint::Side;
     }
 
-    let is_reading = matches_app_name(&sample.app, &policy.reading_apps);
+    let is_reading =
+        matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.reading_apps);
 
     if sample.idle_seconds >= AWAY_IDLE_SECS && !is_reading {
         return Hint::Away;
@@ -45,7 +46,8 @@ pub fn hint_sample(
         }
     }
 
-    if !matches_app_name(&sample.app, &policy.trusted_apps) {
+    if !matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.trusted_apps)
+    {
         return Hint::Unsure;
     }
 
@@ -178,5 +180,59 @@ mod tests {
         let mut s = sample("Safari", "home", 5);
         s.url = Some("https://haofei.ma/".into());
         assert_eq!(hint_sample(&s, &p, &[], None), Hint::Side);
+    }
+
+    fn hdp_policy() -> Policy {
+        Policy {
+            trusted_apps: vec!["Cursor".into()],
+            distraction_rules: vec![],
+            side_project_rules: builtin_side_project_rules(),
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+        }
+    }
+
+    fn hdp_quest() -> [Quest; 1] {
+        [Quest {
+            text: "HDP".into(),
+            keywords: vec!["HDP".into()],
+        }]
+    }
+
+    #[test]
+    fn hdp_document_path_is_core_not_side_despite_gamelife_screenshot_dir() {
+        let mut s = sample("Cursor", "train.py — HDP", 5);
+        s.document_path = Some("/Users/me/Projects/HDP/train.py".into());
+        assert_eq!(
+            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            Hint::CoreCandidate
+        );
+    }
+
+    #[test]
+    fn gamelife_document_path_is_side() {
+        let mut s = sample("Cursor", "App.tsx", 5);
+        s.document_path = Some("/Users/me/Projects/GameLife/src/App.tsx".into());
+        assert_eq!(hint_sample(&s, &hdp_policy(), &hdp_quest(), None), Hint::Side);
+    }
+
+    #[test]
+    fn title_only_quest_keyword_is_core_without_invented_document_path() {
+        let s = sample("Cursor", "train.py — HDP", 5);
+        assert_eq!(s.document_path, None);
+        assert_eq!(
+            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            Hint::CoreCandidate
+        );
+    }
+
+    #[test]
+    fn localized_cursor_is_trusted_via_bundle_id() {
+        let mut s = sample("光标", "train.py — HDP", 5);
+        s.bundle_id = Some("com.todesktop.230313mzl4w4u92".into());
+        assert_eq!(
+            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            Hint::CoreCandidate
+        );
     }
 }
