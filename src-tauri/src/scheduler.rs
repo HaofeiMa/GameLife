@@ -1758,6 +1758,8 @@ pub fn review_pending_slot(
             dominant: category_to_dominant(category),
             activity,
             credited_core_seconds: 0,
+            credited_side_seconds: 0,
+            credited_chore_seconds: 0,
             observed_seconds: judged.observed_seconds,
             used_vision: false,
             pending: false,

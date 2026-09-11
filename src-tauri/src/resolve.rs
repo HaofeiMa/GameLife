@@ -176,6 +176,8 @@ mod tests {
                 ..Default::default()
             },
             credited_core_seconds: credited,
+            credited_side_seconds: 0,
+            credited_chore_seconds: 0,
             observed_seconds: credited,
             used_vision: false,
             pending: false,
@@ -239,6 +241,8 @@ mod tests {
             dominant: Dominant::PendingReview,
             activity: ActivitySeconds::default(),
             credited_core_seconds: 0,
+            credited_side_seconds: 0,
+            credited_chore_seconds: 0,
             observed_seconds: 600,
             used_vision: true,
             pending: true,
