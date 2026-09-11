@@ -28,7 +28,17 @@ pub struct SamplerState {
     pub last_slot: Option<i64>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ObservedWindow {
+    pub app: String,
+    pub title: String,
+    pub bundle_id: Option<String>,
+    pub document_path: Option<String>,
+}
+
 pub trait SampleSource: Send + Sync {
+    fn observe_window(&self) -> Result<ObservedWindow, ()>;
+    fn capture_frontmost_window(&self, path: &std::path::Path) -> Result<(), ()>;
     fn frontmost_app(&self) -> Result<(String, String), ()>;
     fn idle_seconds(&self) -> i64;
     fn screen_locked(&self) -> bool;
@@ -103,6 +113,20 @@ impl MacSampleSource {
 }
 
 impl SampleSource for MacSampleSource {
+    fn observe_window(&self) -> Result<ObservedWindow, ()> {
+        let (app, title) = crate::macos::frontmost_app().unwrap_or_default();
+        Ok(ObservedWindow {
+            app,
+            title,
+            bundle_id: crate::macos::bundle_id(),
+            document_path: crate::macos::document_path(),
+        })
+    }
+
+    fn capture_frontmost_window(&self, path: &std::path::Path) -> Result<(), ()> {
+        crate::macos::capture_frontmost_window(path)
+    }
+
     fn frontmost_app(&self) -> Result<(String, String), ()> {
         crate::macos::frontmost_app()
     }
@@ -165,10 +189,27 @@ pub struct FakeSampleSource {
     pub capture_title: Option<String>,
     pub capture_document_path: Option<String>,
     pub capture_context_calls: AtomicU32,
+    pub observe_window_calls: AtomicU32,
+    pub legacy_calls: AtomicU32,
 }
 
 impl SampleSource for FakeSampleSource {
+    fn observe_window(&self) -> Result<ObservedWindow, ()> {
+        self.observe_window_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(ObservedWindow {
+            app: self.app.clone(),
+            title: self.title.clone(),
+            bundle_id: self.bundle_id.clone(),
+            document_path: self.document_path.clone(),
+        })
+    }
+
+    fn capture_frontmost_window(&self, _path: &std::path::Path) -> Result<(), ()> {
+        Err(())
+    }
+
     fn frontmost_app(&self) -> Result<(String, String), ()> {
+        self.legacy_calls.fetch_add(1, Ordering::Relaxed);
         Ok((self.app.clone(), self.title.clone()))
     }
 
@@ -201,10 +242,12 @@ impl SampleSource for FakeSampleSource {
     }
 
     fn document_path(&self) -> Option<String> {
+        self.legacy_calls.fetch_add(1, Ordering::Relaxed);
         self.document_path.clone()
     }
 
     fn bundle_id(&self) -> Option<String> {
+        self.legacy_calls.fetch_add(1, Ordering::Relaxed);
         self.bundle_id.clone()
     }
 
@@ -315,29 +358,27 @@ pub fn sample_once(
     let secure = source.secure_input_on();
     let idle = source.idle_seconds();
 
-    let (app, title) = match source.frontmost_app() {
+    let observed = match source.observe_window() {
         Ok(v) => v,
-        Err(()) => (String::new(), String::new()),
+        Err(()) => ObservedWindow::default(),
     };
     let url = source
         .optional_browser_url()
         .map(|u| strip_url_query_fragment(&u));
     let url_ref = url.as_deref().filter(|s| !s.is_empty());
-
-    let document_path = source
-        .document_path()
-        .and_then(|raw| normalize_document_path(&raw));
-    let bundle_id = source.bundle_id();
-
+    let document_path = observed
+        .document_path
+        .as_deref()
+        .and_then(normalize_document_path);
     insert_sample(
         conn,
         ts,
         &day,
-        &app,
-        &title,
+        &observed.app,
+        &observed.title,
         url_ref,
         document_path.as_deref(),
-        bundle_id.as_deref(),
+        observed.bundle_id.as_deref(),
         idle,
         locked,
         paused,
@@ -353,6 +394,7 @@ pub fn sample_once(
         paused,
         source.capture_observation_available(),
         || source.capture_context(),
+        |p| source.capture_frontmost_window(p),
     )?;
     state.last_day = Some(day);
     state.last_slot = Some(ss);
@@ -595,6 +637,35 @@ mod tests {
             .query_row("SELECT bundle_id FROM samples WHERE ts = ?1", [ts], |r| r.get(0))
             .unwrap();
         assert_eq!(bundle, "com.todesktop.230313mzl4w4u92");
+    }
+
+    #[test]
+    fn sample_once_calls_observe_window_once_not_legacy_getters() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let source = FakeSampleSource {
+            app: "Cursor".into(),
+            title: "train.py — HDP".into(),
+            url: None,
+            document_path: Some("train.py — HDP".into()),
+            bundle_id: Some("com.todesktop.230313mzl4w4u92".into()),
+            idle: 1,
+            locked: false,
+            secure: false,
+            paused: false,
+            metadata_observation_available: true,
+            capture_observation_available: true,
+            ..Default::default()
+        };
+        let ts = 1_700_000_000i64;
+        let mut state = SamplerState::default();
+        sample_once(&mut conn, &source, ts, &mut state).unwrap();
+        assert_eq!(source.observe_window_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(source.legacy_calls.load(Ordering::Relaxed), 0);
+        let path: Option<String> = conn
+            .query_row("SELECT document_path FROM samples WHERE ts = ?1", [ts], |r| r.get(0))
+            .unwrap();
+        assert_eq!(path, None);
     }
 
     #[test]

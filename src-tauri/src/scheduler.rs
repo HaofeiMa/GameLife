@@ -268,12 +268,6 @@ pub fn apply_capture_retention(
     Ok(())
 }
 
-type CaptureFn = fn(&Path) -> Result<(), ()>;
-
-fn default_capture_fn() -> CaptureFn {
-    crate::macos::capture_frontmost_window
-}
-
 pub fn slot_rng(day: &str, slot_start_ts: i64) -> u32 {
     let mut h: u32 = slot_start_ts as u32;
     for b in day.bytes() {
@@ -495,6 +489,7 @@ pub fn tick_capture(
     paused: bool,
     screen_recording: bool,
     capture_context: impl Fn() -> CaptureContext,
+    capture_fn: impl Fn(&Path) -> Result<(), ()>,
 ) -> Result<(), DbOpError> {
     tick_capture_impl(
         conn,
@@ -505,7 +500,7 @@ pub fn tick_capture(
         paused,
         screen_recording,
         capture_context,
-        default_capture_fn(),
+        capture_fn,
     )
 }
 
@@ -518,7 +513,7 @@ fn tick_capture_impl(
     paused: bool,
     screen_recording: bool,
     capture_context: impl Fn() -> CaptureContext,
-    capture_fn: CaptureFn,
+    capture_fn: impl Fn(&Path) -> Result<(), ()>,
 ) -> Result<(), DbOpError> {
     let row: Option<(i64, String)> = conn
         .query_row(
@@ -1864,7 +1859,10 @@ mod tests {
             params![day, ss],
         )
         .unwrap();
-        tick_capture(&conn, day, ss, 200, false, false, true, || capture_ctx("Cursor")).unwrap();
+        tick_capture(&conn, day, ss, 200, false, false, true, || capture_ctx("Cursor"), |_| {
+            Err(())
+        })
+        .unwrap();
         let status: String = conn
             .query_row(
                 "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -1888,10 +1886,20 @@ mod tests {
         )
         .unwrap();
         let calls = std::cell::Cell::new(0u32);
-        tick_capture(&conn, day, ss, 100, false, true, true, || {
-            calls.set(calls.get() + 1);
-            capture_ctx("Cursor")
-        })
+        tick_capture(
+            &conn,
+            day,
+            ss,
+            100,
+            false,
+            true,
+            true,
+            || {
+                calls.set(calls.get() + 1);
+                capture_ctx("Cursor")
+            },
+            |_| Err(()),
+        )
         .unwrap();
         let status: String = conn
             .query_row(
@@ -1916,8 +1924,18 @@ mod tests {
             params![day, ss],
         )
         .unwrap();
-        tick_capture(&conn, day, ss, 100, false, false, true, || capture_ctx("1Password"))
-            .unwrap();
+        tick_capture(
+            &conn,
+            day,
+            ss,
+            100,
+            false,
+            false,
+            true,
+            || capture_ctx("1Password"),
+            |_| Err(()),
+        )
+        .unwrap();
         let status: String = conn
             .query_row(
                 "SELECT capture_status FROM slots WHERE day = ?1 AND slot_start = ?2",
@@ -2045,10 +2063,20 @@ mod tests {
         )
         .unwrap();
         let calls = std::cell::Cell::new(0u32);
-        tick_capture(&conn, day, ss, 50, false, false, true, || {
-            calls.set(calls.get() + 1);
-            capture_ctx("Cursor")
-        })
+        tick_capture(
+            &conn,
+            day,
+            ss,
+            50,
+            false,
+            false,
+            true,
+            || {
+                calls.set(calls.get() + 1);
+                capture_ctx("Cursor")
+            },
+            |_| Err(()),
+        )
         .unwrap();
         assert_eq!(calls.get(), 0);
         let status: String = conn
