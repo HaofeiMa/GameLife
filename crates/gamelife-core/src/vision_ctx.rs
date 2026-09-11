@@ -316,6 +316,17 @@ mod tests {
     }
 
     #[test]
+    fn prompt_includes_main_prefix_when_provided() {
+        let mut ctx = ctx_with_password_and_cursor();
+        ctx.quests = vec!["[main] HDP".into(), "notes".into()];
+        let prompt = build_vision_prompt(
+            &sanitize_vision_context(ctx, &builtin_never_capture()).unwrap(),
+        );
+        assert!(prompt.contains("1. [main] HDP"));
+        assert!(prompt.contains("2. notes"));
+    }
+
+    #[test]
     fn history_protected_window_is_redacted_but_cursor_capture_is_ok() {
         let ctx = ctx_with_password_and_cursor();
         let never = builtin_never_capture();

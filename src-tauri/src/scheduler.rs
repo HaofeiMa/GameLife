@@ -11,7 +11,7 @@ use gamelife_core::{
     builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
     default_v01, early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved,
     hint_sample, is_weekday, judge_slot, matches_app_identity, new_milestones,
-    normalize_quest_list, parse_quest_versions_json, recompute_streak, schedule_capture,
+    normalize_quest_list, parse_quest_versions_json, recompute_streak, vision_quest_label, schedule_capture,
     slot_end_exclusive, slot_start, spans_for_slot, CaptureContext, CaptureStatus, DayOutcome,
     JudgeInput, Policy, Quest, QuestDraft, QuestListError, Sample, VisionContext, CHEST_SECS,
 };
@@ -1221,7 +1221,7 @@ pub fn finalize_slot_end(
             let ctx = VisionContext {
                 slot_start,
                 slot_end,
-                quests: quests.iter().map(|q| q.text.clone()).collect(),
+                quests: quests.iter().map(vision_quest_label).collect(),
                 capture: capture_ctx,
                 activity_summary: activity_summary_for_vision(&evidence, &samples),
             };
