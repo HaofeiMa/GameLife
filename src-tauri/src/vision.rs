@@ -3,6 +3,9 @@ use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use gamelife_core::judge::{parse_vision_json, VisionMatchContext, VisionResult};
+use gamelife_core::{
+    build_vision_prompt, sanitize_vision_context, SanitizedVisionContext, VisionContext,
+};
 use image::imageops::FilterType;
 use image::GenericImageView;
 
@@ -47,19 +50,11 @@ fn openai_model() -> String {
 pub fn call_vision_api(
     jpeg_bytes: &[u8],
     api_key: &str,
+    sanitized: &SanitizedVisionContext,
     match_context: Option<VisionMatchContext>,
 ) -> Result<VisionResult, ()> {
     let b64 = STANDARD.encode(jpeg_bytes);
-    let app_hint = match_context
-        .as_ref()
-        .map(|c| format!("Frontmost app at capture: {}.", c.app))
-        .unwrap_or_default();
-    let prompt = format!(
-        "Classify this macOS screenshot for productivity tracking. \
-Return JSON only with keys category, confidence, reason. \
-category must be one of: core_research, research_support, admin, side_project, distraction, break_away. \
-{app_hint}"
-    );
+    let prompt = build_vision_prompt(sanitized);
     let url = format!("{}/chat/completions", openai_base_url().trim_end_matches('/'));
     let body = serde_json::json!({
         "model": openai_model(),
@@ -95,10 +90,17 @@ category must be one of: core_research, research_support, admin, side_project, d
 pub fn analyze_screenshot(
     path: &Path,
     api_key: &str,
-    match_context: Option<VisionMatchContext>,
+    ctx: VisionContext,
+    never_capture: &[String],
 ) -> Result<VisionResult, ()> {
+    let match_context = Some(VisionMatchContext {
+        app: ctx.capture.app.clone(),
+        title: ctx.capture.title.clone(),
+        document_path: ctx.capture.document_path.clone(),
+    });
+    let sanitized = sanitize_vision_context(ctx, never_capture).map_err(|_| ())?;
     let jpeg = read_and_prepare_jpeg(path)?;
-    call_vision_api(&jpeg, api_key, match_context)
+    call_vision_api(&jpeg, api_key, &sanitized, match_context)
 }
 
 #[cfg(test)]
@@ -151,5 +153,38 @@ mod tests {
         let jpeg = jpeg_bytes_for_upload(&raw).unwrap();
         let decoded = image::load_from_memory(&jpeg).unwrap();
         assert!(decoded.width().max(decoded.height()) <= JPEG_MAX_LONG_EDGE);
+    }
+
+    fn protected_vision_ctx() -> VisionContext {
+        use gamelife_core::{ActivitySummary, CaptureContext, HintSeconds};
+        VisionContext {
+            slot_start: 0,
+            slot_end: 900,
+            quests: vec![],
+            capture: CaptureContext {
+                app: "1Password".into(),
+                bundle_id: None,
+                title: "Bank Account Password".into(),
+                document_path: Some("/secret".into()),
+                url: None,
+                secure_input: false,
+            },
+            activity_summary: ActivitySummary {
+                top_windows: vec![],
+                hint_seconds: HintSeconds::default(),
+                unobserved_seconds: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn protected_capture_does_not_require_screenshot_file() {
+        let err = analyze_screenshot(
+            Path::new("/no/such/screenshot.jpg"),
+            "sk-test",
+            protected_vision_ctx(),
+            &gamelife_core::builtin_never_capture(),
+        );
+        assert!(err.is_err());
     }
 }

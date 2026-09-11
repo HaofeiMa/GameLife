@@ -7,14 +7,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 
 use gamelife_core::{
-    analyze_slot_evidence, builtin_never_capture, builtin_side_project_rules, can_use_freeze,
-    capture_on_resume, credited_core_spans, early_start_anchor, early_start_coins_for_local_secs,
-    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity, new_milestones,
-    recompute_streak, schedule_capture, slot_end_exclusive, slot_start, spans_for_slot,
-    CaptureContext, CaptureStatus, DayOutcome, JudgeInput, Policy, Quest, Sample, CHEST_SECS,
+    analyze_slot_evidence, activity_summary_for_vision, builtin_never_capture,
+    builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
+    early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved, hint_sample,
+    is_weekday, judge_slot, matches_app_identity, new_milestones, recompute_streak,
+    schedule_capture, slot_end_exclusive, slot_start, spans_for_slot, CaptureContext,
+    CaptureStatus, DayOutcome, JudgeInput, Policy, Quest, Sample, VisionContext, CHEST_SECS,
 };
 use gamelife_core::types::Hint;
-use gamelife_core::judge::{Dominant, JudgeOutput, VisionMatchContext, VisionResult};
+use gamelife_core::judge::{Dominant, JudgeOutput, VisionResult};
 use gamelife_core::types::ActivitySeconds;
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
@@ -176,23 +177,15 @@ pub fn maybe_vision_for_gray_zone(
     metadata_decidable: bool,
     capture: CaptureStatus,
     screenshot_path: &Path,
-    capture_app: &str,
+    ctx: VisionContext,
+    never: &[String],
     api_key: Option<&str>,
 ) -> Option<VisionResult> {
     if metadata_decidable || capture != CaptureStatus::Captured {
         return None;
     }
     let key = api_key?;
-    vision::analyze_screenshot(
-        screenshot_path,
-        key,
-        Some(VisionMatchContext {
-            app: capture_app.to_string(),
-            title: String::new(),
-            document_path: None,
-        }),
-    )
-    .ok()
+    vision::analyze_screenshot(screenshot_path, key, ctx, never).ok()
 }
 
 pub fn apply_screenshot_retention(path: &Path, retention: ScreenshotRetention) {
@@ -987,17 +980,58 @@ pub fn finalize_slot_end(
     let policy = load_policy_for_version(conn, policy_vid)?;
     let quests = load_quests_for_version(conn, day, quest_vid)?;
     let actual = slot_end - slot_start;
-    let (activity, strong_core, reading_bridge) =
-        compute_slot_activity(&samples, &policy, &quests, slot_start, slot_end);
-    let decidable =
-        metadata_decidable(&activity, strong_core, reading_bridge, actual, quests.is_empty());
+    let evidence = analyze_slot_evidence(&samples, &policy, &quests, slot_start, slot_end);
+    let decidable = metadata_decidable(
+        &evidence.activity,
+        evidence.strong_core_seconds,
+        evidence.reading_bridge_seconds,
+        actual,
+        quests.is_empty(),
+    );
 
-    let screenshot_path: Option<PathBuf> = None;
+    let (screenshot_path, capture_json): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT screenshot_path, capture_context_json FROM slots WHERE day = ?1 AND slot_start = ?2",
+            params![day, slot_start],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(map_rusqlite)?
+        .unwrap_or((None, None));
 
+    let capture_ctx = match capture_json.as_deref() {
+        Some(json) => match serde_json::from_str::<CaptureContext>(json) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("capture_context_json parse failed for {day}@{slot_start}: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+
+    let never = merged_never_capture(&policy);
     let api_key = crate::keychain::get_openai_api_key().ok();
-    let vision = screenshot_path.as_ref().and_then(|path| {
-        maybe_vision_for_gray_zone(decidable, capture, path, "", api_key.as_deref())
-    });
+    let vision = match (screenshot_path.as_ref(), capture_ctx) {
+        (Some(path), Some(capture_ctx)) => {
+            let ctx = VisionContext {
+                slot_start,
+                slot_end,
+                quests: quests.iter().map(|q| q.text.clone()).collect(),
+                capture: capture_ctx,
+                activity_summary: activity_summary_for_vision(&evidence, &samples),
+            };
+            maybe_vision_for_gray_zone(
+                decidable,
+                capture,
+                Path::new(path),
+                ctx,
+                &never,
+                api_key.as_deref(),
+            )
+        }
+        _ => None,
+    };
 
     let output = judge_slot(JudgeInput {
         slot_start,
@@ -1024,7 +1058,7 @@ pub fn finalize_slot_end(
     resolve_slot(conn, day, slot_start, &output, credited_before, early_coins)?;
 
     if let Some(path) = screenshot_path.as_ref() {
-        apply_screenshot_retention(path, retention);
+        apply_screenshot_retention(Path::new(path), retention);
     }
     purge_expired_screenshots(retention, now_secs());
     Ok(())
@@ -1918,6 +1952,154 @@ mod tests {
             shot.exists(),
             "samples.path must not be used as screenshot evidence or cleanup target"
         );
+    }
+
+    fn isaac_capture_json() -> String {
+        serde_json::to_string(&CaptureContext {
+            app: "Isaac Sim".into(),
+            bundle_id: None,
+            title: "robot".into(),
+            document_path: None,
+            url: None,
+            secure_input: false,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn finalize_isaac_screenshot_without_api_key_is_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("isaac.jpg");
+        std::fs::write(&shot, b"x").unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, screenshot_path, capture_context_json)
+             VALUES (?1, ?2, 50, 'Captured', ?3, ?4)",
+            params![day, ss, shot.to_string_lossy().to_string(), isaac_capture_json()],
+        )
+        .unwrap();
+        for i in 0..30 {
+            conn.execute(
+                "INSERT INTO samples (ts, day, app, title, idle_seconds, locked, paused)
+                 VALUES (?1, ?2, 'Isaac Sim', 'robot', 2, 0, 0)",
+                params![i * 15, day],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"robot\",\"keywords\":[\"robot\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+
+        finalize_slot_end(&mut conn, day, ss, 900, ScreenshotRetention::Hours24, 0).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "pending_review");
+        let jpg_in_samples: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM samples WHERE path IS NOT NULL AND path LIKE '%.jpg'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(jpg_in_samples, 0);
+    }
+
+    #[test]
+    fn finalize_corrupt_capture_json_is_pending_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("slot.jpg");
+        std::fs::write(&shot, b"x").unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, screenshot_path, capture_context_json)
+             VALUES (?1, ?2, 50, 'Captured', ?3, '{not json')",
+            params![day, ss, shot.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        for i in 0..30 {
+            conn.execute(
+                "INSERT INTO samples (ts, day, app, title, idle_seconds, locked, paused)
+                 VALUES (?1, ?2, 'Isaac Sim', 'robot', 2, 0, 0)",
+                params![i * 15, day],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"robot\",\"keywords\":[\"robot\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+        finalize_slot_end(&mut conn, day, ss, 900, ScreenshotRetention::Hours24, 0).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "pending_review");
+    }
+
+    #[test]
+    fn finalize_without_capture_context_does_not_invent_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("cursor.jpg");
+        std::fs::write(&shot, b"x").unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        let ss = 0i64;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, screenshot_path)
+             VALUES (?1, ?2, 50, 'Captured', ?3)",
+            params![day, ss, shot.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        for i in 0..30 {
+            conn.execute(
+                "INSERT INTO samples (ts, day, app, title, idle_seconds, locked, paused)
+                 VALUES (?1, ?2, 'Cursor', 'lib.rs', 2, 0, 0)",
+                params![i * 15, day],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"paper\",\"keywords\":[\"lib.rs\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at)
+             VALUES ('{\"trusted_apps\":[\"Cursor\"],\"distraction_rules\":[],\"side_project_rules\":[],\"reading_apps\":[],\"never_capture_apps\":[]}', 1)",
+            [],
+        )
+        .unwrap();
+        finalize_slot_end(&mut conn, day, ss, 900, ScreenshotRetention::Hours24, 0).unwrap();
+        let used: i64 = conn
+            .query_row(
+                "SELECT used_vision FROM slots WHERE day = ?1 AND slot_start = ?2",
+                params![day, ss],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(used, 0);
     }
 
     #[test]
