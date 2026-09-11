@@ -43,7 +43,7 @@ pub use streak::{
 };
 pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
-pub use url::{optional_stripped_url, strip_url_query_fragment};
+pub use url::{host_is_research, optional_stripped_url, strip_url_query_fragment, url_host};
 pub use document::normalize_document_path;
 pub use vision_ctx::{
     ActivitySummary, CaptureContext, HintSeconds, SanitizedVisionContext, VisionContext,
