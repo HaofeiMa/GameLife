@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use gamelife_core::{
-    format_estimated_minutes, sum_activity, xp_shop_unlocked, CHEST_SECS, GOLD_DAY_SECS,
+    format_estimated_minutes, sum_activity, xp_shop_unlocked, QuestDraft, CHEST_SECS, GOLD_DAY_SECS,
 };
 use gamelife_core::shop::{Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
@@ -19,7 +19,7 @@ use crate::macos;
 use crate::sampler::PauseControl;
 use crate::scheduler::{
     day_str_for_ts, default_screenshot_retention, list_freeze_candidates, load_quests_for_day,
-    review_pending_slot, sampling_allowed, streak_from_db,
+    review_pending_slot, sampling_allowed, save_quests_for_day, streak_from_db,
 };
 
 fn now_secs() -> i64 {
@@ -470,41 +470,13 @@ pub fn get_week() -> Result<WeekView, String> {
 }
 
 #[tauri::command]
-pub fn set_quests(quests: Vec<String>) -> Result<(), String> {
-    if quests.len() > 3 {
-        return Err("at most 3 quests".into());
-    }
+pub fn set_quests(quests: Vec<QuestDraft>) -> Result<(), String> {
     with_db(|conn| {
         let day = day_str_for_ts(now_secs());
         if !sampling_allowed(conn, &day)? {
             return Err(DbOpError::Fatal("day ended".into()));
         }
-        let json = serde_json::to_string(
-            &quests
-                .into_iter()
-                .map(|text| {
-                    let keywords: Vec<String> = text
-                        .split_whitespace()
-                        .map(|w| w.to_string())
-                        .filter(|w| !w.is_empty())
-                        .collect();
-                    let keywords = if keywords.is_empty() {
-                        vec![text.clone()]
-                    } else {
-                        keywords
-                    };
-                    serde_json::json!({ "text": text, "keywords": keywords })
-                })
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|e| DbOpError::Fatal(e.to_string()))?;
-        let ts = now_secs();
-        conn.execute(
-            "INSERT INTO quest_versions (day, json, created_at) VALUES (?1, ?2, ?3)",
-            params![day, json, ts],
-        )
-        .map_err(crate::db_error::map_rusqlite)?;
-        Ok(())
+        save_quests_for_day(conn, &day, quests, now_secs())
     })
 }
 
