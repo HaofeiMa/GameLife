@@ -198,6 +198,70 @@ fn format_hint_seconds(h: &HintSeconds) -> String {
     }
 }
 
+pub fn activity_summary_for_vision(
+    evidence: &crate::judge::SlotEvidence,
+    samples: &[crate::types::Sample],
+) -> ActivitySummary {
+    use crate::observe::SpanKind;
+    use crate::types::Hint;
+
+    let mut hint_seconds = HintSeconds::default();
+    let mut unobserved_seconds = 0;
+    let mut top_windows: Vec<WindowShare> = Vec::new();
+
+    for span in &evidence.spans {
+        let secs = span.end - span.start;
+        match span.kind {
+            SpanKind::Unobserved => unobserved_seconds += secs,
+            SpanKind::Observed(hint) => {
+                match hint {
+                    Hint::CoreCandidate => hint_seconds.core_candidate += secs,
+                    Hint::CoreReading => hint_seconds.core_reading += secs,
+                    Hint::Unsure => hint_seconds.unsure += secs,
+                    Hint::UnsureReading => hint_seconds.unsure_reading += secs,
+                    Hint::Side => hint_seconds.side += secs,
+                    Hint::Distraction => hint_seconds.distraction += secs,
+                    Hint::Away => hint_seconds.away += secs,
+                }
+                let Some(sample) = span.sample_index.and_then(|i| samples.get(i)) else {
+                    continue;
+                };
+                if let Some(existing) = top_windows.iter_mut().find(|w| {
+                    w.app == sample.app && w.title == sample.window_title
+                }) {
+                    existing.seconds += secs;
+                    existing.secure_input |= sample.secure_input;
+                    if existing.document_path.is_none() {
+                        existing.document_path = sample.document_path.clone();
+                    }
+                    if existing.url.is_none() {
+                        existing.url = sample.url.clone();
+                    }
+                    if existing.bundle_id.is_none() {
+                        existing.bundle_id = sample.bundle_id.clone();
+                    }
+                } else {
+                    top_windows.push(WindowShare {
+                        app: sample.app.clone(),
+                        title: sample.window_title.clone(),
+                        seconds: secs,
+                        bundle_id: sample.bundle_id.clone(),
+                        document_path: sample.document_path.clone(),
+                        url: sample.url.clone(),
+                        secure_input: sample.secure_input,
+                    });
+                }
+            }
+        }
+    }
+
+    ActivitySummary {
+        top_windows,
+        hint_seconds,
+        unobserved_seconds,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +348,37 @@ mod tests {
             sanitize_vision_context(ctx, &[]),
             Err(VisionPrivacyError::ProtectedCapture)
         ));
+    }
+
+    #[test]
+    fn summary_uses_evidence_not_ts_lookup() {
+        use crate::judge::analyze_slot_evidence;
+        use crate::policy::Policy;
+        use crate::types::Sample;
+
+        let samples = vec![Sample {
+            ts: 10,
+            app: "Cursor".into(),
+            window_title: "t".into(),
+            url: None,
+            document_path: None,
+            bundle_id: None,
+            idle_seconds: 1,
+            screen_locked: false,
+            paused: false,
+            secure_input: false,
+        }];
+        let policy = Policy {
+            trusted_apps: vec![],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+        };
+        let ev = analyze_slot_evidence(&samples, &policy, &[], 0, 40);
+        let lead = ev.spans.iter().find(|s| s.start == 0).unwrap();
+        assert_eq!(lead.sample_index, Some(0));
+        let sum = activity_summary_for_vision(&ev, &samples);
+        assert!(sum.top_windows.iter().any(|w| w.app == "Cursor"));
     }
 }

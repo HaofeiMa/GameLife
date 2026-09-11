@@ -24,8 +24,9 @@ pub use format::format_estimated_minutes;
 pub use heartbeat::heartbeat_unobserved;
 pub use hint::hint_sample;
 pub use judge::{
-    Dominant, JudgeInput, JudgeOutput, VisionMatchContext, VisionParseError, VisionResult,
-    credited_core_spans, judge_slot, parse_vision_json, sum_unsure_spans,
+    Dominant, JudgeInput, JudgeOutput, SlotEvidence, VisionMatchContext, VisionParseError,
+    VisionResult, analyze_slot_evidence, credited_core_spans, judge_slot, parse_vision_json,
+    sum_unsure_spans,
 };
 pub use ledger::{RewardEvent, admin_xp_key, support_xp_key, tick_keys_for_credited};
 pub use observe::{Span, SpanKind, observed_seconds, spans_for_slot};
@@ -47,6 +48,6 @@ pub use document::normalize_document_path;
 pub use vision_ctx::{
     ActivitySummary, CaptureContext, HintSeconds, SanitizedVisionContext, VisionContext,
     VisionPrivacyError, WindowShare, build_vision_prompt, format_span_secs,
-    is_protected_frontmost, sanitize_vision_context,
+    is_protected_frontmost, sanitize_vision_context, activity_summary_for_vision,
 };
 pub use weekly::sum_activity;

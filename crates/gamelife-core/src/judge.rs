@@ -117,34 +117,34 @@ pub struct JudgeOutput {
     pub pending: bool,
 }
 
-/// Slot judge pipeline:
-/// 1. hint_sample per sample (maintain last_core_interaction_ts)
-/// 2. spans_for_slot → activity + strong_core / reading_bridge
-/// 3. observed_seconds, actual duration
-/// 4. branch: unobserved / break-away / strong core / side-distraction / gray+vision
-/// 5. credited = min(observed, actual, strong + bridge + verified); quests empty → 0
-pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
-    let actual = input.slot_end - input.slot_start;
-    let quests_empty = input.quests.is_empty();
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlotEvidence {
+    pub hints: Vec<Hint>,
+    pub spans: Vec<Span>,
+    pub activity: ActivitySeconds,
+    pub strong_core_seconds: i64,
+    pub reading_bridge_seconds: i64,
+    pub observed_seconds: i64,
+}
 
-    // Step 1: hints with last_core_interaction_ts maintenance
+pub fn analyze_slot_evidence(
+    samples: &[Sample],
+    policy: &Policy,
+    quests: &[Quest],
+    slot_start: i64,
+    slot_end: i64,
+) -> SlotEvidence {
     let mut last_core_interaction_ts: Option<i64> = None;
-    let mut hints = Vec::with_capacity(input.samples.len());
-    for sample in input.samples {
-        let hint = hint_sample(sample, input.policy, input.quests, last_core_interaction_ts);
+    let mut hints = Vec::with_capacity(samples.len());
+    for sample in samples {
+        let hint = hint_sample(sample, policy, quests, last_core_interaction_ts);
         if sample.idle_seconds < LOW_INPUT_IDLE_SECS && hint == Hint::CoreCandidate {
             last_core_interaction_ts = Some(sample.ts);
         }
         hints.push(hint);
     }
 
-    // Step 2: spans → activity, strong_core, reading_bridge
-    let spans = spans_for_slot(
-        input.samples,
-        &hints,
-        input.slot_start,
-        input.slot_end,
-    );
+    let spans = spans_for_slot(samples, &hints, slot_start, slot_end);
     let mut activity = ActivitySeconds::default();
     let mut strong_core = 0_i64;
     let mut reading_bridge = 0_i64;
@@ -155,7 +155,11 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
             SpanKind::Unobserved => activity.unobserved += secs,
             SpanKind::Observed(hint) => {
                 accumulate_hint_activity(&mut activity, hint, secs);
-                let idle = sample_idle_at(input.samples, span.start);
+                let idle = span
+                    .sample_index
+                    .and_then(|i| samples.get(i))
+                    .map(|s| s.idle_seconds)
+                    .unwrap_or(0);
                 match hint {
                     Hint::CoreCandidate if idle < LOW_INPUT_IDLE_SECS => {
                         strong_core += secs;
@@ -169,9 +173,37 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
         }
     }
     reading_bridge = reading_bridge.min(READING_BRIDGE_SECS as i64);
-
-    // Step 3
     let observed = observed_seconds(&spans);
+
+    SlotEvidence {
+        hints,
+        spans,
+        activity,
+        strong_core_seconds: strong_core,
+        reading_bridge_seconds: reading_bridge,
+        observed_seconds: observed,
+    }
+}
+
+/// Slot judge pipeline:
+/// 1. analyze_slot_evidence (hints + spans + activity)
+/// 2. branch: unobserved / break-away / strong core / side-distraction / gray+vision
+/// 3. credited = min(observed, actual, strong + bridge + verified); quests empty → 0
+pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
+    let actual = input.slot_end - input.slot_start;
+    let quests_empty = input.quests.is_empty();
+    let ev = analyze_slot_evidence(
+        input.samples,
+        input.policy,
+        input.quests,
+        input.slot_start,
+        input.slot_end,
+    );
+    let spans = ev.spans;
+    let mut activity = ev.activity;
+    let strong_core = ev.strong_core_seconds;
+    let reading_bridge = ev.reading_bridge_seconds;
+    let observed = ev.observed_seconds;
 
     // Step 5–6: branches
     let mut used_vision = false;
@@ -343,7 +375,11 @@ pub fn credited_core_spans(
         let creditable = match span.kind {
             SpanKind::Unobserved => false,
             SpanKind::Observed(hint) => {
-                let idle = sample_idle_at(samples, span.start);
+                let idle = span
+                    .sample_index
+                    .and_then(|i| samples.get(i))
+                    .map(|s| s.idle_seconds)
+                    .unwrap_or(0);
                 match hint {
                     Hint::CoreCandidate if idle < LOW_INPUT_IDLE_SECS => true,
                     Hint::CoreReading => true,
@@ -360,15 +396,6 @@ pub fn credited_core_spans(
         total += take;
     }
     out
-}
-
-fn sample_idle_at(samples: &[Sample], ts: i64) -> i64 {
-    samples
-        .iter()
-        .filter(|s| s.ts <= ts)
-        .max_by_key(|s| s.ts)
-        .map(|s| s.idle_seconds)
-        .unwrap_or(0)
 }
 
 fn sample_at(samples: &[Sample], ts: i64) -> Option<&Sample> {

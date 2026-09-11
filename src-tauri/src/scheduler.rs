@@ -7,15 +7,14 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 
 use gamelife_core::{
-    builtin_never_capture, builtin_side_project_rules, can_use_freeze, capture_on_resume,
-    credited_core_spans, early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved,
-    hint_sample, is_weekday, judge_slot, new_milestones, recompute_streak, schedule_capture,
-    slot_end_exclusive, slot_start, spans_for_slot, CaptureStatus, DayOutcome, JudgeInput, Policy,
-    Quest, Sample, CHEST_SECS,
+    analyze_slot_evidence, builtin_never_capture, builtin_side_project_rules, can_use_freeze,
+    capture_on_resume, credited_core_spans, early_start_anchor, early_start_coins_for_local_secs,
+    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, new_milestones, recompute_streak,
+    schedule_capture, slot_end_exclusive, slot_start, spans_for_slot, CaptureStatus, DayOutcome,
+    JudgeInput, Policy, Quest, Sample, CHEST_SECS,
 };
 use gamelife_core::types::Hint;
 use gamelife_core::judge::{Dominant, JudgeOutput, VisionMatchContext, VisionResult};
-use gamelife_core::observe::SpanKind;
 use gamelife_core::types::ActivitySeconds;
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
@@ -28,7 +27,6 @@ const AWAY_DOMINANT_SECS: i64 = 600;
 const STRONG_CORE_AUTO_SECS: i64 = 780;
 const SIDE_DISTRACTION_DOMINANT_SECS: i64 = 300;
 const SIDE_DISTRACTION_MAX_FOR_AUTO_CORE: i64 = 60;
-const READING_BRIDGE_CAP: i64 = 300;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScreenshotRetention {
@@ -168,55 +166,12 @@ pub fn compute_slot_activity(
     slot_start: i64,
     slot_end: i64,
 ) -> (ActivitySeconds, i64, i64) {
-    let mut last_core_interaction_ts: Option<i64> = None;
-    let mut hints = Vec::with_capacity(samples.len());
-    for sample in samples {
-        let hint = hint_sample(sample, policy, quests, last_core_interaction_ts);
-        if sample.idle_seconds < LOW_INPUT_IDLE_SECS && hint == Hint::CoreCandidate {
-            last_core_interaction_ts = Some(sample.ts);
-        }
-        hints.push(hint);
-    }
-    let spans = spans_for_slot(samples, &hints, slot_start, slot_end);
-    let mut activity = ActivitySeconds::default();
-    let mut strong_core = 0_i64;
-    let mut reading_bridge = 0_i64;
-    for span in &spans {
-        let secs = span.end - span.start;
-        match span.kind {
-            SpanKind::Unobserved => activity.unobserved += secs,
-            SpanKind::Observed(hint) => {
-                accumulate_hint_activity(&mut activity, hint, secs);
-                let idle = sample_idle_at(samples, span.start);
-                match hint {
-                    Hint::CoreCandidate if idle < LOW_INPUT_IDLE_SECS => strong_core += secs,
-                    Hint::CoreReading => reading_bridge += secs,
-                    _ => {}
-                }
-            }
-        }
-    }
-    reading_bridge = reading_bridge.min(READING_BRIDGE_CAP);
-    (activity, strong_core, reading_bridge)
-}
-
-fn accumulate_hint_activity(activity: &mut ActivitySeconds, hint: Hint, secs: i64) {
-    match hint {
-        Hint::Away => activity.away += secs,
-        Hint::Distraction => activity.distraction += secs,
-        Hint::Side => activity.side += secs,
-        Hint::CoreCandidate | Hint::CoreReading => {}
-        Hint::UnsureReading | Hint::Unsure => {}
-    }
-}
-
-fn sample_idle_at(samples: &[Sample], ts: i64) -> i64 {
-    samples
-        .iter()
-        .filter(|s| s.ts <= ts)
-        .map(|s| s.idle_seconds)
-        .last()
-        .unwrap_or(0)
+    let ev = analyze_slot_evidence(samples, policy, quests, slot_start, slot_end);
+    (
+        ev.activity,
+        ev.strong_core_seconds,
+        ev.reading_bridge_seconds,
+    )
 }
 
 pub fn maybe_vision_for_gray_zone(
