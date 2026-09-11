@@ -1,7 +1,28 @@
 use std::path::Path;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
-pub const CAPTURE_TIMEOUT: Duration = Duration::from_secs(2);
+pub const CAPTURE_TIMEOUT: Duration = Duration::from_millis(2000);
+
+fn remaining_until(deadline: Instant) -> Result<Duration, ()> {
+    let rem = deadline.saturating_duration_since(Instant::now());
+    if rem.is_zero() {
+        Err(())
+    } else {
+        Ok(rem)
+    }
+}
+
+fn recv_until<T>(rx: &mpsc::Receiver<T>, deadline: Instant) -> Result<T, ()> {
+    let remaining = remaining_until(deadline)?;
+    rx.recv_timeout(remaining).map_err(|_| ())
+}
+
+fn drop_or_leak_on_timeout<T>(hold: T, timed_out: bool) {
+    if timed_out {
+        std::mem::forget(hold);
+    }
+}
 
 pub fn capture_window(window_id: u32, path: &Path) -> Result<(), ()> {
     #[cfg(target_os = "macos")]
@@ -35,26 +56,27 @@ fn macos_capture_window(window_id: u32, path: &Path) -> Result<(), ()> {
         return Err(());
     }
 
-    let content = shareable_content()?;
+    let deadline = Instant::now() + CAPTURE_TIMEOUT;
+    let content = shareable_content(deadline)?;
     let window = find_window(&content, window_id)?;
     let filter = unsafe {
         SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &window)
     };
     let config = stream_config(&filter, &window);
-    let bytes = capture_jpeg(&filter, &config)?;
+    let bytes = capture_jpeg(filter, config, deadline)?;
     persist_jpeg(path, &bytes)
 }
 
 #[cfg(target_os = "macos")]
 fn shareable_content(
+    deadline: Instant,
 ) -> Result<objc2::rc::Retained<objc2_screen_capture_kit::SCShareableContent>, ()> {
-    use std::sync::mpsc;
-
     use block2::RcBlock;
     use objc2::rc::Retained;
     use objc2_foundation::NSError;
     use objc2_screen_capture_kit::SCShareableContent;
 
+    remaining_until(deadline)?;
     let (tx, rx) = mpsc::channel();
     let block = RcBlock::new(
         move |content: *mut SCShareableContent, _err: *mut NSError| {
@@ -69,7 +91,14 @@ fn shareable_content(
             &block,
         );
     }
-    rx.recv_timeout(CAPTURE_TIMEOUT).map_err(|_| ())?.ok_or(())
+    match recv_until(&rx, deadline) {
+        Ok(Some(content)) => Ok(content),
+        Ok(None) => Err(()),
+        Err(()) => {
+            drop_or_leak_on_timeout(block, true);
+            Err(())
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -116,11 +145,11 @@ fn stream_config(
 
 #[cfg(target_os = "macos")]
 fn capture_jpeg(
-    filter: &objc2_screen_capture_kit::SCContentFilter,
-    config: &objc2_screen_capture_kit::SCStreamConfiguration,
+    filter: objc2::rc::Retained<objc2_screen_capture_kit::SCContentFilter>,
+    config: objc2::rc::Retained<objc2_screen_capture_kit::SCStreamConfiguration>,
+    deadline: Instant,
 ) -> Result<Vec<u8>, ()> {
     use std::ptr::NonNull;
-    use std::sync::mpsc;
 
     use block2::RcBlock;
     use objc2_core_foundation::CFRetained;
@@ -128,22 +157,27 @@ fn capture_jpeg(
     use objc2_foundation::NSError;
     use objc2_screen_capture_kit::SCScreenshotManager;
 
+    remaining_until(deadline)?;
     let (tx, rx) = mpsc::channel();
     let block = RcBlock::new(move |image: *mut CGImage, _err: *mut NSError| {
-        let result = NonNull::new(image).ok_or(()).and_then(|ptr| {
-            let img = unsafe { CFRetained::retain(ptr) };
-            jpeg_bytes(&img)
-        });
-        let _ = tx.send(result);
+        let retained = NonNull::new(image).map(|ptr| unsafe { CFRetained::retain(ptr) });
+        let _ = tx.send(retained);
     });
     unsafe {
         SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
-            filter,
-            config,
+            &filter,
+            &config,
             Some(&block),
         );
     }
-    rx.recv_timeout(CAPTURE_TIMEOUT).map_err(|_| ())?
+    match recv_until(&rx, deadline) {
+        Ok(Some(img)) => jpeg_bytes(&img),
+        Ok(None) => Err(()),
+        Err(()) => {
+            drop_or_leak_on_timeout((block, filter, config), true);
+            Err(())
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -188,9 +222,14 @@ fn persist_jpeg(path: &Path, bytes: &[u8]) -> Result<(), ()> {
 
 #[cfg(test)]
 mod tests {
-    use super::capture_window;
+    use super::{
+        capture_window, drop_or_leak_on_timeout, recv_until, remaining_until, CAPTURE_TIMEOUT,
+    };
     #[allow(unused_imports)]
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn missing_file_after_error_is_ok_to_absent() {
@@ -198,5 +237,71 @@ mod tests {
         let path = dir.path().join("nope.jpg");
         let _ = capture_window(0, &path);
         assert!(!path.exists() || std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) == 0);
+    }
+
+    #[test]
+    fn capture_timeout_budget_is_2000ms() {
+        assert_eq!(CAPTURE_TIMEOUT, Duration::from_millis(2000));
+    }
+
+    #[test]
+    fn remaining_until_is_err_when_deadline_has_passed() {
+        let deadline = Instant::now();
+        std::thread::sleep(Duration::from_millis(2));
+        assert_eq!(remaining_until(deadline), Err(()));
+    }
+
+    #[test]
+    fn recv_until_returns_err_immediately_when_no_time_left() {
+        let (_tx, rx) = mpsc::channel::<i32>();
+        let deadline = Instant::now();
+        std::thread::sleep(Duration::from_millis(2));
+        let start = Instant::now();
+        assert!(recv_until(&rx, deadline).is_err());
+        assert!(start.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn second_recv_uses_remaining_deadline_not_full_timeout() {
+        let deadline = Instant::now() + Duration::from_millis(80);
+        let (tx, rx) = mpsc::channel();
+        std::thread::sleep(Duration::from_millis(40));
+        tx.send(1).unwrap();
+        assert_eq!(recv_until(&rx, deadline), Ok(1));
+
+        let (_tx2, rx2) = mpsc::channel::<i32>();
+        let start = Instant::now();
+        assert!(recv_until(&rx2, deadline).is_err());
+        assert!(
+            start.elapsed() < Duration::from_millis(80),
+            "second wait must use leftover budget, got {:?}",
+            start.elapsed()
+        );
+        assert!(start.elapsed() < CAPTURE_TIMEOUT / 4);
+    }
+
+    struct DropFlag<'a>(&'a AtomicBool);
+
+    impl Drop for DropFlag<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn leak_on_timeout_does_not_drop_hold() {
+        let dropped = AtomicBool::new(false);
+        drop_or_leak_on_timeout(DropFlag(&dropped), true);
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "timeout must leak hold so a late SCK callback cannot UAF"
+        );
+    }
+
+    #[test]
+    fn drop_on_success_runs_drop() {
+        let dropped = AtomicBool::new(false);
+        drop_or_leak_on_timeout(DropFlag(&dropped), false);
+        assert!(dropped.load(Ordering::SeqCst));
     }
 }

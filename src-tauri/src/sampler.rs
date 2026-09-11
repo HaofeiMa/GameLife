@@ -8,8 +8,8 @@ use rusqlite::params;
 use rusqlite::Connection;
 
 use gamelife_core::{
-    normalize_document_path, CaptureContext, SAMPLE_INTERVAL_SECS, slot_start,
-    strip_url_query_fragment,
+    normalize_document_path, optional_stripped_url, CaptureContext, SAMPLE_INTERVAL_SECS,
+    slot_start,
 };
 
 use crate::config::{load_settings, retention_from_str};
@@ -189,7 +189,7 @@ impl SampleSource for MacSampleSource {
             document_path: snap
                 .document_raw
                 .and_then(|s| normalize_document_path(&s)),
-            url,
+            url: optional_stripped_url(url.as_deref()),
             secure_input: crate::macos::secure_input_on(),
         }
     }
@@ -290,7 +290,7 @@ impl SampleSource for FakeSampleSource {
                 .capture_document_path
                 .clone()
                 .or_else(|| self.document_path.clone()),
-            url: self.url.clone(),
+            url: optional_stripped_url(self.url.as_deref()),
             secure_input: self.secure,
         }
     }
@@ -385,10 +385,8 @@ pub fn sample_once(
         Ok(v) => v,
         Err(()) => ObservedWindow::default(),
     };
-    let url = source
-        .optional_browser_url()
-        .map(|u| strip_url_query_fragment(&u));
-    let url_ref = url.as_deref().filter(|s| !s.is_empty());
+    let url = optional_stripped_url(source.optional_browser_url().as_deref());
+    let url_ref = url.as_deref();
     let document_path = observed
         .document_path
         .as_deref()
@@ -762,6 +760,28 @@ mod tests {
     fn fetch_is_not_used_when_last_is_empty() {
         let src = MacSampleSource::new(Arc::new(AtomicBool::new(false)));
         assert_eq!(src.optional_browser_url(), None);
+    }
+
+    #[test]
+    fn fake_capture_context_strips_url_query_fragment() {
+        let source = FakeSampleSource {
+            url: Some("https://arxiv.org/abs/1?foo=1#bar".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            source.capture_context().url.as_deref(),
+            Some("https://arxiv.org/abs/1")
+        );
+        assert_eq!(source.capture_context().document_path, None);
+    }
+
+    #[test]
+    fn fake_capture_context_treats_empty_stripped_url_as_none() {
+        let source = FakeSampleSource {
+            url: Some("?foo=1".into()),
+            ..Default::default()
+        };
+        assert_eq!(source.capture_context().url, None);
     }
 
     #[test]

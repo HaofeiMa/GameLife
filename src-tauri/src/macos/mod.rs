@@ -57,7 +57,7 @@ pub fn capture_context() -> gamelife_core::CaptureContext {
         document_path: snap
             .document_raw
             .and_then(|s| gamelife_core::normalize_document_path(&s)),
-        url,
+        url: gamelife_core::optional_stripped_url(url.as_deref()),
         secure_input: secure_input_on(),
     }
 }
