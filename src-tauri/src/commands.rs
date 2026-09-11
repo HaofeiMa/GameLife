@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -253,6 +253,26 @@ pub struct WeekView {
     pub active_entertainment: Option<EntertainmentView>,
     pub ended_entertainment: Option<EndedEntertainmentView>,
     pub redemptions: Vec<RedemptionView>,
+    pub by_day: Vec<WeekDayRow>,
+    pub by_hour: Vec<WeekHourRow>,
+    pub core_label: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeekDayRow {
+    pub day: String,
+    pub core: i64,
+    pub side: i64,
+    pub chore: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeekHourRow {
+    pub hour: i32,
+    pub core: i64,
+    pub observed: i64,
 }
 
 #[derive(Serialize)]
@@ -704,38 +724,81 @@ fn load_wishes(conn: &Connection) -> Result<Vec<WishView>, DbOpError> {
         .map_err(crate::db_error::map_rusqlite)
 }
 
+fn local_hour(ts: i64) -> i32 {
+    Local
+        .timestamp_opt(ts, 0)
+        .single()
+        .map(|dt| dt.hour() as i32)
+        .unwrap_or(0)
+}
+
 fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOpError> {
     let today_date =
         NaiveDate::parse_from_str(today, "%Y-%m-%d").map_err(|e| DbOpError::Fatal(e.to_string()))?;
     let week_start = week_start_for(today_date);
     let week_start_str = week_start.format("%Y-%m-%d").to_string();
+    let mut by_day: Vec<WeekDayRow> = (0..7)
+        .map(|i| {
+            let day = week_start + chrono::Duration::days(i);
+            WeekDayRow {
+                day: day.format("%Y-%m-%d").to_string(),
+                core: 0,
+                side: 0,
+                chore: 0,
+            }
+        })
+        .collect();
+    let mut by_hour: Vec<WeekHourRow> = (0..24)
+        .map(|hour| WeekHourRow {
+            hour,
+            core: 0,
+            observed: 0,
+        })
+        .collect();
     let mut stmt = conn
         .prepare(
-            "SELECT activity_json, status, COALESCE(observed_seconds, 0) FROM slots
+            "SELECT day, slot_start, activity_json, status, COALESCE(observed_seconds, 0) FROM slots
              WHERE day >= ?1 AND day <= ?2",
         )
         .map_err(crate::db_error::map_rusqlite)?;
     let rows = stmt
         .query_map(params![week_start_str, today], |r| {
             Ok((
-                r.get::<_, Option<String>>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, i64>(2)?,
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
             ))
         })
         .map_err(crate::db_error::map_rusqlite)?;
     let mut activities = Vec::new();
     let mut pending_review_secs = 0i64;
     for row in rows {
-        let (json, status, observed) = row.map_err(crate::db_error::map_rusqlite)?;
+        let (day, slot_start, json, status, observed) = row.map_err(crate::db_error::map_rusqlite)?;
         let status = status.unwrap_or_default();
+        let activity = parse_activity_json(json);
+        if let Some(hour_row) = by_hour.get_mut(local_hour(slot_start) as usize) {
+            hour_row.core += activity.core;
+            hour_row.observed += observed;
+        }
         if status == "pending_review" || status == "unknown" {
             pending_review_secs += observed;
-        } else {
-            activities.push(parse_activity_json(json));
+            continue;
+        }
+        activities.push(activity.clone());
+        if let Some(day_row) = by_day.iter_mut().find(|d| d.day == day) {
+            day_row.core += activity.core;
+            day_row.side += activity.side;
+            day_row.chore += activity.admin;
         }
     }
     let total = sum_activity(&activities);
+    for day_row in &mut by_day {
+        day_row.core = secs_to_minutes(day_row.core);
+        day_row.side = secs_to_minutes(day_row.side);
+        day_row.chore = secs_to_minutes(day_row.chore);
+    }
     let credited_today: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(credited_core_seconds), 0) FROM slots
@@ -779,6 +842,9 @@ fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOp
         active_entertainment,
         ended_entertainment,
         redemptions,
+        by_day,
+        by_hour,
+        core_label: format_estimated_minutes(total.core),
     })
 }
 
@@ -1380,6 +1446,40 @@ mod tests {
         let view =
             build_week(&conn, "2026-09-11", 1_789_091_100).expect("open slot must not fail get_week");
         assert_eq!(view.unobserved, 0);
+        assert_eq!(view.by_day.len(), 7);
+        assert_eq!(view.by_hour.len(), 24);
+    }
+
+    #[test]
+    fn build_week_aggregates_activity_by_day_and_hour() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        let day_start = start_of_named_day(day).unwrap();
+        let slot_start = day_start + 10 * 3600;
+        let json = r#"{"core":1800,"support":0,"admin":600,"side":900,"distraction":0,"away":0,"unobserved":0}"#;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json)
+             VALUES (?1, ?2, 'final', 3600, ?3)",
+            params![day, slot_start, json],
+        )
+        .unwrap();
+        let view = build_week(&conn, day, slot_start).unwrap();
+        assert_eq!(view.core, 30);
+        assert_eq!(view.side, 15);
+        assert_eq!(view.admin, 10);
+        let friday = view
+            .by_day
+            .iter()
+            .find(|d| d.day == day)
+            .expect("friday row");
+        assert_eq!(friday.core, 30);
+        assert_eq!(friday.side, 15);
+        assert_eq!(friday.chore, 10);
+        let hour = view.by_hour.iter().find(|h| h.hour == 10).expect("10:00");
+        assert_eq!(hour.core, 1800);
+        assert_eq!(hour.observed, 3600);
+        assert!(view.core_label.contains("30m"));
     }
 
     #[test]

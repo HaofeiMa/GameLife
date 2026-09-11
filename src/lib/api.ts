@@ -106,6 +106,19 @@ export interface TodayView {
   coinBalance: number;
 }
 
+export interface WeekDayRow {
+  day: string;
+  core: number;
+  side: number;
+  chore: number;
+}
+
+export interface WeekHourRow {
+  hour: number;
+  core: number;
+  observed: number;
+}
+
 export interface WeekView {
   core: number;
   support: number;
@@ -122,6 +135,9 @@ export interface WeekView {
   activeEntertainment: EntertainmentView | null;
   endedEntertainment: EndedEntertainmentView | null;
   redemptions: RedemptionView[];
+  byDay: WeekDayRow[];
+  byHour: WeekHourRow[];
+  coreLabel: string;
 }
 
 export interface WishView {
