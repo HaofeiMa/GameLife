@@ -1,3 +1,6 @@
+mod document;
+pub use document::ax_document_raw;
+
 const FRONTMOST_META_SCRIPT: &str = r#"
 tell application "System Events"
     set p to first application process whose frontmost is true
