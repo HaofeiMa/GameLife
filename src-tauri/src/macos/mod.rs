@@ -1,5 +1,7 @@
 mod document;
+mod window_id;
 pub use document::ax_document_raw;
+pub use window_id::{pick_front_window_id, CgWindowEntry};
 
 const FRONTMOST_META_SCRIPT: &str = r#"
 tell application "System Events"
