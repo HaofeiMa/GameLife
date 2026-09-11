@@ -133,6 +133,18 @@ mod imp {
         }
     }
 
+    pub fn document_path() -> Option<String> {
+        None
+    }
+
+    pub fn bundle_id() -> Option<String> {
+        None
+    }
+
+    pub fn capture_context() -> gamelife_core::CaptureContext {
+        super::empty_capture_context()
+    }
+
     pub fn accessibility_granted() -> bool {
         extern "C" {
             fn AXIsProcessTrusted() -> bool;
@@ -170,6 +182,18 @@ mod imp {
         None
     }
 
+    pub fn document_path() -> Option<String> {
+        None
+    }
+
+    pub fn bundle_id() -> Option<String> {
+        None
+    }
+
+    pub fn capture_context() -> gamelife_core::CaptureContext {
+        super::empty_capture_context()
+    }
+
     pub fn capture_frontmost_window(_path: &std::path::Path) -> Result<(), ()> {
         Err(())
     }
@@ -180,6 +204,17 @@ mod imp {
 
     pub fn screen_recording_granted() -> bool {
         true
+    }
+}
+
+fn empty_capture_context() -> gamelife_core::CaptureContext {
+    gamelife_core::CaptureContext {
+        app: String::new(),
+        bundle_id: None,
+        title: String::new(),
+        document_path: None,
+        url: None,
+        secure_input: false,
     }
 }
 
@@ -201,6 +236,18 @@ pub fn secure_input_on() -> bool {
 
 pub fn optional_browser_url() -> Option<String> {
     imp::optional_browser_url()
+}
+
+pub fn document_path() -> Option<String> {
+    imp::document_path()
+}
+
+pub fn bundle_id() -> Option<String> {
+    imp::bundle_id()
+}
+
+pub fn capture_context() -> gamelife_core::CaptureContext {
+    imp::capture_context()
 }
 
 pub fn capture_frontmost_window(path: &std::path::Path) -> Result<(), ()> {

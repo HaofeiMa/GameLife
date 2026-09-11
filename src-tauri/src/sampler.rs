@@ -7,7 +7,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::params;
 use rusqlite::Connection;
 
-use gamelife_core::{SAMPLE_INTERVAL_SECS, slot_start, strip_url_query_fragment};
+use gamelife_core::{
+    normalize_document_path, CaptureContext, SAMPLE_INTERVAL_SECS, slot_start,
+    strip_url_query_fragment,
+};
 
 use crate::config::{load_settings, retention_from_str};
 use crate::db::{migrate, open, write_heartbeat};
@@ -39,6 +42,10 @@ pub trait SampleSource: Send + Sync {
     fn capture_observation_available(&self) -> bool {
         true
     }
+
+    fn document_path(&self) -> Option<String>;
+    fn bundle_id(&self) -> Option<String>;
+    fn capture_context(&self) -> CaptureContext;
 }
 
 #[derive(Clone)]
@@ -127,12 +134,26 @@ impl SampleSource for MacSampleSource {
     fn capture_observation_available(&self) -> bool {
         crate::macos::capture_observation_available()
     }
+
+    fn document_path(&self) -> Option<String> {
+        crate::macos::document_path()
+    }
+
+    fn bundle_id(&self) -> Option<String> {
+        crate::macos::bundle_id()
+    }
+
+    fn capture_context(&self) -> CaptureContext {
+        crate::macos::capture_context()
+    }
 }
 
 pub struct FakeSampleSource {
     pub app: String,
     pub title: String,
     pub url: Option<String>,
+    pub document_path: Option<String>,
+    pub bundle_id: Option<String>,
     pub idle: i64,
     pub locked: bool,
     pub secure: bool,
@@ -173,6 +194,25 @@ impl SampleSource for FakeSampleSource {
     fn capture_observation_available(&self) -> bool {
         self.capture_observation_available
     }
+
+    fn document_path(&self) -> Option<String> {
+        self.document_path.clone()
+    }
+
+    fn bundle_id(&self) -> Option<String> {
+        self.bundle_id.clone()
+    }
+
+    fn capture_context(&self) -> CaptureContext {
+        CaptureContext {
+            app: self.app.clone(),
+            bundle_id: self.bundle_id.clone(),
+            title: self.title.clone(),
+            document_path: self.document_path.clone(),
+            url: self.url.clone(),
+            secure_input: self.secure,
+        }
+    }
 }
 
 fn now_secs() -> i64 {
@@ -189,23 +229,30 @@ pub fn insert_sample(
     app: &str,
     title: &str,
     url: Option<&str>,
+    document_path: Option<&str>,
+    bundle_id: Option<&str>,
     idle: i64,
     locked: bool,
     paused: bool,
+    secure_input: bool,
 ) -> Result<(), DbOpError> {
     migrate(conn)?;
     conn.execute(
-        "INSERT OR IGNORE INTO samples (ts, day, app, title, url, path, idle_seconds, locked, paused)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)",
+        "INSERT OR IGNORE INTO samples
+         (ts, day, app, title, url, document_path, bundle_id, idle_seconds, locked, paused, secure_input)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             ts,
             day,
             app,
             title,
             url,
+            document_path,
+            bundle_id,
             idle,
             locked as i64,
             paused as i64,
+            secure_input as i64,
         ],
     )
     .map_err(crate::db_error::map_rusqlite)?;
@@ -262,6 +309,11 @@ pub fn sample_once(
         .map(|u| strip_url_query_fragment(&u));
     let url_ref = url.as_deref().filter(|s| !s.is_empty());
 
+    let document_path = source
+        .document_path()
+        .and_then(|raw| normalize_document_path(&raw));
+    let bundle_id = source.bundle_id();
+
     insert_sample(
         conn,
         ts,
@@ -269,9 +321,12 @@ pub fn sample_once(
         &app,
         &title,
         url_ref,
+        document_path.as_deref(),
+        bundle_id.as_deref(),
         idle,
         locked,
         paused,
+        secure,
     )?;
     write_heartbeat(conn)?;
     tick_capture(
@@ -345,6 +400,8 @@ mod tests {
             app: "Cursor".into(),
             title: "lib.rs".into(),
             url: Some("https://example.com/x?y=1#z".into()),
+            document_path: None,
+            bundle_id: None,
             idle: 3,
             locked: false,
             secure: false,
@@ -383,6 +440,8 @@ mod tests {
             app: "Safari".into(),
             title: "Example".into(),
             url: None,
+            document_path: None,
+            bundle_id: None,
             idle: 0,
             locked: false,
             secure: false,
@@ -412,6 +471,8 @@ mod tests {
             app: "Cursor".into(),
             title: "lib.rs".into(),
             url: None,
+            document_path: None,
+            bundle_id: None,
             idle: 600,
             locked: false,
             secure: false,
@@ -452,6 +513,8 @@ mod tests {
             app: "Cursor".into(),
             title: "lib.rs".into(),
             url: None,
+            document_path: None,
+            bundle_id: None,
             idle: 3,
             locked: false,
             secure: false,
@@ -474,6 +537,95 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "Skipped");
+    }
+
+    #[test]
+    fn sample_once_normalizes_tilde_document_path() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let home = std::env::var("HOME").expect("HOME");
+        let source = FakeSampleSource {
+            app: "Cursor".into(),
+            title: "train.py — HDP".into(),
+            url: None,
+            document_path: Some("~/Projects/HDP/train.py".into()),
+            bundle_id: Some("com.todesktop.230313mzl4w4u92".into()),
+            idle: 3,
+            locked: false,
+            secure: false,
+            paused: false,
+            metadata_observation_available: true,
+            capture_observation_available: true,
+        };
+        let ts = 1_700_000_000i64;
+        let mut state = SamplerState::default();
+        sample_once(&mut conn, &source, ts, &mut state).unwrap();
+        let path: String = conn
+            .query_row("SELECT document_path FROM samples WHERE ts = ?1", [ts], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(path, format!("{home}/Projects/HDP/train.py"));
+        let bundle: String = conn
+            .query_row("SELECT bundle_id FROM samples WHERE ts = ?1", [ts], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bundle, "com.todesktop.230313mzl4w4u92");
+    }
+
+    #[test]
+    fn sample_once_does_not_invent_document_path_from_title() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let source = FakeSampleSource {
+            app: "Cursor".into(),
+            title: "train.py — HDP".into(),
+            url: None,
+            document_path: Some("train.py — HDP".into()),
+            bundle_id: None,
+            idle: 3,
+            locked: false,
+            secure: false,
+            paused: false,
+            metadata_observation_available: true,
+            capture_observation_available: true,
+        };
+        let ts = 1_700_000_000i64;
+        let mut state = SamplerState::default();
+        sample_once(&mut conn, &source, ts, &mut state).unwrap();
+        let path: Option<String> = conn
+            .query_row("SELECT document_path FROM samples WHERE ts = ?1", [ts], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn sample_once_persists_secure_input() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let source = FakeSampleSource {
+            app: "1Password".into(),
+            title: "Bank".into(),
+            url: None,
+            document_path: None,
+            bundle_id: None,
+            idle: 1,
+            locked: false,
+            secure: true,
+            paused: false,
+            metadata_observation_available: true,
+            capture_observation_available: true,
+        };
+        let ts = 1_700_000_000i64;
+        let mut state = SamplerState::default();
+        sample_once(&mut conn, &source, ts, &mut state).unwrap();
+        let secure: i64 = conn
+            .query_row("SELECT secure_input FROM samples WHERE ts = ?1", [ts], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(secure, 1);
     }
 
     #[test]
