@@ -25,8 +25,9 @@ use std::time::Duration;
 use sampler::PauseControl;
 
 use commands::{
-    end_today, freeze, get_permission_status, get_settings, get_today, get_week, has_api_key,
-    redeem, report_misclassification, review_slot, save_settings, set_api_key, set_quests,
+    archive_wish, create_wish, end_today, freeze, get_permission_status, get_settings, get_today,
+    get_week, has_api_key, redeem, report_misclassification, review_slot, save_settings,
+    set_api_key, set_quests, update_wish,
 };
 
 use tauri::{
@@ -81,6 +82,9 @@ pub fn run() {
             review_slot,
             report_misclassification,
             redeem,
+            create_wish,
+            update_wish,
+            archive_wish,
             get_settings,
             save_settings,
             set_api_key,

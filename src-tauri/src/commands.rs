@@ -12,7 +12,7 @@ use gamelife_core::shop::{Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
 
 use crate::config::{load_settings, retention_from_str, save_settings as write_settings_file, AppSettings};
-use crate::db::{migrate, open, redeem as db_redeem};
+use crate::db::{archive_wish as db_archive_wish, insert_wish as db_insert_wish, migrate, open, redeem as db_redeem, update_wish as db_update_wish};
 use crate::db_error::DbOpError;
 use crate::keychain::{get_openai_api_key, set_openai_api_key};
 use crate::macos;
@@ -27,6 +27,28 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn map_db_err(e: DbOpError) -> String {
+    match e {
+        DbOpError::Rejected(code) => code,
+        DbOpError::AlreadyApplied => "already_applied".into(),
+        other => format!("{other:?}"),
+    }
+}
+
+fn with_db_err<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce(&mut Connection) -> Result<T, DbOpError>,
+{
+    let path = crate::db::app_db_path().ok_or_else(|| "home dir".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create db dir: {e}"))?;
+    }
+    let mut conn = open(&path).map_err(|e| format!("{e:?}"))?;
+    migrate(&conn).map_err(|e| format!("{e:?}"))?;
+    crate::scheduler::seed_default_policy_if_needed(&conn).map_err(|e| format!("{e:?}"))?;
+    f(&mut conn).map_err(map_db_err)
 }
 
 fn with_db<F, T>(f: F) -> Result<T, String>
@@ -364,7 +386,8 @@ fn first_core_label_for_day(
 fn load_wishes(conn: &Connection) -> Result<Vec<WishView>, DbOpError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, kind, price, duration_minutes FROM wishes ORDER BY name",
+            "SELECT id, name, kind, price, duration_minutes FROM wishes
+             WHERE COALESCE(archived, 0) = 0 ORDER BY name",
         )
         .map_err(crate::db_error::map_rusqlite)?;
     let rows = stmt
@@ -563,7 +586,7 @@ pub fn get_permission_status() -> PermissionStatus {
 
 #[tauri::command]
 pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
-    with_db(|conn| {
+    with_db_err(|conn| {
         let day = day_str_for_ts(now_secs());
         let credited_today: i64 = conn
             .query_row(
@@ -575,7 +598,8 @@ pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
             .map_err(crate::db_error::map_rusqlite)?;
         let row = conn
             .query_row(
-                "SELECT id, name, kind, price, duration_minutes FROM wishes WHERE id = ?1",
+                "SELECT id, name, kind, price, duration_minutes, COALESCE(archived, 0)
+                 FROM wishes WHERE id = ?1",
                 params![wish_id],
                 |r| {
                     Ok((
@@ -584,13 +608,17 @@ pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
                         r.get::<_, String>(2)?,
                         r.get::<_, i64>(3)?,
                         r.get::<_, Option<i64>>(4)?,
+                        r.get::<_, i64>(5)?,
                     ))
                 },
             )
             .optional()
             .map_err(crate::db_error::map_rusqlite)?
-            .ok_or_else(|| DbOpError::Fatal("wish missing".into()))?;
-        let (id, name, kind, price, duration) = row;
+            .ok_or_else(|| DbOpError::Rejected("wish_missing".into()))?;
+        let (id, name, kind, price, duration, archived) = row;
+        if archived != 0 {
+            return Err(DbOpError::Rejected("wish_archived".into()));
+        }
         let wish = Wish {
             id,
             kind: if kind == "coin" {
@@ -602,8 +630,42 @@ pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
             },
             price,
         };
-        db_redeem(conn, credited_today, &day, &wish, &name, now_secs(), &redemption_id)
+        db_redeem(
+            conn,
+            credited_today,
+            &day,
+            &wish,
+            &name,
+            now_secs(),
+            &redemption_id,
+        )
     })
+}
+
+#[tauri::command]
+pub fn create_wish(
+    id: String,
+    name: String,
+    kind: String,
+    price: i64,
+    duration_minutes: Option<i64>,
+) -> Result<(), String> {
+    with_db_err(|conn| db_insert_wish(conn, &id, &name, &kind, price, duration_minutes))
+}
+
+#[tauri::command]
+pub fn update_wish(
+    id: String,
+    name: String,
+    price: i64,
+    duration_minutes: Option<i64>,
+) -> Result<(), String> {
+    with_db_err(|conn| db_update_wish(conn, &id, &name, price, duration_minutes))
+}
+
+#[tauri::command]
+pub fn archive_wish(id: String) -> Result<(), String> {
+    with_db_err(|conn| db_archive_wish(conn, &id))
 }
 
 #[tauri::command]

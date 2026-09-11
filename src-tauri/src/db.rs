@@ -5,8 +5,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db_error::{map_rusqlite, DbOpError};
 use gamelife_core::shop::{
-    can_start_entertainment, has_entertainment_timer, validate_redeem, RedeemError, Wish,
-    WishKind,
+    can_start_entertainment, entertainment_remaining_secs, has_entertainment_timer,
+    validate_redeem, validate_wish, RedeemError, Wish, WishError, WishKind,
 };
 
 const SCHEMA: &str = r"
@@ -234,6 +234,144 @@ pub fn insert_ledger(
     )
     .map_err(map_rusqlite)?;
     Ok(())
+}
+
+fn map_wish_error(e: WishError) -> DbOpError {
+    match e {
+        WishError::EmptyName => DbOpError::Rejected("empty_name".into()),
+        WishError::NameTooLong => DbOpError::Rejected("name_too_long".into()),
+        WishError::NonPositivePrice => DbOpError::Rejected("non_positive_price".into()),
+        WishError::EntertainmentNeedsDuration => {
+            DbOpError::Rejected("entertainment_needs_duration".into())
+        }
+        WishError::CoinMustNotHaveDuration => {
+            DbOpError::Rejected("coin_must_not_have_duration".into())
+        }
+    }
+}
+
+fn parse_wish_kind(kind: &str, duration: Option<i64>) -> Result<WishKind, DbOpError> {
+    match kind {
+        "coin" => {
+            if duration.is_some() {
+                return Err(DbOpError::Rejected("coin_must_not_have_duration".into()));
+            }
+            Ok(WishKind::Coin)
+        }
+        "xp" => Ok(WishKind::Xp {
+            duration_minutes: duration,
+        }),
+        _ => Err(DbOpError::Rejected("invalid_kind".into())),
+    }
+}
+
+pub fn insert_wish(
+    conn: &Connection,
+    wish_id: &str,
+    name: &str,
+    kind: &str,
+    price: i64,
+    duration: Option<i64>,
+) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let wish_kind = parse_wish_kind(kind, duration)?;
+    validate_wish(name, &wish_kind, price).map_err(map_wish_error)?;
+    let kind_str = match &wish_kind {
+        WishKind::Coin => "coin",
+        WishKind::Xp { .. } => "xp",
+    };
+    let duration_minutes = match &wish_kind {
+        WishKind::Coin => None,
+        WishKind::Xp { duration_minutes } => *duration_minutes,
+    };
+    conn.execute(
+        "INSERT INTO wishes (id, name, kind, price, duration_minutes, archived) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        params![wish_id, name.trim(), kind_str, price, duration_minutes],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+pub fn update_wish(
+    conn: &Connection,
+    wish_id: &str,
+    name: &str,
+    price: i64,
+    duration: Option<i64>,
+) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let row: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT kind, COALESCE(archived, 0) FROM wishes WHERE id = ?1",
+            [wish_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    let (kind_str, archived) =
+        row.ok_or_else(|| DbOpError::Rejected("wish_missing".into()))?;
+    if archived != 0 {
+        return Err(DbOpError::Rejected("wish_archived".into()));
+    }
+    let wish_kind = if kind_str == "coin" {
+        if duration.is_some() {
+            return Err(DbOpError::Rejected("coin_must_not_have_duration".into()));
+        }
+        WishKind::Coin
+    } else {
+        WishKind::Xp {
+            duration_minutes: duration,
+        }
+    };
+    validate_wish(name, &wish_kind, price).map_err(map_wish_error)?;
+    let duration_minutes = match &wish_kind {
+        WishKind::Coin => None,
+        WishKind::Xp { duration_minutes } => *duration_minutes,
+    };
+    let n = conn
+        .execute(
+            "UPDATE wishes SET name = ?1, price = ?2, duration_minutes = ?3
+             WHERE id = ?4 AND COALESCE(archived, 0) = 0",
+            params![name.trim(), price, duration_minutes, wish_id],
+        )
+        .map_err(map_rusqlite)?;
+    if n == 0 {
+        return Err(DbOpError::Rejected("wish_missing".into()));
+    }
+    Ok(())
+}
+
+pub fn archive_wish(conn: &Connection, wish_id: &str) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let n = conn
+        .execute(
+            "UPDATE wishes SET archived = 1 WHERE id = ?1",
+            [wish_id],
+        )
+        .map_err(map_rusqlite)?;
+    if n == 0 {
+        return Err(DbOpError::Rejected("wish_missing".into()));
+    }
+    Ok(())
+}
+
+pub fn load_active_session(
+    conn: &Connection,
+    now: i64,
+) -> Result<Option<(String, i64, i64)>, DbOpError> {
+    let row: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT name, ends_at FROM entertainment_sessions
+             WHERE ends_at > ?1
+             ORDER BY ends_at DESC LIMIT 1",
+            [now],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    Ok(row.map(|(name, ends_at)| {
+        (name, ends_at, entertainment_remaining_secs(now, ends_at))
+    }))
 }
 
 fn map_redeem_error(e: RedeemError) -> DbOpError {
@@ -597,6 +735,24 @@ mod tests {
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_meta'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn insert_and_archive_wish_hides_from_active_list() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        insert_wish(&conn, "w1", "视频", "xp", 10, Some(30)).unwrap();
+        insert_wish(&conn, "w2", "咖啡", "coin", 3, None).unwrap();
+        assert!(insert_wish(&conn, "w3", "视频", "xp", 10, None).is_err());
+        archive_wish(&conn, "w1").unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wishes WHERE COALESCE(archived,0)=0",
                 [],
                 |r| r.get(0),
             )
