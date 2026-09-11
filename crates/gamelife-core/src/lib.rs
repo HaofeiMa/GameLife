@@ -22,7 +22,7 @@ pub use early_start::{early_start_anchor, early_start_coins_for_local_secs};
 pub use r#const::*;
 pub use format::format_estimated_minutes;
 pub use heartbeat::heartbeat_unobserved;
-pub use hint::hint_sample;
+pub use hint::{hint_sample, is_grounded_core_sample};
 pub use judge::{
     Dominant, JudgeInput, JudgeOutput, SlotEvidence, VisionMatchContext, VisionParseError,
     VisionResult, analyze_slot_evidence, credited_core_spans, judge_slot, parse_vision_json,

@@ -3,9 +3,9 @@ use crate::policy::{
     Policy, all_side_project_rules, matches_any_rule, matches_app_identity, matches_rule_fields,
 };
 use crate::types::{Hint, Quest, Sample};
+use crate::url::{host_is_research, strip_url_query_fragment, url_host};
 
 const LOW_INPUT_IDLE_SECS: i64 = 180;
-const AWAY_IDLE_SECS: i64 = 600;
 
 pub fn hint_sample(
     sample: &Sample,
@@ -29,10 +29,6 @@ pub fn hint_sample(
 
     let is_reading =
         matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.reading_apps);
-
-    if sample.idle_seconds >= AWAY_IDLE_SECS && !is_reading {
-        return Hint::Away;
-    }
 
     if is_reading {
         if let Some(last) = last_core_interaction_ts {
@@ -69,24 +65,41 @@ fn sample_haystacks(sample: &Sample) -> Vec<&str> {
     haystacks
 }
 
-fn is_core_candidate(sample: &Sample, quests: &[Quest]) -> bool {
-    if is_readme_or_settings_title(&sample.window_title) {
-        return false;
-    }
+fn quest_keyword_in(hay: &str, quests: &[Quest]) -> bool {
+    let lower = hay.to_ascii_lowercase();
+    quests.iter().any(|quest| {
+        quest
+            .keywords
+            .iter()
+            .any(|keyword| lower.contains(&keyword.to_ascii_lowercase()))
+    })
+}
 
-    let title_lower = sample.window_title.to_ascii_lowercase();
-    let path_lower = sample
+fn stripped_url(sample: &Sample) -> Option<String> {
+    sample.url.as_deref().map(strip_url_query_fragment)
+}
+
+pub fn is_grounded_core_sample(sample: &Sample, quests: &[Quest]) -> bool {
+    if sample
         .document_path
         .as_deref()
-        .map(|p| p.to_ascii_lowercase())
-        .unwrap_or_default();
+        .is_some_and(|p| quest_keyword_in(p, quests))
+    {
+        return true;
+    }
+    let Some(url) = stripped_url(sample) else {
+        return false;
+    };
+    if quest_keyword_in(&url, quests) {
+        return true;
+    }
+    url_host(&url).is_some_and(|h| host_is_research(&h))
+}
 
-    quests.iter().any(|quest| {
-        quest.keywords.iter().any(|keyword| {
-            let needle = keyword.to_ascii_lowercase();
-            title_lower.contains(&needle) || path_lower.contains(&needle)
-        })
-    })
+fn is_core_candidate(sample: &Sample, quests: &[Quest]) -> bool {
+    let title_hit = !is_readme_or_settings_title(&sample.window_title)
+        && quest_keyword_in(&sample.window_title, quests);
+    title_hit || is_grounded_core_sample(sample, quests)
 }
 
 fn is_readme_or_settings_title(title: &str) -> bool {
@@ -98,7 +111,10 @@ fn is_readme_or_settings_title(title: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{builtin_never_capture, builtin_side_project_rules, never_capture_removable};
+    use crate::policy::{
+        builtin_never_capture, builtin_side_project_rules, default_distraction_rules,
+        never_capture_removable,
+    };
 
     fn sample(app: &str, title: &str, idle: i64) -> Sample {
         Sample {
@@ -130,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn readme_in_project_path_is_not_core_candidate() {
+    fn readme_title_still_cores_via_hdp_path() {
         let p = Policy {
             trusted_apps: vec!["Cursor".into()],
             distraction_rules: vec![],
@@ -144,7 +160,8 @@ mod tests {
         }];
         let mut s = sample("Cursor", "README.md", 5);
         s.document_path = Some("/proj/HDP/README.md".into());
-        assert_eq!(hint_sample(&s, &p, &q, None), Hint::Unsure);
+        assert_eq!(hint_sample(&s, &p, &q, None), Hint::CoreCandidate);
+        assert!(is_grounded_core_sample(&s, &q));
     }
 
     #[test]
@@ -234,5 +251,87 @@ mod tests {
             hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
             Hint::CoreCandidate
         );
+    }
+
+    #[test]
+    fn idle_title_match_is_core_candidate_not_away_and_not_grounded() {
+        let s = sample("Cursor", "train.py — HDP", 700);
+        assert_eq!(s.document_path, None);
+        assert_eq!(s.url, None);
+        assert_eq!(
+            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            Hint::CoreCandidate
+        );
+        assert!(!is_grounded_core_sample(&s, &hdp_quest()));
+    }
+
+    #[test]
+    fn document_path_is_grounded() {
+        let mut s = sample("Cursor", "train.py", 10);
+        s.document_path = Some("/Users/me/HDP/train.py".into());
+        assert_eq!(
+            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            Hint::CoreCandidate
+        );
+        assert!(is_grounded_core_sample(&s, &hdp_quest()));
+    }
+
+    #[test]
+    fn overleaf_host_is_core_and_grounded_without_keyword() {
+        let p = Policy {
+            trusted_apps: vec!["Safari".into()],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+        };
+        let mut s = sample("Safari", "Overleaf", 10);
+        s.url = Some("https://www.overleaf.com/project/abc123".into());
+        assert_eq!(hint_sample(&s, &p, &hdp_quest(), None), Hint::CoreCandidate);
+        assert!(is_grounded_core_sample(&s, &hdp_quest()));
+        assert!(is_grounded_core_sample(&s, &[]));
+    }
+
+    #[test]
+    fn overleaf_without_trusted_is_unsure() {
+        let p = Policy {
+            trusted_apps: vec!["Cursor".into()],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+        };
+        let mut s = sample("Safari", "Overleaf", 10);
+        s.url = Some("https://www.overleaf.com/project/abc123".into());
+        assert_eq!(hint_sample(&s, &p, &hdp_quest(), None), Hint::Unsure);
+    }
+
+    #[test]
+    fn youtube_beats_quest_keyword_in_title() {
+        let p = Policy {
+            trusted_apps: vec!["Safari".into()],
+            distraction_rules: default_distraction_rules(),
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+        };
+        let mut s = sample("Safari", "HDP lecture", 5);
+        s.url = Some("https://www.youtube.com/watch?v=1".into());
+        assert_eq!(hint_sample(&s, &p, &hdp_quest(), None), Hint::Distraction);
+    }
+
+    #[test]
+    fn readme_title_still_cores_via_overleaf_url() {
+        let p = Policy {
+            trusted_apps: vec!["Safari".into()],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+        };
+        let mut s = sample("Safari", "README", 5);
+        s.url = Some("https://overleaf.com/project/x".into());
+        assert_eq!(hint_sample(&s, &p, &hdp_quest(), None), Hint::CoreCandidate);
+        assert!(is_grounded_core_sample(&s, &hdp_quest()));
     }
 }
