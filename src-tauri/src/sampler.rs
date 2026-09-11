@@ -152,7 +152,7 @@ impl SampleSource for MacSampleSource {
     fn optional_browser_url(&self) -> Option<String> {
         let last = self.last.last()?;
         crate::macos::url_for(last.bundle_id.as_deref(), &last.app, || {
-            crate::macos::optional_browser_url()
+            crate::macos::fetch_browser_url_for(last.bundle_id.as_deref(), &last.app)
         })
     }
 
@@ -180,7 +180,7 @@ impl SampleSource for MacSampleSource {
         let snap = crate::macos::snapshot();
         self.last.store(snap.clone());
         let url = crate::macos::url_for(snap.bundle_id.as_deref(), &snap.app, || {
-            crate::macos::optional_browser_url()
+            crate::macos::fetch_browser_url_for(snap.bundle_id.as_deref(), &snap.app)
         });
         CaptureContext {
             app: snap.app,
@@ -756,6 +756,12 @@ mod tests {
         let path = dir.path().join("x.jpg");
         assert!(src.capture_frontmost_window(&path).is_err());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn fetch_is_not_used_when_last_is_empty() {
+        let src = MacSampleSource::new(Arc::new(AtomicBool::new(false)));
+        assert_eq!(src.optional_browser_url(), None);
     }
 
     #[test]

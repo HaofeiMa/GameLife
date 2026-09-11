@@ -5,7 +5,9 @@ mod input;
 mod snapshot;
 mod state;
 mod window_id;
-pub use browser::url_for;
+pub use browser::{
+    fetch_browser_url, fetch_browser_url_for, url_for, BROWSER_URL_TIMEOUT,
+};
 pub use capture::{capture_window, CAPTURE_TIMEOUT};
 pub use document::ax_document_raw;
 pub use input::{
@@ -15,47 +17,6 @@ pub use input::{
 pub use snapshot::{snapshot, AX_TIMEOUT_SECS};
 pub use state::{FrontmostSnapshot, ObservationState};
 pub use window_id::{pick_front_window_id, CgWindowEntry};
-
-#[cfg(target_os = "macos")]
-mod browser_os {
-    use std::process::Command;
-
-    pub fn optional_browser_url() -> Option<String> {
-        let script = r#"
-            tell application "System Events"
-                set p to first application process whose frontmost is true
-                set appName to name of p
-                if appName is not "Google Chrome" and appName is not "Safari" and appName is not "Arc" then return ""
-                try
-                    if appName is "Safari" then
-                        tell application "Safari" to return URL of current tab of front window
-                    else
-                        tell application appName to return URL of active tab of front window
-                    end if
-                on error
-                    return ""
-                end try
-            end tell
-        "#;
-        let out = Command::new("osascript").args(["-e", script]).output().ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if url.is_empty() {
-            None
-        } else {
-            Some(url)
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod browser_os {
-    pub fn optional_browser_url() -> Option<String> {
-        None
-    }
-}
 
 pub fn frontmost_app() -> Result<(String, String), ()> {
     let snap = snapshot();
@@ -67,12 +28,10 @@ pub fn frontmost_app() -> Result<(String, String), ()> {
 }
 
 pub fn optional_browser_url() -> Option<String> {
-    browser_os::optional_browser_url()
-}
-
-fn optional_browser_url_os(app: &str) -> Option<String> {
-    let _ = app;
-    optional_browser_url()
+    let snap = snapshot();
+    url_for(snap.bundle_id.as_deref(), &snap.app, || {
+        fetch_browser_url_for(snap.bundle_id.as_deref(), &snap.app)
+    })
 }
 
 pub fn document_path() -> Option<String> {
@@ -89,7 +48,7 @@ pub fn bundle_id() -> Option<String> {
 pub fn capture_context() -> gamelife_core::CaptureContext {
     let snap = snapshot();
     let url = url_for(snap.bundle_id.as_deref(), &snap.app, || {
-        optional_browser_url_os(&snap.app)
+        fetch_browser_url_for(snap.bundle_id.as_deref(), &snap.app)
     });
     gamelife_core::CaptureContext {
         app: snap.app,
