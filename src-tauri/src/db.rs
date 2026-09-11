@@ -1,10 +1,13 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db_error::{map_rusqlite, DbOpError};
-use gamelife_core::shop::{validate_redeem, Wish, WishKind};
+use gamelife_core::shop::{
+    can_start_entertainment, has_entertainment_timer, validate_redeem, RedeemError, Wish,
+    WishKind,
+};
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS heartbeat (id INTEGER PRIMARY KEY CHECK (id=1), ts INTEGER NOT NULL);
@@ -233,11 +236,29 @@ pub fn insert_ledger(
     Ok(())
 }
 
+fn map_redeem_error(e: RedeemError) -> DbOpError {
+    match e {
+        RedeemError::ShopLocked => DbOpError::Rejected("shop_locked".into()),
+        RedeemError::Insufficient => DbOpError::Rejected("insufficient".into()),
+        RedeemError::EntertainmentNeedsDuration => {
+            DbOpError::Rejected("entertainment_needs_duration".into())
+        }
+        RedeemError::EntertainmentInProgress => {
+            DbOpError::Rejected("entertainment_in_progress".into())
+        }
+        RedeemError::WishArchived => DbOpError::Rejected("wish_archived".into()),
+        RedeemError::WishMissing => DbOpError::Rejected("wish_missing".into()),
+        RedeemError::FinalSlotImmutable => DbOpError::Fatal("final".into()),
+    }
+}
+
 pub fn redeem(
     conn: &mut Connection,
     credited_today: i64,
     day: &str,
     wish: &Wish,
+    wish_name: &str,
+    now: i64,
     redemption_id: &str,
 ) -> Result<(), DbOpError> {
     let tx = conn.transaction().map_err(map_rusqlite)?;
@@ -251,15 +272,36 @@ pub fn redeem(
             |r| r.get(0),
         )
         .map_err(map_rusqlite)?;
-    validate_redeem(credited_today, coin, xp, wish)
-        .map_err(|_| DbOpError::Fatal("redeem".into()))?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    validate_redeem(credited_today, coin, xp, wish).map_err(map_redeem_error)?;
+    let redemption_exists: bool = tx
+        .query_row(
+            "SELECT 1 FROM redemptions WHERE redemption_id = ?1",
+            [redemption_id],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(map_rusqlite)?
+        .is_some();
+    if redemption_exists {
+        return Err(DbOpError::AlreadyApplied);
+    }
+    let active_ends_at: Option<i64> = tx
+        .query_row(
+            "SELECT MAX(ends_at) FROM entertainment_sessions",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(map_rusqlite)?;
+    if has_entertainment_timer(&wish.kind) && !can_start_entertainment(now, active_ends_at) {
+        return Err(DbOpError::Rejected("entertainment_in_progress".into()));
+    }
+    let duration_minutes = match &wish.kind {
+        WishKind::Xp { duration_minutes } => duration_minutes,
+        WishKind::Coin => &None,
+    };
     tx.execute(
-        "INSERT INTO redemptions (redemption_id, wish_id, ts) VALUES (?1,?2,?3)",
-        params![redemption_id, wish.id, now],
+        "INSERT INTO redemptions (redemption_id, wish_id, ts, name, duration_minutes) VALUES (?1,?2,?3,?4,?5)",
+        params![redemption_id, wish.id, now, wish_name, duration_minutes],
     )
     .map_err(map_rusqlite)?;
     let key = format!("shop_spend:{redemption_id}");
@@ -272,6 +314,20 @@ pub fn redeem(
         params![key, day, now, c, x],
     )
     .map_err(map_rusqlite)?;
+    if has_entertainment_timer(&wish.kind) {
+        let duration = match &wish.kind {
+            WishKind::Xp {
+                duration_minutes: Some(d),
+            } => *d,
+            _ => unreachable!(),
+        };
+        let ends_at = now + duration * 60;
+        tx.execute(
+            "INSERT INTO entertainment_sessions (redemption_id, wish_id, name, started_at, ends_at) VALUES (?1,?2,?3,?4,?5)",
+            params![redemption_id, wish.id, wish_name, now, ends_at],
+        )
+        .map_err(map_rusqlite)?;
+    }
     tx.commit().map_err(map_rusqlite)?;
     Ok(())
 }
@@ -349,6 +405,16 @@ mod tests {
         }
     }
 
+    fn timed_xp(price: i64) -> gamelife_core::shop::Wish {
+        gamelife_core::shop::Wish {
+            id: "video".into(),
+            kind: gamelife_core::shop::WishKind::Xp {
+                duration_minutes: Some(30),
+            },
+            price,
+        }
+    }
+
     #[test]
     fn redeem_same_id_twice_is_already_applied_and_xp_spent_once() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -356,8 +422,9 @@ mod tests {
         let day = "2026-09-10";
         insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
         let wish = xp_wish(10);
-        redeem(&mut conn, 3600, day, &wish, "r1").unwrap();
-        let e = redeem(&mut conn, 3600, day, &wish, "r1").unwrap_err();
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap_err();
         assert!(matches!(e, DbOpError::AlreadyApplied));
         assert_eq!(xp_sum(&conn, day), 40);
     }
@@ -369,10 +436,90 @@ mod tests {
         let day = "2026-09-10";
         insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
         let wish = xp_wish(40);
-        redeem(&mut conn, 3600, day, &wish, "r1").unwrap();
-        let e = redeem(&mut conn, 3600, day, &wish, "r2").unwrap_err();
-        assert!(matches!(e, DbOpError::Fatal(_)));
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &wish, "咖啡", now, "r2").unwrap_err();
+        assert_eq!(e, DbOpError::Rejected("insufficient".into()));
         assert_eq!(xp_sum(&conn, day), 10);
+    }
+
+    #[test]
+    fn timed_redeem_writes_session_and_blocks_second() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        let ends: i64 = conn
+            .query_row(
+                "SELECT ends_at FROM entertainment_sessions WHERE redemption_id='r1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ends, now + 30 * 60);
+        let e = redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now + 10, "r2")
+            .unwrap_err();
+        assert_eq!(e, DbOpError::Rejected("entertainment_in_progress".into()));
+        assert_eq!(xp_sum(&conn, day), 40);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn coin_redeem_skips_session_and_expired_allows_new() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_coin:2026-09-10:1", day, 20, 0).unwrap();
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        let coin = gamelife_core::shop::Wish {
+            id: "mug".into(),
+            kind: gamelife_core::shop::WishKind::Coin,
+            price: 5,
+        };
+        redeem(&mut conn, 3600, day, &coin, "杯子", now, "c1").unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        redeem(
+            &mut conn,
+            3600,
+            day,
+            &timed_xp(10),
+            "视频",
+            now + 30 * 60,
+            "r2",
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn same_redemption_id_does_not_insert_second_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-10";
+        insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
+        let now = 1_700_000_000i64;
+        redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
+        let e = redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1")
+            .unwrap_err();
+        assert!(matches!(e, DbOpError::AlreadyApplied));
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(xp_sum(&conn, day), 40);
     }
 
     fn user_version(conn: &Connection) -> i32 {

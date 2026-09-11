@@ -6,6 +6,7 @@ use rusqlite::ffi;
 pub enum DbOpError {
     AlreadyApplied,
     Busy,
+    Rejected(String),
     Fatal(String),
 }
 

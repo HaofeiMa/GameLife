@@ -575,21 +575,22 @@ pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
             .map_err(crate::db_error::map_rusqlite)?;
         let row = conn
             .query_row(
-                "SELECT id, kind, price, duration_minutes FROM wishes WHERE id = ?1",
+                "SELECT id, name, kind, price, duration_minutes FROM wishes WHERE id = ?1",
                 params![wish_id],
                 |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, Option<i64>>(3)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, Option<i64>>(4)?,
                     ))
                 },
             )
             .optional()
             .map_err(crate::db_error::map_rusqlite)?
             .ok_or_else(|| DbOpError::Fatal("wish missing".into()))?;
-        let (id, kind, price, duration) = row;
+        let (id, name, kind, price, duration) = row;
         let wish = Wish {
             id,
             kind: if kind == "coin" {
@@ -601,7 +602,7 @@ pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
             },
             price,
         };
-        db_redeem(conn, credited_today, &day, &wish, &redemption_id)
+        db_redeem(conn, credited_today, &day, &wish, &name, now_secs(), &redemption_id)
     })
 }
 
