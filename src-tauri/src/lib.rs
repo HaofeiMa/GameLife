@@ -27,7 +27,7 @@ use sampler::PauseControl;
 
 use commands::{
     archive_wish, continue_previous_workday, create_list, create_wish, end_today, freeze,
-    get_permission_status, get_settings, get_today, get_week, has_api_key, list_tasks,
+    get_permission_status, get_settings, get_today, get_day_view, get_week, has_api_key, list_tasks,
     parse_task_line_cmd, provider_key_status, redeem, report_misclassification,
     request_screen_recording, review_slot, save_settings, set_api_key, set_provider_api_key,
     set_quests, toggle_task_done, update_wish, upsert_task,
@@ -80,6 +80,7 @@ pub fn run() {
             end_today,
             freeze,
             get_today,
+            get_day_view,
             get_week,
             set_quests,
             list_tasks,

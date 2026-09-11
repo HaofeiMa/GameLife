@@ -197,6 +197,15 @@ pub struct TodayView {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DayView {
+    pub day: String,
+    pub day_start: i64,
+    pub tasks: Vec<TaskView>,
+    pub slots: Vec<TodaySlot>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskListView {
     pub id: String,
     pub name: String,
@@ -526,44 +535,7 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
         && streak > 0
         && credited_seconds < i64::try_from(CHEST_SECS).unwrap_or(21600);
     let first_core_label = first_core_label_for_day(conn, day, credited_seconds);
-    let mut stmt = conn
-        .prepare(
-            "SELECT slot_start, category, COALESCE(credited_core_seconds, 0), status, activity_json, task_snapshot_json
-             FROM slots WHERE day = ?1 ORDER BY slot_start",
-        )
-        .map_err(crate::db_error::map_rusqlite)?;
-    let rows = stmt
-        .query_map(params![day], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, Option<String>>(5)?,
-            ))
-        })
-        .map_err(crate::db_error::map_rusqlite)?;
-    let mut slots = Vec::new();
-    for row in rows {
-        let (start, category, credited, status, activity_json, task_snapshot_json) =
-            row.map_err(crate::db_error::map_rusqlite)?;
-        let status = status.unwrap_or_default();
-        let pending = status == "pending_review";
-        let is_final = status == "final" || status == "unknown";
-        let activity_secs = parse_activity_json(activity_json);
-        let activity = activity_to_minutes(&activity_secs);
-        slots.push(TodaySlot {
-            start,
-            dominant: category.unwrap_or_else(|| "unknown".into()),
-            credited_minutes: secs_to_minutes(credited),
-            activity,
-            activity_summary: activity_summary(&activity_secs),
-            pending,
-            is_final,
-            task_snapshot_json,
-        });
-    }
+    let slots = load_today_slots(conn, day)?;
     let gold_day = credited_seconds >= i64::try_from(GOLD_DAY_SECS).unwrap_or(28800);
     let freeze_candidates = list_freeze_candidates(conn)?;
     let default_freeze_date = freeze_candidates.first().cloned();
@@ -636,9 +608,78 @@ fn first_core_label_for_day(
         .unwrap_or(None)
         .unwrap_or(0);
     if coin > 0 {
-        return Some("Early start".into());
+        return Some("早开始".into());
     }
     None
+}
+
+fn load_today_slots(conn: &Connection, day: &str) -> Result<Vec<TodaySlot>, DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT slot_start, category, COALESCE(credited_core_seconds, 0), status, activity_json, task_snapshot_json
+             FROM slots WHERE day = ?1 ORDER BY slot_start",
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let rows = stmt
+        .query_map(params![day], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })
+        .map_err(crate::db_error::map_rusqlite)?;
+    let mut slots = Vec::new();
+    for row in rows {
+        let (start, category, credited, status, activity_json, task_snapshot_json) =
+            row.map_err(crate::db_error::map_rusqlite)?;
+        let status = status.unwrap_or_default();
+        let pending = status == "pending_review";
+        let is_final = status == "final" || status == "unknown";
+        let activity_secs = parse_activity_json(activity_json);
+        let activity = activity_to_minutes(&activity_secs);
+        slots.push(TodaySlot {
+            start,
+            dominant: category.unwrap_or_else(|| "unknown".into()),
+            credited_minutes: secs_to_minutes(credited),
+            activity,
+            activity_summary: activity_summary(&activity_secs),
+            pending,
+            is_final,
+            task_snapshot_json,
+        });
+    }
+    Ok(slots)
+}
+
+fn tasks_overlapping_day(
+    conn: &Connection,
+    day_start: i64,
+    day_end: i64,
+) -> Result<Vec<TaskView>, DbOpError> {
+    Ok(load_tasks(conn)?
+        .into_iter()
+        .filter(|t| match (t.start, t.end) {
+            (Some(s), Some(e)) => s < day_end && e > day_start,
+            _ => false,
+        })
+        .map(task_to_view)
+        .collect())
+}
+
+fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
+    let day_start =
+        start_of_named_day(day).ok_or_else(|| DbOpError::Rejected("bad_day".into()))?;
+    let day_end = end_of_local_day(day_start);
+    Ok(DayView {
+        day: day.to_string(),
+        day_start,
+        tasks: tasks_overlapping_day(conn, day_start, day_end)?,
+        slots: load_today_slots(conn, day)?,
+    })
 }
 
 fn load_wishes(conn: &Connection) -> Result<Vec<WishView>, DbOpError> {
@@ -748,6 +789,11 @@ pub fn get_today() -> Result<TodayView, String> {
         let day = day_str_for_ts(now);
         build_today(conn, &day, now)
     })
+}
+
+#[tauri::command]
+pub fn get_day_view(day: String) -> Result<DayView, String> {
+    with_db_err(|conn| build_day_view(conn, &day))
 }
 
 #[tauri::command]
@@ -1269,6 +1315,56 @@ mod tests {
         assert_eq!(view.slots.len(), 1);
         assert_eq!(view.slots[0].credited_minutes, 0);
         assert!(!view.slots[0].is_final);
+    }
+
+    #[test]
+    fn build_day_view_includes_overlapping_tasks_and_slots() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        let day_start = start_of_named_day(day).unwrap();
+        persist_task(
+            &conn,
+            &Task {
+                id: "t1".into(),
+                list_id: PRESET_MAINLINE_ID.into(),
+                title: "HDP".into(),
+                done: false,
+                start: Some(day_start + 9 * 3600),
+                end: Some(day_start + 11 * 3600),
+                range: None,
+            },
+        )
+        .unwrap();
+        persist_task(
+            &conn,
+            &Task {
+                id: "t2".into(),
+                list_id: PRESET_MAINLINE_ID.into(),
+                title: "inbox".into(),
+                done: false,
+                start: None,
+                end: None,
+                range: None,
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, credited_core_seconds)
+             VALUES (?1, ?2, 'pending_review', 0)",
+            params![day, day_start + 9 * 3600],
+        )
+        .unwrap();
+        let view = build_day_view(&conn, day).unwrap();
+        assert_eq!(view.tasks.len(), 1);
+        assert_eq!(view.tasks[0].title, "HDP");
+        assert_eq!(view.slots.len(), 1);
+        assert!(view.slots[0].pending);
+        let err = build_day_view(&conn, "not-a-day").err().expect("bad day");
+        match err {
+            DbOpError::Rejected(code) => assert_eq!(code, "bad_day"),
+            other => panic!("expected bad_day, got {other:?}"),
+        }
     }
 
     #[test]

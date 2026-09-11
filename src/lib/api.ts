@@ -164,8 +164,19 @@ export const BUILTIN_NEVER_CAPTURE = [
   "Keychain Access",
 ];
 
+export interface DayView {
+  day: string;
+  dayStart: number;
+  tasks: TaskView[];
+  slots: TodaySlot[];
+}
+
 export function getToday(): Promise<TodayView> {
   return invoke("get_today");
+}
+
+export function getDayView(day: string): Promise<DayView> {
+  return invoke("get_day_view", { day });
 }
 
 export function getWeek(): Promise<WeekView> {
