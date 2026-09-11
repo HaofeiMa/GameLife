@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import type { LiveWindow, QuestView } from "./questLive";
+
+export type { LiveWindow, QuestView } from "./questLive";
+
 export interface ChestGold {
   unlocked: boolean;
   have: number;
@@ -28,7 +32,9 @@ export interface TodaySlot {
 
 export interface TodayView {
   day: string;
-  quests: string[];
+  quests: QuestView[];
+  live: LiveWindow | null;
+  previousWorkday: string | null;
   creditedSeconds: number;
   creditedLabel: string;
   coinsToday: number;
@@ -93,8 +99,12 @@ export function getWeek(): Promise<WeekView> {
   return invoke("get_week");
 }
 
-export function setQuests(quests: string[]): Promise<void> {
+export function setQuests(quests: QuestView[]): Promise<void> {
   return invoke("set_quests", { quests });
+}
+
+export function continuePreviousWorkday(): Promise<string> {
+  return invoke("continue_previous_workday");
 }
 
 export function reviewSlot(

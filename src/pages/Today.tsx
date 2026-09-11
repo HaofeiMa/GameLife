@@ -3,19 +3,56 @@ import { ConfirmEndDay } from "../components/ConfirmEndDay";
 import { PermissionBanner } from "../components/PermissionBanner";
 import { Progress32 } from "../components/Progress32";
 import {
+  continuePreviousWorkday,
   endToday,
   freezeDay,
   getToday,
   setQuests,
   type TodayView,
 } from "../lib/api";
+import { liveMatchLabel } from "../lib/questLive";
 
 const GOLD_DAY_MSG =
   "Gold Day completed. Additional work is recorded, but no more Coins or XP are earned.";
 
+interface QuestDraftLocal {
+  text: string;
+  evidenceText: string;
+  hero: boolean;
+}
+
+const EMPTY_QUEST: QuestDraftLocal = {
+  text: "",
+  evidenceText: "",
+  hero: false,
+};
+
+function parseEvidenceText(evidenceText: string): string[] {
+  return evidenceText
+    .split(/[,，\n]/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+}
+
+function questsFromView(t: TodayView): QuestDraftLocal[] {
+  const loaded = t.quests.map((q) => ({
+    text: q.text,
+    evidenceText: q.evidence.join(", "),
+    hero: q.hero,
+  }));
+  while (loaded.length < 3) {
+    loaded.push({ ...EMPTY_QUEST });
+  }
+  return loaded.slice(0, 3);
+}
+
 export function Today() {
   const [data, setData] = useState<TodayView | null>(null);
-  const [quests, setQuestsLocal] = useState<string[]>(["", "", ""]);
+  const [quests, setQuestsLocal] = useState<QuestDraftLocal[]>([
+    { ...EMPTY_QUEST },
+    { ...EMPTY_QUEST },
+    { ...EMPTY_QUEST },
+  ]);
   const [error, setError] = useState<string | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -30,9 +67,7 @@ export function Today() {
         if (prev && t.freezeCandidates.includes(prev)) return prev;
         return t.defaultFreezeDate ?? t.freezeCandidates[0] ?? "";
       });
-      const padded = [...t.quests];
-      while (padded.length < 3) padded.push("");
-      setQuestsLocal(padded.slice(0, 3));
+      setQuestsLocal(questsFromView(t));
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -45,10 +80,39 @@ export function Today() {
     return () => clearInterval(id);
   }, [refresh]);
 
+  function updateQuest(index: number, patch: Partial<QuestDraftLocal>) {
+    setQuestsLocal((prev) => {
+      const next = prev.map((q, i) => (i === index ? { ...q, ...patch } : q));
+      if (patch.hero) {
+        return next.map((q, i) => ({ ...q, hero: i === index }));
+      }
+      return next;
+    });
+  }
+
   async function saveQuests() {
     setBusy(true);
     try {
-      await setQuests(quests.filter((q) => q.trim().length > 0));
+      const payload = quests
+        .filter((q) => q.text.trim().length > 0)
+        .map((q) => ({
+          text: q.text.trim(),
+          evidence: parseEvidenceText(q.evidenceText),
+          hero: q.hero,
+        }));
+      await setQuests(payload);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleContinuePrevious() {
+    setBusy(true);
+    try {
+      await continuePreviousWorkday();
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -88,6 +152,7 @@ export function Today() {
   if (!data) return <p className="muted">加载中…</p>;
 
   const showFreeze = data.atRisk || data.freezeCandidates.length > 0;
+  const liveLabel = liveMatchLabel(data.live, data.quests);
 
   return (
     <div className="page">
@@ -96,19 +161,64 @@ export function Today() {
       {error && <p className="error">{error}</p>}
       <section>
         <h3>Quest（1–3 条）</h3>
-        {quests.map((q, i) => (
-          <input
-            key={i}
-            value={q}
+        <p className="live-match">{liveLabel}</p>
+        {data.previousWorkday && (
+          <button
+            type="button"
+            className="continue-previous"
             disabled={busy}
-            placeholder={`Quest ${i + 1}`}
-            onChange={(e) => {
-              const next = [...quests];
-              next[i] = e.target.value;
-              setQuestsLocal(next);
-            }}
-          />
-        ))}
+            onClick={handleContinuePrevious}
+          >
+            沿用 {data.previousWorkday}
+          </button>
+        )}
+        {quests.map((q, i) => {
+          const tokens = parseEvidenceText(q.evidenceText);
+          const cardClass = q.hero ? "quest-card quest-hero" : "quest-card quest-secondary";
+          return (
+            <div key={i} className={cardClass}>
+              <label>
+                文案
+                <input
+                  value={q.text}
+                  disabled={busy}
+                  placeholder={`Quest ${i + 1}`}
+                  onChange={(e) => updateQuest(i, { text: e.target.value })}
+                />
+              </label>
+              <label>
+                证据（逗号或换行分隔）
+                <textarea
+                  value={q.evidenceText}
+                  disabled={busy}
+                  rows={2}
+                  onChange={(e) =>
+                    updateQuest(i, { evidenceText: e.target.value })
+                  }
+                />
+              </label>
+              {tokens.length > 0 && (
+                <div className="quest-evidence-chips">
+                  {tokens.map((token) => (
+                    <span key={token} className="quest-evidence-chip">
+                      {token}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <label className="quest-hero-toggle">
+                <input
+                  type="radio"
+                  name="quest-hero"
+                  checked={q.hero}
+                  disabled={busy || q.text.trim().length === 0}
+                  onChange={() => updateQuest(i, { hero: true })}
+                />
+                设为今日主线
+              </label>
+            </div>
+          );
+        })}
         <button type="button" disabled={busy} onClick={saveQuests}>
           保存 Quest
         </button>
