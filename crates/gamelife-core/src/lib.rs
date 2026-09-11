@@ -14,6 +14,7 @@ pub mod streak;
 pub mod time;
 pub mod types;
 pub mod url;
+pub mod vision_ctx;
 pub mod weekly;
 
 pub use capture::{CaptureStatus, capture_on_resume, schedule_capture};
@@ -43,4 +44,9 @@ pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
 pub use url::strip_url_query_fragment;
 pub use document::normalize_document_path;
+pub use vision_ctx::{
+    ActivitySummary, CaptureContext, HintSeconds, SanitizedVisionContext, VisionContext,
+    VisionPrivacyError, WindowShare, build_vision_prompt, format_span_secs,
+    is_protected_frontmost, sanitize_vision_context,
+};
 pub use weekly::sum_activity;
