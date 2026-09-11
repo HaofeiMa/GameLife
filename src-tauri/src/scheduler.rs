@@ -9,8 +9,8 @@ use serde::Deserialize;
 use gamelife_core::{
     analyze_slot_evidence, activity_summary_for_vision, builtin_never_capture,
     builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
-    early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved, hint_sample,
-    is_weekday, judge_slot, matches_app_identity, new_milestones, recompute_streak,
+    default_v01, early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved,
+    hint_sample, is_weekday, judge_slot, matches_app_identity, new_milestones, recompute_streak,
     schedule_capture, slot_end_exclusive, slot_start, spans_for_slot, CaptureContext,
     CaptureStatus, DayOutcome, JudgeInput, Policy, Quest, Sample, VisionContext, CHEST_SECS,
 };
@@ -609,14 +609,81 @@ fn tick_capture_impl(
     Ok(())
 }
 
-fn default_policy() -> Policy {
-    Policy {
-        trusted_apps: vec![],
-        distraction_rules: vec![],
-        side_project_rules: builtin_side_project_rules(),
-        reading_apps: vec![],
-        never_capture_apps: builtin_never_capture(),
+fn app_meta_get(conn: &Connection, key: &str) -> Result<Option<String>, DbOpError> {
+    conn.query_row(
+        "SELECT value FROM app_meta WHERE key = ?1",
+        params![key],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(map_rusqlite)
+}
+
+fn app_meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), DbOpError> {
+    conn.execute(
+        "INSERT INTO app_meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+fn user_policy_lists_empty(json: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<PolicyJson>(json) else {
+        return false;
+    };
+    parsed
+        .trusted_apps
+        .as_ref()
+        .is_none_or(|v| v.is_empty())
+        && parsed
+            .reading_apps
+            .as_ref()
+            .is_none_or(|v| v.is_empty())
+        && parsed
+            .distraction_rules
+            .as_ref()
+            .is_none_or(|v| v.is_empty())
+        && parsed
+            .side_project_rules
+            .as_ref()
+            .is_none_or(|v| v.is_empty())
+}
+
+/// One-time V0.1 policy seed. After `policy_seed_version=1`, a cleared Trusted list stays empty.
+pub fn seed_default_policy_if_needed(conn: &Connection) -> Result<(), DbOpError> {
+    migrate(conn)?;
+    let seeded = app_meta_get(conn, "policy_seed_version")?
+        .as_deref()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+    if seeded >= 1 {
+        return Ok(());
     }
+    let latest: Option<String> = conn
+        .query_row(
+            "SELECT json FROM policy_versions ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_rusqlite)?;
+    let insert_default = match latest.as_deref() {
+        None => true,
+        Some(json) => user_policy_lists_empty(json),
+    };
+    if insert_default {
+        let json = serde_json::to_string(&default_v01())
+            .map_err(|e| DbOpError::Fatal(format!("policy seed json: {e}")))?;
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at) VALUES (?1, ?2)",
+            params![json, now_secs()],
+        )
+        .map_err(map_rusqlite)?;
+    }
+    app_meta_set(conn, "policy_seed_version", "1")?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -644,7 +711,7 @@ pub fn load_policy(conn: &Connection) -> Result<Policy, DbOpError> {
         .optional()
         .map_err(map_rusqlite)?;
     let Some(json) = json else {
-        return Ok(default_policy());
+        return Ok(default_v01());
     };
     let parsed: PolicyJson = serde_json::from_str(&json).map_err(|e| {
         DbOpError::Fatal(format!("policy json: {e}"))
@@ -2216,6 +2283,61 @@ mod tests {
         assert_eq!(quests[0].text, "HDP");
         let policy = load_policy(&conn).unwrap();
         assert_eq!(policy.trusted_apps, vec!["Cursor".to_string()]);
+    }
+
+    #[test]
+    fn seed_empty_db_inserts_default_v01_and_marks_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        seed_default_policy_if_needed(&conn).unwrap();
+        let policy = load_policy(&conn).unwrap();
+        assert!(policy.trusted_apps.iter().any(|a| a == "Cursor"));
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = 'policy_seed_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "1");
+    }
+
+    #[test]
+    fn seed_does_not_restore_cleared_user_lists() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        seed_default_policy_if_needed(&conn).unwrap();
+        let empty = Policy {
+            trusted_apps: vec![],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+        };
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at) VALUES (?1, 2)",
+            params![serde_json::to_string(&empty).unwrap()],
+        )
+        .unwrap();
+        seed_default_policy_if_needed(&conn).unwrap();
+        let policy = load_policy(&conn).unwrap();
+        assert!(policy.trusted_apps.is_empty());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM policy_versions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn seed_load_policy_falls_back_to_default_v01_when_no_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let policy = load_policy(&conn).unwrap();
+        assert!(policy.trusted_apps.iter().any(|a| a == "Cursor"));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM policy_versions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

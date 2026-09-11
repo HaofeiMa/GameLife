@@ -39,6 +39,7 @@ where
     }
     let mut conn = open(&path).map_err(|e| format!("{e:?}"))?;
     migrate(&conn).map_err(|e| format!("{e:?}"))?;
+    crate::scheduler::seed_default_policy_if_needed(&conn).map_err(|e| format!("{e:?}"))?;
     f(&mut conn).map_err(|e| format!("{e:?}"))
 }
 

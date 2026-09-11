@@ -371,6 +371,10 @@ pub fn run_sampler_loop(db_path: PathBuf, source: &dyn SampleSource) {
         eprintln!("sampler: migrate failed: {e:?}");
         return;
     }
+    if let Err(e) = crate::scheduler::seed_default_policy_if_needed(&conn) {
+        eprintln!("sampler: policy seed failed: {e:?}");
+        return;
+    }
     let now = now_secs();
     let settings = load_settings();
     let retention = retention_from_str(&settings.screenshot_retention);

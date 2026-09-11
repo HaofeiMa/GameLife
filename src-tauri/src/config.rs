@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use gamelife_core::{default_reading_apps, default_trusted_apps};
+
 use crate::scheduler::{app_support_dir, ScreenshotRetention};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -27,10 +29,10 @@ pub fn default_settings() -> AppSettings {
         screenshot_retention: "none".into(),
         sample_keep_days: 7,
         login_at_startup: true,
-        trusted_apps: vec![],
+        trusted_apps: default_trusted_apps(),
         distraction_rules: vec![],
         side_project_rules: vec![],
-        reading_apps: vec![],
+        reading_apps: default_reading_apps(),
         never_capture_apps: vec![],
     }
 }
