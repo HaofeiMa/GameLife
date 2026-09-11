@@ -3,6 +3,7 @@ import {
   coalesceFeelEvents,
   nextFeelNotices,
   sessionJustEnded,
+  trayEntertainmentMinutes,
 } from "./feel";
 
 describe("coalesceFeelEvents", () => {
@@ -43,5 +44,13 @@ describe("sessionJustEnded", () => {
     expect(sessionJustEnded(null, null)).toBe(false);
     expect(sessionJustEnded(12, null)).toBe(true);
     expect(sessionJustEnded(12, { remainingSecs: 11 })).toBe(false);
+  });
+});
+
+describe("trayEntertainmentMinutes", () => {
+  it("matches the tray minute rule", () => {
+    expect(trayEntertainmentMinutes(0)).toBeNull();
+    expect(trayEntertainmentMinutes(59)).toBe(1);
+    expect(trayEntertainmentMinutes(120)).toBe(2);
   });
 });

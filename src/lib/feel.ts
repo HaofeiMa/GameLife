@@ -85,3 +85,13 @@ export function sessionJustEnded(
 ): boolean {
   return prevRemaining !== null && prevRemaining > 0 && active === null;
 }
+
+/** Mirrors Rust `tray_entertainment_minutes`: <=0 → null; else max(1, floor(secs/60)). */
+export function trayEntertainmentMinutes(
+  remainingSecs: number,
+): number | null {
+  if (remainingSecs <= 0) {
+    return null;
+  }
+  return Math.max(1, Math.floor(remainingSecs / 60));
+}
