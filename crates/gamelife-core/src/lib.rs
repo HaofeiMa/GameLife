@@ -35,7 +35,9 @@ pub use policy::{
     default_trusted_apps, default_v01, matches_app_identity, never_capture_removable,
 };
 pub use shop::{
-    RedeemError, Wish, WishKind, validate_redeem, xp_shop_unlocked,
+    RedeemError, Wish, WishError, WishKind, can_start_entertainment,
+    entertainment_remaining_secs, has_entertainment_timer, tray_entertainment_minutes,
+    validate_redeem, validate_wish, xp_shop_unlocked,
 };
 pub use streak::{
     DayOutcome, FREEZE_PER_MONTH, can_use_freeze, freeze_month_key, freeze_quota_used,
