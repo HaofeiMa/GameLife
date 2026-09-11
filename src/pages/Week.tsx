@@ -14,11 +14,37 @@ const ROWS: { key: keyof WeekView; label: string }[] = [
 
 export function Week() {
   const [data, setData] = useState<WeekView | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getWeek().then(setData).catch(console.error);
+    getWeek()
+      .then((w) => {
+        setData(w);
+        setError(null);
+      })
+      .catch((e) => setError(String(e)));
   }, []);
 
+  if (error) {
+    return (
+      <div className="page">
+        <p className="error">{error}</p>
+        <button
+          type="button"
+          onClick={() =>
+            getWeek()
+              .then((w) => {
+                setData(w);
+                setError(null);
+              })
+              .catch((e) => setError(String(e)))
+          }
+        >
+          重试
+        </button>
+      </div>
+    );
+  }
   if (!data) return <p className="muted">加载中…</p>;
 
   return (

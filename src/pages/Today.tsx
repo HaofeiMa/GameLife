@@ -85,6 +85,16 @@ export function Today() {
     }
   }
 
+  if (error) {
+    return (
+      <div className="page">
+        <p className="error">{error}</p>
+        <button type="button" onClick={() => void refresh()}>
+          重试
+        </button>
+      </div>
+    );
+  }
   if (!data) return <p className="muted">加载中…</p>;
 
   const showFreeze = data.atRisk || data.freezeCandidates.length > 0;

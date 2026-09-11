@@ -195,13 +195,13 @@ pub fn maybe_vision_for_gray_zone(
     screenshot_path: &Path,
     ctx: VisionContext,
     never: &[String],
-    api_key: Option<&str>,
+    primary: Option<&vision::VisionEndpoint>,
+    fallback: Option<&vision::VisionEndpoint>,
 ) -> Option<VisionResult> {
     if metadata_decidable || capture != CaptureStatus::Captured {
         return None;
     }
-    let key = api_key?;
-    vision::analyze_screenshot(screenshot_path, key, ctx, never).ok()
+    vision::analyze_screenshot_with_fallback(screenshot_path, primary, fallback, ctx, never).ok()
 }
 
 pub fn apply_screenshot_retention(path: &Path, retention: ScreenshotRetention) {
@@ -308,8 +308,8 @@ pub fn ensure_slot(
         .optional()
         .map_err(map_rusqlite)?;
     conn.execute(
-        "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, quest_version_id, policy_version_id)
-         VALUES (?1, ?2, ?3, 'Scheduled', ?4, ?5)
+        "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, quest_version_id, policy_version_id, credited_core_seconds, observed_seconds)
+         VALUES (?1, ?2, ?3, 'Scheduled', ?4, ?5, 0, 0)
          ON CONFLICT(day, slot_start) DO NOTHING",
         params![day, slot_start_ts, scheduled, quest_vid, policy_vid],
     )
@@ -1149,7 +1149,10 @@ pub fn finalize_slot_end(
     };
 
     let never = merged_never_capture(&policy);
-    let api_key = crate::keychain::get_openai_api_key().ok();
+    let settings = crate::config::load_settings();
+    let (primary, fallback) = vision::endpoints_from_settings(&settings, |id| {
+        crate::keychain::get_provider_api_key(id).ok()
+    });
     let vision = match (screenshot_path.as_ref(), capture_ctx) {
         (Some(path), Some(capture_ctx)) => {
             let ctx = VisionContext {
@@ -1165,7 +1168,8 @@ pub fn finalize_slot_end(
                 Path::new(path),
                 ctx,
                 &never,
-                api_key.as_deref(),
+                primary.as_ref(),
+                fallback.as_ref(),
             )
         }
         _ => None,

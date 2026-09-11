@@ -107,15 +107,31 @@ function SlotRow({
 
 export function Timeline() {
   const [data, setData] = useState<TodayView | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
-    const t = await getToday();
-    setData(t);
+    try {
+      const t = await getToday();
+      setData(t);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
   }, []);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
+  if (error) {
+    return (
+      <div className="page">
+        <p className="error">{error}</p>
+        <button type="button" onClick={() => void refresh()}>
+          重试
+        </button>
+      </div>
+    );
+  }
   if (!data) return <p className="muted">加载中…</p>;
 
   return (

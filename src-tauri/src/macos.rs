@@ -252,6 +252,13 @@ mod imp {
         }
         unsafe { CGPreflightScreenCaptureAccess() }
     }
+
+    pub fn request_screen_recording() -> bool {
+        extern "C" {
+            fn CGRequestScreenCaptureAccess() -> bool;
+        }
+        unsafe { CGRequestScreenCaptureAccess() }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -297,6 +304,10 @@ mod imp {
     }
 
     pub fn screen_recording_granted() -> bool {
+        true
+    }
+
+    pub fn request_screen_recording() -> bool {
         true
     }
 }
@@ -357,6 +368,23 @@ pub fn screen_recording_granted() -> bool {
     imp::screen_recording_granted()
 }
 
+pub fn request_screen_recording() -> bool {
+    imp::request_screen_recording()
+}
+
+pub fn current_process_label() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "GameLife".into())
+}
+
+pub fn current_process_path() -> String {
+    std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default()
+}
+
 pub fn metadata_observation_available() -> bool {
     accessibility_granted()
 }
@@ -367,6 +395,20 @@ pub fn capture_observation_available() -> bool {
 
 pub fn observation_available() -> bool {
     metadata_observation_available()
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn current_process_identity_is_available() {
+        assert!(!current_process_label().is_empty());
+        assert!(
+            !current_process_path().is_empty(),
+            "current_exe path should resolve in tests"
+        );
+    }
 }
 
 #[cfg(test)]

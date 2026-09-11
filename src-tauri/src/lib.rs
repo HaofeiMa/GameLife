@@ -26,7 +26,8 @@ use sampler::PauseControl;
 
 use commands::{
     end_today, freeze, get_permission_status, get_settings, get_today, get_week, has_api_key,
-    redeem, report_misclassification, review_slot, save_settings, set_api_key, set_quests,
+    provider_key_status, redeem, report_misclassification, request_screen_recording, review_slot,
+    save_settings, set_api_key, set_provider_api_key, set_quests,
 };
 
 use tauri::{
@@ -84,8 +85,11 @@ pub fn run() {
             get_settings,
             save_settings,
             set_api_key,
+            set_provider_api_key,
             has_api_key,
+            provider_key_status,
             get_permission_status,
+            request_screen_recording,
         ])
         .setup(|app| {
             let pause = PauseControl::new();
@@ -96,6 +100,10 @@ pub fn run() {
                 sampler::start_sampler_thread(db_path, pause.paused_flag());
             }
             app.manage(pause);
+
+            if !crate::macos::screen_recording_granted() {
+                let _ = crate::macos::request_screen_recording();
+            }
 
             let open_i = MenuItem::with_id(app, "open", "打开", true, None::<&str>)?;
             let pause_30_i =

@@ -53,15 +53,31 @@ function WishButton({
 
 export function Shop() {
   const [week, setWeek] = useState<WeekView | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    getWeek().then(setWeek).catch(console.error);
+    getWeek()
+      .then((w) => {
+        setWeek(w);
+        setError(null);
+      })
+      .catch((e) => setError(String(e)));
   }, []);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
+  if (error) {
+    return (
+      <div className="page">
+        <p className="error">{error}</p>
+        <button type="button" onClick={() => refresh()}>
+          重试
+        </button>
+      </div>
+    );
+  }
   if (!week) return <p className="muted">加载中…</p>;
 
   return (

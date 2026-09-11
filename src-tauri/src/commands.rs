@@ -14,7 +14,10 @@ use gamelife_core::types::ActivitySeconds;
 use crate::config::{load_settings, retention_from_str, save_settings as write_settings_file, AppSettings};
 use crate::db::{migrate, open, redeem as db_redeem};
 use crate::db_error::DbOpError;
-use crate::keychain::{get_openai_api_key, set_openai_api_key};
+use crate::keychain::{
+    get_openai_api_key, get_provider_api_key, set_openai_api_key,
+    set_provider_api_key as write_provider_api_key,
+};
 use crate::macos;
 use crate::sampler::PauseControl;
 use crate::scheduler::{
@@ -271,7 +274,7 @@ fn build_today(conn: &Connection, day: &str) -> Result<TodayView, DbOpError> {
     let first_core_label = first_core_label_for_day(conn, day, credited_seconds);
     let mut stmt = conn
         .prepare(
-            "SELECT slot_start, category, credited_core_seconds, status, activity_json
+            "SELECT slot_start, category, COALESCE(credited_core_seconds, 0), status, activity_json
              FROM slots WHERE day = ?1 ORDER BY slot_start",
         )
         .map_err(crate::db_error::map_rusqlite)?;
@@ -389,7 +392,7 @@ fn build_week(conn: &Connection, today: &str) -> Result<WeekView, DbOpError> {
     let week_start_str = week_start.format("%Y-%m-%d").to_string();
     let mut stmt = conn
         .prepare(
-            "SELECT activity_json, status, observed_seconds FROM slots
+            "SELECT activity_json, status, COALESCE(observed_seconds, 0) FROM slots
              WHERE day >= ?1 AND day <= ?2",
         )
         .map_err(crate::db_error::map_rusqlite)?;
@@ -551,6 +554,8 @@ pub fn report_misclassification(day: String, slot_start: i64, note: String) -> R
 pub struct PermissionStatus {
     pub accessibility: bool,
     pub screen_recording: bool,
+    pub process_name: String,
+    pub process_path: String,
 }
 
 #[tauri::command]
@@ -558,7 +563,14 @@ pub fn get_permission_status() -> PermissionStatus {
     PermissionStatus {
         accessibility: macos::accessibility_granted(),
         screen_recording: macos::screen_recording_granted(),
+        process_name: macos::current_process_label(),
+        process_path: macos::current_process_path(),
     }
+}
+
+#[tauri::command]
+pub fn request_screen_recording() -> bool {
+    macos::request_screen_recording()
 }
 
 #[tauri::command]
@@ -651,6 +663,31 @@ pub fn has_api_key() -> Result<bool, String> {
     Ok(get_openai_api_key().is_ok())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderKeyStatus {
+    pub opencode_go: bool,
+    pub openai: bool,
+    pub custom: bool,
+}
+
+#[tauri::command]
+pub fn set_provider_api_key(provider: String, key: String) -> Result<(), String> {
+    match provider.as_str() {
+        "opencode-go" | "openai" | "custom" => write_provider_api_key(&provider, &key),
+        _ => Err("unknown provider".into()),
+    }
+}
+
+#[tauri::command]
+pub fn provider_key_status() -> Result<ProviderKeyStatus, String> {
+    Ok(ProviderKeyStatus {
+        opencode_go: get_provider_api_key("opencode-go").is_ok(),
+        openai: get_openai_api_key().is_ok(),
+        custom: get_provider_api_key("custom").is_ok(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,5 +728,42 @@ mod tests {
             })
             .unwrap();
         assert_eq!(reports, 1);
+    }
+
+    #[test]
+    fn build_today_accepts_open_slot_with_null_credits() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_status)
+             VALUES ('2026-09-11', 1789091100, 'Scheduled')",
+            [],
+        )
+        .unwrap();
+        let view = build_today(&conn, "2026-09-11").expect("open slot must not fail get_today");
+        assert_eq!(view.slots.len(), 1);
+        assert_eq!(view.slots[0].credited_minutes, 0);
+        assert!(!view.slots[0].is_final);
+    }
+
+    #[test]
+    fn build_week_accepts_open_slot_with_null_observed() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_status)
+             VALUES ('2026-09-11', 1789091100, 'Scheduled')",
+            [],
+        )
+        .unwrap();
+        let view = build_week(&conn, "2026-09-11").expect("open slot must not fail get_week");
+        assert_eq!(view.unobserved, 0);
+    }
+
+    #[test]
+    fn permission_status_reports_process_identity() {
+        let status = get_permission_status();
+        assert!(!status.process_name.is_empty());
+        assert!(!status.process_path.is_empty());
     }
 }

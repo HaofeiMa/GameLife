@@ -68,6 +68,12 @@ export interface WishView {
   durationMinutes: number | null;
 }
 
+export interface VisionProviderSettings {
+  id: string;
+  baseUrl: string;
+  model: string;
+}
+
 export interface AppSettings {
   screenshotRetention: string;
   sampleKeepDays: number;
@@ -77,6 +83,15 @@ export interface AppSettings {
   sideProjectRules: string[];
   readingApps: string[];
   neverCaptureApps: string[];
+  primaryProvider: string;
+  fallbackProvider: string;
+  visionProviders: VisionProviderSettings[];
+}
+
+export interface ProviderKeyStatus {
+  opencodeGo: boolean;
+  openai: boolean;
+  custom: boolean;
 }
 
 export const BUILTIN_NEVER_CAPTURE = [
@@ -141,11 +156,25 @@ export function hasApiKey(): Promise<boolean> {
   return invoke("has_api_key");
 }
 
+export function setProviderApiKey(provider: string, key: string): Promise<void> {
+  return invoke("set_provider_api_key", { provider, key });
+}
+
+export function providerKeyStatus(): Promise<ProviderKeyStatus> {
+  return invoke("provider_key_status");
+}
+
 export interface PermissionStatus {
   accessibility: boolean;
   screenRecording: boolean;
+  processName: string;
+  processPath: string;
 }
 
 export function getPermissionStatus(): Promise<PermissionStatus> {
   return invoke("get_permission_status");
+}
+
+export function requestScreenRecording(): Promise<boolean> {
+  return invoke("request_screen_recording");
 }

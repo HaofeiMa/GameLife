@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>GameLife 需要屏幕录制权限，以便在灰区截取当前窗口，用于科研时间校验。</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>GameLife 需要自动化权限以读取前台应用名称和窗口标题。</string>
+</dict>
+</plist>
