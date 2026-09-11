@@ -12,14 +12,15 @@ use gamelife_core::{
     activity_summary_for_vision, analyze_slot_evidence, builtin_never_capture,
     builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
     default_distraction_rules, default_v01, early_start_anchor, early_start_coins_for_local_secs,
-    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity,
+    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, judgment_tasks, matches_app_identity,
     new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
     quest_list_has_evidence, recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
-    spans_for_slot, vision_quest_label, CaptureContext, CaptureStatus, DayOutcome, JudgeInput,
-    Policy, Quest, QuestDraft, QuestListError, Sample, TaskSnapshot, VisionContext, CHEST_SECS,
+    snapshot_of, spans_for_slot, vision_quest_label, CaptureContext, CaptureStatus, DayOutcome,
+    JudgeInput, Policy, Quest, QuestDraft, QuestListError, Sample, TaskListError, TaskSnapshot,
+    VisionContext, CHEST_SECS,
 };
 
-use crate::db::{app_db_path, insert_ledger, migrate, open};
+use crate::db::{app_db_path, insert_ledger, load_task_lists, load_tasks, migrate, open};
 use crate::db_error::{map_rusqlite, DbOpError};
 use crate::resolve::resolve_slot;
 use crate::vision;
@@ -296,22 +297,66 @@ pub fn ensure_slot(
         )
         .optional()
         .map_err(map_rusqlite)?;
+    let snapshot_json = pin_task_snapshot_json(conn, day);
     conn.execute(
-        "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, quest_version_id, policy_version_id, credited_core_seconds, observed_seconds)
-         VALUES (?1, ?2, ?3, 'Scheduled', ?4, ?5, 0, 0)
+        "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, quest_version_id, policy_version_id, credited_core_seconds, observed_seconds, task_snapshot_json)
+         VALUES (?1, ?2, ?3, 'Scheduled', ?4, ?5, 0, 0, ?6)
          ON CONFLICT(day, slot_start) DO NOTHING",
-        params![day, slot_start_ts, scheduled, quest_vid, policy_vid],
+        params![day, slot_start_ts, scheduled, quest_vid, policy_vid, snapshot_json],
     )
     .map_err(map_rusqlite)?;
     conn.execute(
         "UPDATE slots SET
            quest_version_id = COALESCE(quest_version_id, ?3),
-           policy_version_id = COALESCE(policy_version_id, ?4)
+           policy_version_id = COALESCE(policy_version_id, ?4),
+           task_snapshot_json = COALESCE(task_snapshot_json, ?5)
          WHERE day = ?1 AND slot_start = ?2",
-        params![day, slot_start_ts, quest_vid, policy_vid],
+        params![day, slot_start_ts, quest_vid, policy_vid, snapshot_json],
     )
     .map_err(map_rusqlite)?;
     Ok(())
+}
+
+fn pin_task_snapshot_json(conn: &Connection, day: &str) -> String {
+    let Some(day_start) = start_of_named_day(day) else {
+        return "[]".into();
+    };
+    let day_end = end_of_local_day(day_start);
+    let lists = match load_task_lists(conn) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("load_task_lists failed while pinning snapshot: {e:?}");
+            return "[]".into();
+        }
+    };
+    let tasks = match load_tasks(conn) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("load_tasks failed while pinning snapshot: {e:?}");
+            return "[]".into();
+        }
+    };
+    let selected = match judgment_tasks(&tasks, &lists, day_start, day_end) {
+        Ok(v) => v,
+        Err(TaskListError::TooManyJudgment) => {
+            eprintln!("too many judgment tasks for {day}; pinning empty snapshot");
+            return "[]".into();
+        }
+        Err(e) => {
+            eprintln!("judgment_tasks failed for {day}: {e:?}");
+            return "[]".into();
+        }
+    };
+    let snaps = snapshot_of(&selected, &lists);
+    serde_json::to_string(&snaps).unwrap_or_else(|_| "[]".into())
+}
+
+pub fn start_of_named_day(day: &str) -> Option<i64> {
+    let date = NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    Local
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
+        .single()
+        .map(|dt| dt.timestamp())
 }
 
 pub fn day_str_for_ts(ts: i64) -> String {

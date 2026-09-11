@@ -8,7 +8,7 @@ use gamelife_core::shop::{
     can_start_entertainment, entertainment_remaining_secs, has_entertainment_timer,
     validate_redeem, validate_wish, RedeemError, Wish, WishError, WishKind,
 };
-use gamelife_core::{preset_lists, ListRole};
+use gamelife_core::{preset_lists, ListRole, Task, TaskList, TaskRange};
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS heartbeat (id INTEGER PRIMARY KEY CHECK (id=1), ts INTEGER NOT NULL);
@@ -160,7 +160,7 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
     Ok(())
 }
 
-fn list_role_sql(role: ListRole) -> &'static str {
+pub fn list_role_sql(role: ListRole) -> &'static str {
     match role {
         ListRole::Mainline => "mainline",
         ListRole::Side => "side",
@@ -210,6 +210,60 @@ fn seed_example_wishes_if_empty(conn: &Connection) -> Result<(), DbOpError> {
         .map_err(map_rusqlite)?;
     }
     Ok(())
+}
+
+pub fn parse_list_role(role: &str) -> ListRole {
+    match role {
+        "mainline" => ListRole::Mainline,
+        "side" => ListRole::Side,
+        "longterm" => ListRole::Longterm,
+        "chore" => ListRole::Chore,
+        _ => ListRole::Custom,
+    }
+}
+
+pub fn load_task_lists(conn: &Connection) -> Result<Vec<TaskList>, DbOpError> {
+    let mut stmt = conn
+        .prepare("SELECT id, name, sort, role FROM task_lists ORDER BY sort, id")
+        .map_err(map_rusqlite)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(TaskList {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                sort: r.get(2)?,
+                role: parse_list_role(&r.get::<_, String>(3)?),
+            })
+        })
+        .map_err(map_rusqlite)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
+}
+
+pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, list_id, title, done, start, end, range FROM tasks ORDER BY start, id",
+        )
+        .map_err(map_rusqlite)?;
+    let rows = stmt
+        .query_map([], |r| {
+            let range: Option<String> = r.get(6)?;
+            Ok(Task {
+                id: r.get(0)?,
+                list_id: r.get(1)?,
+                title: r.get(2)?,
+                done: r.get::<_, i64>(3)? != 0,
+                start: r.get(4)?,
+                end: r.get(5)?,
+                range: match range.as_deref() {
+                    Some("week") => Some(TaskRange::Week),
+                    Some("month") => Some(TaskRange::Month),
+                    _ => None,
+                },
+            })
+        })
+        .map_err(map_rusqlite)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
 }
 
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, DbOpError> {

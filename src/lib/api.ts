@@ -28,6 +28,32 @@ export interface TodaySlot {
   activitySummary: string;
   pending: boolean;
   final: boolean;
+  taskSnapshotJson?: string | null;
+}
+
+export interface TaskListView {
+  id: string;
+  name: string;
+  sort: number;
+  role: string;
+}
+
+export interface TaskView {
+  id: string;
+  listId: string;
+  title: string;
+  done: boolean;
+  start: number | null;
+  end: number | null;
+  range: string | null;
+}
+
+export interface ParsedTaskView {
+  title: string;
+  listId: string;
+  start: number | null;
+  end: number | null;
+  parseOk: boolean;
 }
 
 export interface EntertainmentView {
@@ -75,6 +101,9 @@ export interface TodayView {
   activeEntertainment: EntertainmentView | null;
   endedEntertainment: EndedEntertainmentView | null;
   ledgerTail: LedgerTailRow[];
+  lists: TaskListView[];
+  tasks: TaskView[];
+  coinBalance: number;
 }
 
 export interface WeekView {
@@ -145,6 +174,29 @@ export function getWeek(): Promise<WeekView> {
 
 export function setQuests(quests: QuestView[]): Promise<void> {
   return invoke("set_quests", { quests });
+}
+
+export function listTasks(): Promise<TodayView> {
+  return invoke("list_tasks");
+}
+
+export function upsertTask(task: TaskView): Promise<void> {
+  return invoke("upsert_task", { task });
+}
+
+export function toggleTaskDone(id: string, done: boolean): Promise<void> {
+  return invoke("toggle_task_done", { id, done });
+}
+
+export function parseTaskLine(
+  line: string,
+  currentListId?: string | null,
+): Promise<ParsedTaskView> {
+  return invoke("parse_task_line", { line, currentListId });
+}
+
+export function createList(name: string): Promise<TaskListView> {
+  return invoke("create_list", { name });
 }
 
 export function continuePreviousWorkday(): Promise<string> {

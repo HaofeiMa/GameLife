@@ -6,16 +6,18 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use gamelife_core::{
-    format_estimated_minutes, matched_quest_index, matches_app_identity, sum_activity,
-    xp_shop_unlocked, QuestDraft, CHEST_SECS, GOLD_DAY_SECS,
+    format_estimated_minutes, judgment_tasks, matched_quest_index, matches_app_identity,
+    parse_task_line, sum_activity, validate_lists, xp_shop_unlocked, ListRole, ParseContext, QuestDraft,
+    Task, TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS, PRESET_MAINLINE_ID,
 };
 use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
 
 use crate::config::{load_settings, retention_from_str, save_settings as write_settings_file, AppSettings};
 use crate::db::{
-    archive_wish as db_archive_wish, insert_wish as db_insert_wish, load_active_session, migrate,
-    open, redeem as db_redeem, update_wish as db_update_wish,
+    archive_wish as db_archive_wish, insert_wish as db_insert_wish, list_role_sql,
+    load_active_session, load_task_lists, load_tasks, migrate, open, redeem as db_redeem,
+    update_wish as db_update_wish,
 };
 use crate::db_error::DbOpError;
 use crate::keychain::{
@@ -27,7 +29,8 @@ use crate::sampler::PauseControl;
 use crate::scheduler::{
     continue_previous_workday_for_day, day_str_for_ts, default_screenshot_retention,
     list_freeze_candidates, load_policy, load_quests_for_day, previous_quest_day,
-    review_pending_slot, sampling_allowed, save_quests_for_day, streak_from_db,
+    review_pending_slot, sampling_allowed, save_quests_for_day, start_of_named_day, end_of_local_day,
+    streak_from_db,
 };
 
 fn now_secs() -> i64 {
@@ -110,6 +113,7 @@ pub struct TodaySlot {
     pub pending: bool,
     #[serde(rename = "final")]
     pub is_final: bool,
+    pub task_snapshot_json: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -186,6 +190,40 @@ pub struct TodayView {
     pub active_entertainment: Option<EntertainmentView>,
     pub ended_entertainment: Option<EndedEntertainmentView>,
     pub ledger_tail: Vec<LedgerTailRow>,
+    pub lists: Vec<TaskListView>,
+    pub tasks: Vec<TaskView>,
+    pub coin_balance: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskListView {
+    pub id: String,
+    pub name: String,
+    pub sort: i64,
+    pub role: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskView {
+    pub id: String,
+    pub list_id: String,
+    pub title: String,
+    pub done: bool,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+    pub range: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedTaskView {
+    pub title: String,
+    pub list_id: String,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+    pub parse_ok: bool,
 }
 
 #[derive(Serialize)]
@@ -490,7 +528,7 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
     let first_core_label = first_core_label_for_day(conn, day, credited_seconds);
     let mut stmt = conn
         .prepare(
-            "SELECT slot_start, category, COALESCE(credited_core_seconds, 0), status, activity_json
+            "SELECT slot_start, category, COALESCE(credited_core_seconds, 0), status, activity_json, task_snapshot_json
              FROM slots WHERE day = ?1 ORDER BY slot_start",
         )
         .map_err(crate::db_error::map_rusqlite)?;
@@ -502,12 +540,13 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
                 r.get::<_, i64>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(crate::db_error::map_rusqlite)?;
     let mut slots = Vec::new();
     for row in rows {
-        let (start, category, credited, status, activity_json) =
+        let (start, category, credited, status, activity_json, task_snapshot_json) =
             row.map_err(crate::db_error::map_rusqlite)?;
         let status = status.unwrap_or_default();
         let pending = status == "pending_review";
@@ -522,6 +561,7 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
             activity_summary: activity_summary(&activity_secs),
             pending,
             is_final,
+            task_snapshot_json,
         });
     }
     let gold_day = credited_seconds >= i64::try_from(GOLD_DAY_SECS).unwrap_or(28800);
@@ -531,6 +571,15 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
     let ended_entertainment =
         load_ended_entertainment(conn, now, active_entertainment.is_some())?;
     let ledger_tail = load_ledger_tail(conn, day)?;
+    let lists = task_list_views(conn)?;
+    let tasks = task_views(conn)?;
+    let coin_balance: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(coin_delta), 0) FROM ledger",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
     Ok(TodayView {
         day: day.to_string(),
         quests: quest_views,
@@ -561,6 +610,9 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
         active_entertainment,
         ended_entertainment,
         ledger_tail,
+        lists,
+        tasks,
+        coin_balance,
     })
 }
 
@@ -704,6 +756,199 @@ pub fn get_week() -> Result<WeekView, String> {
         let now = now_secs();
         let day = day_str_for_ts(now);
         build_week(conn, &day, now)
+    })
+}
+
+fn task_list_views(conn: &Connection) -> Result<Vec<TaskListView>, DbOpError> {
+    Ok(load_task_lists(conn)?
+        .into_iter()
+        .map(|l| TaskListView {
+            id: l.id,
+            name: l.name,
+            sort: l.sort,
+            role: list_role_sql(l.role).into(),
+        })
+        .collect())
+}
+
+fn task_views(conn: &Connection) -> Result<Vec<TaskView>, DbOpError> {
+    Ok(load_tasks(conn)?.into_iter().map(task_to_view).collect())
+}
+
+fn task_to_view(task: Task) -> TaskView {
+    TaskView {
+        id: task.id,
+        list_id: task.list_id,
+        title: task.title,
+        done: task.done,
+        start: task.start,
+        end: task.end,
+        range: match task.range {
+            Some(TaskRange::Week) => Some("week".into()),
+            Some(TaskRange::Month) => Some("month".into()),
+            None => None,
+        },
+    }
+}
+
+fn view_to_task(view: &TaskView) -> Task {
+    Task {
+        id: view.id.clone(),
+        list_id: view.list_id.clone(),
+        title: view.title.clone(),
+        done: view.done,
+        start: view.start,
+        end: view.end,
+        range: match view.range.as_deref() {
+            Some("week") => Some(TaskRange::Week),
+            Some("month") => Some(TaskRange::Month),
+            _ => None,
+        },
+    }
+}
+
+fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
+    let range = match task.range {
+        Some(TaskRange::Week) => Some("week"),
+        Some(TaskRange::Month) => Some("month"),
+        None => None,
+    };
+    conn.execute(
+        "INSERT INTO tasks (id, list_id, title, done, start, end, range)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(id) DO UPDATE SET
+           list_id=excluded.list_id,
+           title=excluded.title,
+           done=excluded.done,
+           start=excluded.start,
+           end=excluded.end,
+           range=excluded.range",
+        params![
+            task.id,
+            task.list_id,
+            task.title.trim(),
+            task.done as i64,
+            task.start,
+            task.end,
+            range,
+        ],
+    )
+    .map_err(crate::db_error::map_rusqlite)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_tasks() -> Result<TodayView, String> {
+    get_today()
+}
+
+#[tauri::command]
+pub fn upsert_task(task: TaskView) -> Result<(), String> {
+    with_db_err(|conn| {
+        let title = task.title.trim();
+        if title.is_empty() {
+            return Err(DbOpError::Rejected("empty_title".into()));
+        }
+        let mut stored = view_to_task(&task);
+        stored.title = title.to_string();
+        if stored.id.trim().is_empty() {
+            stored.id = format!("task-{}", now_secs());
+        }
+        let lists = load_task_lists(conn)?;
+        let mut tasks = load_tasks(conn)?;
+        if let Some(existing) = tasks.iter_mut().find(|t| t.id == stored.id) {
+            *existing = stored.clone();
+        } else {
+            tasks.push(stored.clone());
+        }
+        let day = day_str_for_ts(now_secs());
+        if let Some(day_start) = start_of_named_day(&day) {
+            let day_end = end_of_local_day(day_start);
+            if let Err(gamelife_core::TaskListError::TooManyJudgment) =
+                judgment_tasks(&tasks, &lists, day_start, day_end)
+            {
+                return Err(DbOpError::Rejected("too_many_judgment_tasks".into()));
+            }
+        }
+        persist_task(conn, &stored)?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn toggle_task_done(id: String, done: bool) -> Result<(), String> {
+    with_db_err(|conn| {
+        let n = conn
+            .execute(
+                "UPDATE tasks SET done = ?1 WHERE id = ?2",
+                params![done as i64, id],
+            )
+            .map_err(crate::db_error::map_rusqlite)?;
+        if n == 0 {
+            return Err(DbOpError::Fatal("task missing".into()));
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command(rename = "parse_task_line")]
+pub fn parse_task_line_cmd(
+    line: String,
+    current_list_id: Option<String>,
+) -> Result<ParsedTaskView, String> {
+    with_db(|conn| {
+        let lists = load_task_lists(conn)?;
+        let current = current_list_id
+            .filter(|id| lists.iter().any(|l| l.id == *id))
+            .unwrap_or_else(|| PRESET_MAINLINE_ID.to_string());
+        let now = chrono::Local::now().fixed_offset();
+        let parsed = parse_task_line(
+            &line,
+            &ParseContext {
+                now,
+                lists: &lists,
+                current_list_id: &current,
+                default_list_id: PRESET_MAINLINE_ID,
+            },
+        );
+        Ok(ParsedTaskView {
+            title: parsed.title,
+            list_id: parsed.list_id,
+            start: parsed.start,
+            end: parsed.end,
+            parse_ok: parsed.parse_ok,
+        })
+    })
+}
+
+#[tauri::command]
+pub fn create_list(name: String) -> Result<TaskListView, String> {
+    with_db_err(|conn| {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(DbOpError::Rejected("empty_name".into()));
+        }
+        let mut lists = load_task_lists(conn)?;
+        let sort = lists.iter().map(|l| l.sort).max().unwrap_or(-1) + 1;
+        let list = TaskList {
+            id: format!("list-{}", now_secs()),
+            name: name.to_string(),
+            sort,
+            role: ListRole::Custom,
+        };
+        lists.push(list.clone());
+        validate_lists(&lists).map_err(|_| DbOpError::Rejected("invalid_lists".into()))?;
+        conn.execute(
+            "INSERT INTO task_lists (id, name, sort, role) VALUES (?1, ?2, ?3, ?4)",
+            params![list.id, list.name, list.sort, list_role_sql(list.role)],
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+        Ok(TaskListView {
+            id: list.id,
+            name: list.name,
+            sort: list.sort,
+            role: list_role_sql(list.role).into(),
+        })
     })
 }
 

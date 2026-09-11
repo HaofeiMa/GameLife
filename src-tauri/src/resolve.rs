@@ -1,7 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use gamelife_core::judge::{Dominant, JudgeOutput};
-use gamelife_core::ledger::{admin_xp_key, support_xp_key, tick_keys_for_credited};
+use gamelife_core::ledger::{admin_xp_key, support_xp_key, tick_keys_for_credited, tick_keys_for_discount};
+use gamelife_core::task::ListRole;
 use gamelife_core::GOLD_DAY_SECS;
 use gamelife_core::types::ActivitySeconds;
 
@@ -54,7 +55,36 @@ pub fn resolve_slot(
     }
 
     let gold_day = i64::try_from(GOLD_DAY_SECS).unwrap_or(28800);
-    if after < gold_day {
+    if credited_before < gold_day {
+        let side_before = discounted_seconds_before(&tx, day, slot_start, "credited_side_seconds")?;
+        let chore_before = discounted_seconds_before(&tx, day, slot_start, "credited_chore_seconds")?;
+        for ev in tick_keys_for_discount(
+            day,
+            ListRole::Side,
+            side_before,
+            side_before + output.credited_side_seconds,
+        ) {
+            if let Err(e) = insert_ledger(&tx, &ev.key, day, ev.coin, ev.xp) {
+                if e != DbOpError::AlreadyApplied {
+                    return Err(e);
+                }
+            }
+        }
+        for ev in tick_keys_for_discount(
+            day,
+            ListRole::Chore,
+            chore_before,
+            chore_before + output.credited_chore_seconds,
+        ) {
+            if let Err(e) = insert_ledger(&tx, &ev.key, day, ev.coin, ev.xp) {
+                if e != DbOpError::AlreadyApplied {
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    if after < gold_day && output.credited_side_seconds == 0 && output.credited_chore_seconds == 0 {
         if output.dominant == Dominant::ResearchSupport {
             let ev = support_xp_key(day, slot_start);
             if let Err(e) = insert_ledger(&tx, &ev.key, day, ev.coin, ev.xp) {
@@ -100,13 +130,15 @@ fn upsert_slot(
 ) -> Result<bool, DbOpError> {
     let n = conn
         .execute(
-            "INSERT INTO slots (day, slot_start, category, status, activity_json, credited_core_seconds, observed_seconds, used_vision)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+            "INSERT INTO slots (day, slot_start, category, status, activity_json, credited_core_seconds, credited_side_seconds, credited_chore_seconds, observed_seconds, used_vision)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
          ON CONFLICT(day, slot_start) DO UPDATE SET
            category=excluded.category,
            status=excluded.status,
            activity_json=excluded.activity_json,
            credited_core_seconds=excluded.credited_core_seconds,
+           credited_side_seconds=excluded.credited_side_seconds,
+           credited_chore_seconds=excluded.credited_chore_seconds,
            observed_seconds=excluded.observed_seconds,
            used_vision=excluded.used_vision
          WHERE slots.status IS NULL OR slots.status NOT IN ('final', 'unknown')",
@@ -117,12 +149,30 @@ fn upsert_slot(
                 status,
                 activity_json(&output.activity),
                 credited,
+                output.credited_side_seconds,
+                output.credited_chore_seconds,
                 output.observed_seconds,
                 output.used_vision as i64,
             ],
         )
         .map_err(map_rusqlite)?;
     Ok(n > 0)
+}
+
+fn discounted_seconds_before(
+    conn: &Connection,
+    day: &str,
+    slot_start: i64,
+    column: &str,
+) -> Result<i64, DbOpError> {
+    let sql = match column {
+        "credited_side_seconds" | "credited_chore_seconds" => {
+            format!("SELECT COALESCE(SUM({column}), 0) FROM slots WHERE day = ?1 AND slot_start != ?2")
+        }
+        _ => return Ok(0),
+    };
+    conn.query_row(&sql, params![day, slot_start], |r| r.get(0))
+        .map_err(map_rusqlite)
 }
 
 fn dominant_category(d: Dominant) -> &'static str {
@@ -275,5 +325,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(coin, 8);
+    }
+
+    #[test]
+    fn side_seconds_insert_discount_ticks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let mut output = core_output(0);
+        output.dominant = Dominant::SideProject;
+        output.credited_side_seconds = 1500;
+        output.observed_seconds = 1500;
+        resolve_slot(&mut conn, "2026-09-11", 0, &output, 0, 0).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ledger WHERE reward_event_key='validated_side_coin:2026-09-11:1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }
