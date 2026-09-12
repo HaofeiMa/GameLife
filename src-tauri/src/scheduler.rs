@@ -14,7 +14,7 @@ use gamelife_core::{
     default_distraction_rules, default_v01, early_start_anchor, early_start_coins_for_local_secs,
     heartbeat_unobserved, hint_sample, is_weekday, judge_slot, judgment_tasks, matches_app_identity,
     new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
-    quest_list_has_evidence, recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
+    recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
     snapshot_of, spans_for_slot, vision_quest_label, apply_task_match, parse_task_match_json,
     CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest,
     QuestDraft, QuestListError,
@@ -152,7 +152,6 @@ pub fn metadata_decidable(
     grounded_strong_core: i64,
     reading_bridge: i64,
     actual: i64,
-    quests_empty: bool,
 ) -> bool {
     if activity.unobserved == actual {
         return true;
@@ -160,9 +159,9 @@ pub fn metadata_decidable(
     if activity.away >= AWAY_DOMINANT_SECS && strong_core < 300 {
         return true;
     }
-    if !quests_empty
-        && grounded_strong_core >= STRONG_CORE_AUTO_SECS
-        && activity.side + activity.distraction <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
+    if grounded_strong_core >= STRONG_CORE_AUTO_SECS
+        && activity.side + activity.admin + activity.distraction
+            <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
     {
         return true;
     }
@@ -1278,7 +1277,6 @@ pub fn finalize_slot_end(
         evidence.grounded_strong_core_seconds,
         evidence.reading_bridge_seconds,
         actual,
-        !quest_list_has_evidence(&quests),
     );
 
     let (screenshot_path, capture_json): (Option<String>, Option<String>) = conn
@@ -1968,7 +1966,7 @@ mod tests {
             distraction: 30,
             ..Default::default()
         };
-        assert!(metadata_decidable(&activity, 800, 800, 0, 900, false));
+        assert!(metadata_decidable(&activity, 800, 800, 0, 900));
     }
 
     #[test]
@@ -1978,7 +1976,7 @@ mod tests {
             distraction: 50,
             ..Default::default()
         };
-        assert!(!metadata_decidable(&activity, 200, 200, 0, 900, false));
+        assert!(!metadata_decidable(&activity, 200, 200, 0, 900));
     }
 
     #[test]
@@ -1989,7 +1987,14 @@ mod tests {
             distraction: 30,
             ..Default::default()
         };
-        assert!(!metadata_decidable(&activity, 800, 0, 0, 900, false));
+        assert!(!metadata_decidable(&activity, 800, 0, 0, 900));
+    }
+
+    #[test]
+    fn metadata_decidable_admin_blocks_auto_core_skip_vision() {
+        let mut activity = ActivitySeconds::default();
+        activity.admin = 90;
+        assert!(!metadata_decidable(&activity, 800, 800, 0, 900));
     }
 
     #[test]
