@@ -113,7 +113,7 @@ mod tests {
     use super::*;
     use crate::policy::{
         builtin_never_capture, builtin_side_project_rules, default_distraction_rules,
-        never_capture_removable,
+        never_capture_removable, CategoryGuides,
     };
 
     fn sample(app: &str, title: &str, idle: i64) -> Sample {
@@ -139,6 +139,8 @@ mod tests {
             side_project_rules: builtin_side_project_rules(),
             reading_apps: vec![],
             never_capture_apps: builtin_never_capture(),
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let h = hint_sample(&sample("GameLife", "Today", 10), &p, &[], None);
         assert_eq!(h, Hint::Side);
@@ -153,6 +155,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let q = [Quest::fixture("HDP", "HDP")];
         let mut s = sample("Cursor", "README.md", 5);
@@ -169,6 +173,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec!["Preview".into()],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let q = [Quest::fixture("paper", "paper")];
         let mut s = sample("Preview", "paper.pdf", 200);
@@ -187,6 +193,8 @@ mod tests {
             side_project_rules: vec!["haofei.ma".into()],
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let mut s = sample("Safari", "home", 5);
         s.url = Some("https://haofei.ma/".into());
@@ -200,6 +208,8 @@ mod tests {
             side_project_rules: builtin_side_project_rules(),
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         }
     }
 
@@ -275,6 +285,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let mut s = sample("Safari", "Overleaf", 10);
         s.url = Some("https://www.overleaf.com/project/abc123".into());
@@ -291,6 +303,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let mut s = sample("Safari", "Overleaf", 10);
         s.url = Some("https://www.overleaf.com/project/abc123".into());
@@ -305,6 +319,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let mut s = sample("Safari", "HDP lecture", 5);
         s.url = Some("https://www.youtube.com/watch?v=1".into());
@@ -319,6 +335,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let mut s = sample("Safari", "README", 5);
         s.url = Some("https://overleaf.com/project/x".into());
@@ -345,6 +363,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let q = [Quest::fixture("overleaf", "overleaf.com")];
         let mut s = sample("Google Chrome", "Overleaf", 5);

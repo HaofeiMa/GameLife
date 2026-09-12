@@ -40,9 +40,9 @@ pub use ledger::{
 };
 pub use observe::{Span, SpanKind, observed_seconds, spans_for_slot};
 pub use policy::{
-    Policy, builtin_never_capture, builtin_side_project_rules, default_distraction_rules,
-    default_reading_apps, default_trusted_apps, default_v01, matches_app_identity,
-    never_capture_removable,
+    CategoryGuides, Policy, builtin_never_capture, builtin_side_project_rules,
+    default_distraction_rules, default_reading_apps, default_trusted_apps, default_v01,
+    matches_app_identity, never_capture_removable, nonempty_guides, truncate_guide,
 };
 pub use quest::{
     MAX_EVIDENCE, MAX_QUESTS, MIN_EVIDENCE_CHARS, QuestDraft, QuestListError,

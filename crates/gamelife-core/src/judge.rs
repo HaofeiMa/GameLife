@@ -544,7 +544,8 @@ fn activity_total_observed(activity: &ActivitySeconds) -> i64 {
 mod tests {
     use super::*;
     use crate::policy::{
-        Policy, builtin_never_capture, builtin_side_project_rules, default_distraction_rules,
+        CategoryGuides, Policy, builtin_never_capture, builtin_side_project_rules,
+        default_distraction_rules,
     };
 
     fn pol() -> Policy {
@@ -554,6 +555,8 @@ mod tests {
             side_project_rules: builtin_side_project_rules(),
             reading_apps: vec!["Preview".into()],
             never_capture_apps: builtin_never_capture(),
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         }
     }
 
@@ -1142,6 +1145,8 @@ mod tests {
                 side_project_rules: vec![],
                 reading_apps: vec![],
                 never_capture_apps: vec![],
+                admin_apps: vec![],
+                category_guides: CategoryGuides::default(),
             },
             capture: CaptureStatus::Captured,
             vision: Some(VisionResult {
@@ -1200,6 +1205,8 @@ mod tests {
             side_project_rules: builtin_side_project_rules(),
             reading_apps: vec!["Preview".into()],
             never_capture_apps: builtin_never_capture(),
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         }
     }
 

@@ -16,7 +16,8 @@ use gamelife_core::{
     new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
     quest_list_has_evidence, recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
     snapshot_of, spans_for_slot, vision_quest_label, apply_task_match, parse_task_match_json,
-    CaptureContext, CaptureStatus, DayOutcome, JudgeInput, Policy, Quest, QuestDraft, QuestListError,
+    CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest,
+    QuestDraft, QuestListError,
     Sample, TASK_MATCH_MIN, TaskListError, TaskSnapshot, VisionContext, CHEST_SECS,
 };
 
@@ -762,6 +763,10 @@ struct PolicyJson {
     side_project_rules: Option<Vec<String>>,
     reading_apps: Option<Vec<String>>,
     never_capture_apps: Option<Vec<String>>,
+    #[serde(default)]
+    admin_apps: Option<Vec<String>>,
+    #[serde(default)]
+    category_guides: Option<CategoryGuides>,
 }
 
 pub fn load_policy(conn: &Connection) -> Result<Policy, DbOpError> {
@@ -788,6 +793,8 @@ pub fn load_policy(conn: &Connection) -> Result<Policy, DbOpError> {
         never_capture_apps: parsed
             .never_capture_apps
             .unwrap_or_else(builtin_never_capture),
+        admin_apps: parsed.admin_apps.unwrap_or_default(),
+        category_guides: parsed.category_guides.unwrap_or_default(),
     })
 }
 
@@ -878,6 +885,8 @@ pub fn load_policy_for_version(
         never_capture_apps: parsed
             .never_capture_apps
             .unwrap_or_else(builtin_never_capture),
+        admin_apps: parsed.admin_apps.unwrap_or_default(),
+        category_guides: parsed.category_guides.unwrap_or_default(),
     })
 }
 
@@ -1909,7 +1918,7 @@ pub fn review_pending_slot(
 mod tests {
     use super::*;
     use crate::db::migrate;
-    use gamelife_core::builtin_never_capture;
+    use gamelife_core::{builtin_never_capture, CategoryGuides};
     use rusqlite::Connection;
     use std::io::Write;
 
@@ -2729,6 +2738,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec!["Preview".into()],
             never_capture_apps: builtin_never_capture(),
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         conn.execute(
             "INSERT INTO policy_versions (json, created_at) VALUES (?1, 1)",
@@ -2768,6 +2779,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: builtin_never_capture(),
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         conn.execute(
             "INSERT INTO policy_versions (json, created_at) VALUES (?1, 1)",
@@ -2806,6 +2819,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: builtin_never_capture(),
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         conn.execute(
             "INSERT INTO policy_versions (json, created_at) VALUES (?1, 1)",
@@ -2837,6 +2852,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         conn.execute(
             "INSERT INTO policy_versions (json, created_at) VALUES (?1, 2)",

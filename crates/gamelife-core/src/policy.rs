@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CategoryGuides {
+    #[serde(default)]
+    pub mainline: String,
+    #[serde(default)]
+    pub side: String,
+    #[serde(default)]
+    pub admin: String,
+    #[serde(default)]
+    pub entertainment: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Policy {
     pub trusted_apps: Vec<String>,
@@ -7,6 +19,30 @@ pub struct Policy {
     pub side_project_rules: Vec<String>,
     pub reading_apps: Vec<String>,
     pub never_capture_apps: Vec<String>,
+    #[serde(default)]
+    pub admin_apps: Vec<String>,
+    #[serde(default)]
+    pub category_guides: CategoryGuides,
+}
+
+pub fn truncate_guide(s: &str) -> String {
+    s.chars().take(500).collect()
+}
+
+pub fn nonempty_guides(g: &CategoryGuides) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    for (key, raw) in [
+        ("mainline", g.mainline.as_str()),
+        ("side", g.side.as_str()),
+        ("admin", g.admin.as_str()),
+        ("entertainment", g.entertainment.as_str()),
+    ] {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            out.push((key, trimmed.to_string()));
+        }
+    }
+    out
 }
 
 struct KnownApp {
@@ -149,6 +185,8 @@ pub fn default_v01() -> Policy {
         side_project_rules: vec![],
         reading_apps: default_reading_apps(),
         never_capture_apps: builtin_never_capture(),
+        admin_apps: vec![],
+        category_guides: CategoryGuides::default(),
     }
 }
 
@@ -264,5 +302,34 @@ mod tests {
             );
         }
         assert_eq!(p.distraction_rules, default_distraction_rules());
+    }
+
+    #[test]
+    fn old_policy_json_without_new_fields_deserializes() {
+        let json = r#"{"trusted_apps":["Cursor"],"distraction_rules":[],"side_project_rules":[],"reading_apps":[],"never_capture_apps":[]}"#;
+        let p: Policy = serde_json::from_str(json).unwrap();
+        assert_eq!(p.trusted_apps, vec!["Cursor"]);
+        assert!(p.admin_apps.is_empty());
+        assert!(p.category_guides.mainline.is_empty());
+    }
+
+    #[test]
+    fn truncate_guide_caps_at_500_chars() {
+        let s: String = std::iter::repeat('研').take(501).collect();
+        assert_eq!(truncate_guide(&s).chars().count(), 500);
+    }
+
+    #[test]
+    fn nonempty_guides_skips_blank() {
+        let g = CategoryGuides {
+            mainline: "  主线说明  ".into(),
+            side: " \n".into(),
+            admin: String::new(),
+            entertainment: "娱乐说明".into(),
+        };
+        let v = nonempty_guides(&g);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], ("mainline", "主线说明".into()));
+        assert_eq!(v[1], ("entertainment", "娱乐说明".into()));
     }
 }

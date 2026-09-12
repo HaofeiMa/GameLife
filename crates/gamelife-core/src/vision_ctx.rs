@@ -265,7 +265,7 @@ pub fn activity_summary_for_vision(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::builtin_never_capture;
+    use crate::policy::{builtin_never_capture, CategoryGuides};
 
     fn ctx_with_password_and_cursor() -> VisionContext {
         VisionContext {
@@ -385,6 +385,8 @@ mod tests {
             side_project_rules: vec![],
             reading_apps: vec![],
             never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
         };
         let ev = analyze_slot_evidence(&samples, &policy, &[], 0, 40);
         let lead = ev.spans.iter().find(|s| s.start == 0).unwrap();
