@@ -59,10 +59,11 @@ pub use streak::{
     new_milestones, recompute_streak,
 };
 pub use task::{
-    ListRole, Task, TaskList, TaskListError, TaskRange, TaskSnapshot, MAX_JUDGMENT_TASKS,
+    ListRole, Task, TaskList, TaskListError, TaskRange, TaskSnapshot, TimedTask, MAX_JUDGMENT_TASKS,
     PRESET_CHORE_ID, PRESET_LONGTERM_ID, PRESET_MAINLINE_ID, PRESET_SIDE_ID, align_range,
-    in_judgment_set, judgment_tasks, parse_task_snapshot_json, preset_lists, snapshot_evidence_quests,
-    snapshot_of, tokenize_title, validate_lists,
+    in_judgment_set, judgment_tasks, match_role_alias, parse_task_snapshot_json, preset_lists,
+    role_from_hashtag, snapshot_evidence_quests, snapshot_of, ticktick_judgment_set,
+    ticktick_snapshot_id, tokenize_title, validate_lists,
 };
 pub use task_parse::{ParseContext, ParsedTask, parse_task_line};
 pub use task_ai::{

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveTime, Weekday};
 
-use crate::task::{align_range, ListRole, TaskList};
+use crate::task::{align_range, TaskList};
 
 pub struct ParseContext<'a> {
     pub now: DateTime<FixedOffset>,
@@ -107,13 +107,7 @@ fn match_list<'a>(tag: &str, lists: &'a [TaskList]) -> Option<&'a str> {
     if let Some(list) = lists.iter().find(|l| l.name == lower) {
         return Some(&list.id);
     }
-    let role = match lower {
-        "主线" | "主线任务" => Some(ListRole::Mainline),
-        "支线" | "支线任务" => Some(ListRole::Side),
-        "长期" | "长期计划" => Some(ListRole::Longterm),
-        "杂项" => Some(ListRole::Chore),
-        _ => None,
-    }?;
+    let role = crate::task::match_role_alias(lower)?;
     lists
         .iter()
         .find(|l| l.role == role)

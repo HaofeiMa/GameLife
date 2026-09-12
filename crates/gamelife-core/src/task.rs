@@ -183,6 +183,61 @@ pub fn snapshot_evidence_quests(snapshots: &[TaskSnapshot]) -> Vec<crate::types:
         .collect()
 }
 
+pub fn match_role_alias(tag: &str) -> Option<ListRole> {
+    match tag.trim() {
+        "主线" | "主线任务" => Some(ListRole::Mainline),
+        "支线" | "支线任务" => Some(ListRole::Side),
+        "长期" | "长期计划" => Some(ListRole::Longterm),
+        "杂项" => Some(ListRole::Chore),
+        _ => None,
+    }
+}
+
+pub fn ticktick_snapshot_id(raw_id: &str) -> String {
+    if raw_id.starts_with("tt-") {
+        raw_id.to_string()
+    } else {
+        format!("tt-{raw_id}")
+    }
+}
+
+pub fn role_from_hashtag(title: &str, fallback: ListRole) -> ListRole {
+    let Some(idx) = title.rfind('#') else {
+        return fallback;
+    };
+    let tag = title[idx + 1..].trim();
+    let tag_end = tag
+        .find(|c: char| c.is_whitespace() || c == ',' || c == '，')
+        .unwrap_or(tag.len());
+    match_role_alias(&tag[..tag_end]).unwrap_or(fallback)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimedTask {
+    pub id: String,
+    pub title: String,
+    pub role: ListRole,
+    pub start: i64,
+    pub end: i64,
+    pub done: bool,
+}
+
+pub fn ticktick_judgment_set(
+    tasks: &[TimedTask],
+    day_start: i64,
+    day_end: i64,
+) -> Vec<&TimedTask> {
+    let selected: Vec<&TimedTask> = tasks
+        .iter()
+        .filter(|t| !t.done && t.start < day_end && t.end > day_start)
+        .collect();
+    if selected.len() > MAX_JUDGMENT_TASKS {
+        Vec::new()
+    } else {
+        selected
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +335,38 @@ mod tests {
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].text, "HDP train");
         assert!(q[0].evidence.iter().any(|e| e == "HDP"));
+    }
+
+    #[test]
+    fn ticktick_id_is_prefixed_once() {
+        assert_eq!(ticktick_snapshot_id("abc"), "tt-abc");
+        assert_eq!(ticktick_snapshot_id("tt-abc"), "tt-abc");
+    }
+
+    #[test]
+    fn hashtag_overrides_project_role() {
+        assert_eq!(
+            role_from_hashtag("讨论 #杂项", ListRole::Mainline),
+            ListRole::Chore
+        );
+        assert_eq!(
+            role_from_hashtag("讨论", ListRole::Side),
+            ListRole::Side
+        );
+    }
+
+    #[test]
+    fn more_than_twenty_timed_tasks_yields_empty_set() {
+        let tasks: Vec<TimedTask> = (0..21)
+            .map(|i| TimedTask {
+                id: format!("{i}"),
+                title: format!("t{i}"),
+                role: ListRole::Mainline,
+                start: 1000,
+                end: 1900,
+                done: false,
+            })
+            .collect();
+        assert!(ticktick_judgment_set(&tasks, 0, 86400).is_empty());
     }
 }
