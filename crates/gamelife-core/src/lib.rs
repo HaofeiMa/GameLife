@@ -66,8 +66,9 @@ pub use task::{
 };
 pub use task_parse::{ParseContext, ParsedTask, parse_task_line};
 pub use task_ai::{
-    TASK_MATCH_MIN, TaskMatch, TaskMatchError, apply_task_match, parse_task_match_json,
-    payout_base_seconds,
+    apply_category_match, apply_task_match, parse_category_match_json, parse_task_match_json,
+    payout_base_seconds, CategoryMatch, CategoryMatchError, TaskMatch, TaskMatchError,
+    TASK_MATCH_MIN,
 };
 pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
