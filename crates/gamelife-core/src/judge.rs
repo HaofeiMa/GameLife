@@ -203,10 +203,9 @@ pub fn analyze_slot_evidence(
 /// Slot judge pipeline:
 /// 1. analyze_slot_evidence (hints + spans + activity)
 /// 2. branch: unobserved / break-away / strong core / side-distraction / gray+vision
-/// 3. credited = min(observed, actual, strong + bridge + verified); tasks empty → 0
+/// 3. credited = min(observed, actual, strong + bridge + verified); empty snapshots still auto-core when grounded
 pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     let actual = input.slot_end - input.slot_start;
-    let tasks_empty = input.tasks.is_empty();
     let ev = analyze_slot_evidence(
         input.samples,
         input.policy,
@@ -232,9 +231,9 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
         dominant = Dominant::Unobserved;
     } else if activity.away >= AWAY_DOMINANT_SECS && strong_core < 300 {
         dominant = Dominant::BreakAway;
-    } else if !tasks_empty
-        && grounded_strong_core >= STRONG_CORE_AUTO_SECS
-        && activity.side + activity.distraction <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
+    } else if grounded_strong_core >= STRONG_CORE_AUTO_SECS
+        && activity.side + activity.admin + activity.distraction
+            <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
     {
         dominant = Dominant::CoreResearch;
         credited_raw = grounded_strong_core + reading_bridge;
@@ -322,13 +321,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     }
 
     // Step 7–8: final credited cap
-    let mut credited = credited_raw.min(observed).min(actual).min(900);
-    if tasks_empty {
-        credited = 0;
-        if dominant == Dominant::CoreResearch {
-            dominant = dominant_from_activity(&activity, 0);
-        }
-    }
+    let credited = credited_raw.min(observed).min(actual).min(900);
 
     if dominant == Dominant::Unknown {
         dominant = dominant_from_activity(&activity, credited);
@@ -903,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_tasks_zero_credit_even_with_quest_evidence() {
+    fn ungrounded_title_match_does_not_auto_core() {
         let quests = [Quest::fixture("HDP", "HDP")];
         let samples = grid("Cursor", "HDP train.py", 0, 60, 15, 5);
         let out = judge_slot(JudgeInput {
@@ -918,6 +911,11 @@ mod tests {
             manual_core: None,
         });
         assert_eq!(out.credited_core_seconds, 0);
+        assert_ne!(
+            out.dominant,
+            Dominant::CoreResearch,
+            "title match without path/url/H2 must not auto-core"
+        );
     }
 
     #[test]
@@ -943,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn title_only_quests_with_manual_core_still_force_zero_credit() {
+    fn title_only_quests_with_manual_core_can_credit() {
         let samples = grid("Isaac Sim", "robot", 0, 40, 15, 2);
         let base = |quests: &[Quest], tasks: &[crate::task::TaskSnapshot]| {
             judge_slot(JudgeInput {
@@ -966,10 +964,10 @@ mod tests {
             }],
             &[],
         );
-        assert_eq!(
-            title_only.credited_core_seconds,
-            0,
-            "empty evidence must gate credit even when manual_core would otherwise pay"
+        assert!(
+            title_only.credited_core_seconds > 60,
+            "manual_core still pays without a snapshot; empty evidence no longer zeroes, got {}",
+            title_only.credited_core_seconds
         );
         let with_evidence = base(
             &[Quest {
@@ -1349,7 +1347,7 @@ mod tests {
     }
 
     #[test]
-    fn overleaf_without_quests_credits_zero() {
+    fn overleaf_without_quests_still_auto_cores() {
         let samples: Vec<Sample> = (0..58)
             .map(|i| Sample {
                 ts: i as i64 * 15,
@@ -1375,7 +1373,9 @@ mod tests {
             vision: None,
             manual_core: None,
         });
-        assert_eq!(out.credited_core_seconds, 0);
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::CoreResearch);
+        assert!(out.credited_core_seconds >= 780);
     }
 
     #[test]
@@ -1400,5 +1400,65 @@ mod tests {
         };
         let ev = analyze_slot_evidence(&[s], &p, &[], &snaps, 0, 15);
         assert!(ev.grounded_strong_core_seconds > 0);
+    }
+
+    #[test]
+    fn empty_snapshots_still_auto_core_when_grounded() {
+        let mut samples = grid("Cursor", "Overleaf", 0, 60, 15, 2);
+        for s in &mut samples {
+            s.document_path = None;
+            s.url = Some("https://www.overleaf.com/project/abc".into());
+        }
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[],
+            tasks: &[],
+            policy: &pol(),
+            capture: CaptureStatus::Skipped,
+            vision: None,
+            manual_core: None,
+        });
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::CoreResearch);
+        assert!(out.credited_core_seconds >= 780);
+    }
+
+    #[test]
+    fn admin_minutes_block_auto_core() {
+        let mut samples = grid("Cursor", "paper", 0, 52, 15, 2);
+        for s in &mut samples {
+            s.document_path = None;
+            s.url = Some("https://www.overleaf.com/project/abc".into());
+        }
+        for i in 0..8 {
+            samples.push(Sample {
+                ts: 780 + i * 15,
+                app: "Mail".into(),
+                window_title: "Inbox".into(),
+                url: None,
+                document_path: None,
+                bundle_id: None,
+                idle_seconds: 2,
+                screen_locked: false,
+                paused: false,
+                secure_input: false,
+            });
+        }
+        let mut policy = pol();
+        policy.admin_apps = vec!["Mail".into()];
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[],
+            tasks: &[],
+            policy: &policy,
+            capture: CaptureStatus::Skipped,
+            vision: None,
+            manual_core: None,
+        });
+        assert_ne!(out.dominant, Dominant::CoreResearch);
     }
 }
