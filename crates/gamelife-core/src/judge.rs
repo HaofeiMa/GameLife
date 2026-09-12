@@ -345,6 +345,7 @@ fn accumulate_hint_activity(activity: &mut ActivitySeconds, hint: Hint, secs: i6
     match hint {
         Hint::Away => activity.away += secs,
         Hint::Distraction => activity.distraction += secs,
+        Hint::Admin => activity.admin += secs,
         Hint::Side => activity.side += secs,
         Hint::CoreCandidate | Hint::CoreReading => activity.core += secs,
         Hint::UnsureReading | Hint::Unsure => {}

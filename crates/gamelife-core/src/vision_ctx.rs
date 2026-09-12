@@ -29,6 +29,7 @@ pub struct HintSeconds {
     pub core_reading: i64,
     pub unsure: i64,
     pub unsure_reading: i64,
+    pub admin: i64,
     pub side: i64,
     pub distraction: i64,
     pub away: i64,
@@ -220,6 +221,7 @@ pub fn activity_summary_for_vision(
                     Hint::Unsure => hint_seconds.unsure += secs,
                     Hint::UnsureReading => hint_seconds.unsure_reading += secs,
                     Hint::Side => hint_seconds.side += secs,
+                    Hint::Admin => hint_seconds.admin += secs,
                     Hint::Distraction => hint_seconds.distraction += secs,
                     Hint::Away => hint_seconds.away += secs,
                 }

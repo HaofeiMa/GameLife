@@ -33,6 +33,7 @@ impl Quest {
 pub enum Hint {
     Away,
     Distraction,
+    Admin,
     Side,
     CoreCandidate,
     CoreReading,

@@ -23,6 +23,10 @@ pub fn hint_sample(
         return Hint::Distraction;
     }
 
+    if matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.admin_apps) {
+        return Hint::Admin;
+    }
+
     if matches_any_rule(&haystacks, &all_side_project_rules(policy)) {
         return Hint::Side;
     }
@@ -378,6 +382,43 @@ mod tests {
         assert_eq!(
             hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
             Hint::Unsure
+        );
+    }
+
+    #[test]
+    fn admin_app_beats_trusted_but_loses_to_distraction() {
+        let p = Policy {
+            trusted_apps: vec!["Mail".into()],
+            distraction_rules: vec!["youtube.com".into()],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+            admin_apps: vec!["Mail".into()],
+            category_guides: CategoryGuides::default(),
+        };
+        assert_eq!(
+            hint_sample(&sample("Mail", "Inbox", 5), &p, &[], None),
+            Hint::Admin
+        );
+        let mut yt = sample("Google Chrome", "YouTube", 5);
+        yt.url = Some("https://www.youtube.com/watch?v=1".into());
+        assert_eq!(hint_sample(&yt, &p, &[], None), Hint::Distraction);
+    }
+
+    #[test]
+    fn builtin_gamelife_is_side_when_not_in_admin_list() {
+        let p = Policy {
+            trusted_apps: vec![],
+            distraction_rules: vec![],
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
+        };
+        assert_eq!(
+            hint_sample(&sample("GameLife", "Today", 5), &p, &[], None),
+            Hint::Side
         );
     }
 }
