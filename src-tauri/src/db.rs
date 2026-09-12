@@ -100,9 +100,45 @@ CREATE TABLE IF NOT EXISTS tasks (
   end INTEGER,
   range TEXT
 );
+CREATE TABLE IF NOT EXISTS ticktick_cache (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  role TEXT NOT NULL,
+  start INTEGER NOT NULL,
+  end INTEGER NOT NULL,
+  fetched_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_day_stats (
+  day TEXT NOT NULL,
+  app TEXT NOT NULL,
+  bundle_id TEXT NOT NULL DEFAULT '',
+  samples INTEGER NOT NULL,
+  idle_seconds INTEGER NOT NULL,
+  core INTEGER NOT NULL,
+  support INTEGER NOT NULL,
+  admin INTEGER NOT NULL,
+  side INTEGER NOT NULL,
+  distraction INTEGER NOT NULL,
+  away INTEGER NOT NULL,
+  unobserved INTEGER NOT NULL,
+  protected INTEGER NOT NULL,
+  PRIMARY KEY (day, app, bundle_id)
+);
+CREATE TABLE IF NOT EXISTS host_day_stats (
+  day TEXT NOT NULL,
+  host TEXT NOT NULL,
+  samples INTEGER NOT NULL,
+  core INTEGER NOT NULL,
+  support INTEGER NOT NULL,
+  admin INTEGER NOT NULL,
+  side INTEGER NOT NULL,
+  distraction INTEGER NOT NULL,
+  PRIMARY KEY (day, host)
+);
 ";
 
-const TARGET_USER_VERSION: i32 = 2;
+const TARGET_USER_VERSION: i32 = 3;
 
 const WAVE1_COLUMNS: &[(&str, &str, &str)] = &[
     ("samples", "document_path", "TEXT"),
@@ -125,7 +161,7 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(map_rusqlite)?;
-    if version < TARGET_USER_VERSION {
+    if version < 2 {
         for (table, column, decl) in WAVE1_COLUMNS {
             add_column_if_missing(conn, table, column, decl)?;
         }
@@ -136,6 +172,49 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
              );",
         )
         .map_err(map_rusqlite)?;
+    }
+    if version < 3 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ticktick_cache (
+               id TEXT PRIMARY KEY,
+               project_id TEXT NOT NULL,
+               title TEXT NOT NULL,
+               role TEXT NOT NULL,
+               start INTEGER NOT NULL,
+               end INTEGER NOT NULL,
+               fetched_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS app_day_stats (
+               day TEXT NOT NULL,
+               app TEXT NOT NULL,
+               bundle_id TEXT NOT NULL DEFAULT '',
+               samples INTEGER NOT NULL,
+               idle_seconds INTEGER NOT NULL,
+               core INTEGER NOT NULL,
+               support INTEGER NOT NULL,
+               admin INTEGER NOT NULL,
+               side INTEGER NOT NULL,
+               distraction INTEGER NOT NULL,
+               away INTEGER NOT NULL,
+               unobserved INTEGER NOT NULL,
+               protected INTEGER NOT NULL,
+               PRIMARY KEY (day, app, bundle_id)
+             );
+             CREATE TABLE IF NOT EXISTS host_day_stats (
+               day TEXT NOT NULL,
+               host TEXT NOT NULL,
+               samples INTEGER NOT NULL,
+               core INTEGER NOT NULL,
+               support INTEGER NOT NULL,
+               admin INTEGER NOT NULL,
+               side INTEGER NOT NULL,
+               distraction INTEGER NOT NULL,
+               PRIMARY KEY (day, host)
+             );",
+        )
+        .map_err(map_rusqlite)?;
+    }
+    if version < TARGET_USER_VERSION {
         conn.pragma_update(None, "user_version", TARGET_USER_VERSION)
             .map_err(map_rusqlite)?;
     }
@@ -933,7 +1012,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
-        assert_eq!(user_version(&conn), 2);
+        assert_eq!(user_version(&conn), 3);
     }
 
     #[test]
@@ -944,7 +1023,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM task_lists", [], |r| r.get(0))
             .unwrap();
@@ -961,10 +1040,10 @@ mod tests {
     }
 
     #[test]
-    fn migrate_new_db_sets_user_version_2() {
+    fn migrate_new_db_sets_user_version_3() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 2);
+        assert_eq!(user_version(&conn), 3);
         let samples = column_names(&conn, "samples");
         assert!(samples.iter().any(|c| c == "document_path"));
         assert!(samples.iter().any(|c| c == "bundle_id"));
@@ -1053,7 +1132,7 @@ mod tests {
         )
         .unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 2);
+        assert_eq!(user_version(&conn), 3);
         let path: String = conn
             .query_row("SELECT path FROM samples WHERE ts=1", [], |r| r.get(0))
             .unwrap();
@@ -1063,6 +1142,34 @@ mod tests {
             .unwrap();
         assert_eq!(doc, None);
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 2);
+        assert_eq!(user_version(&conn), 3);
+    }
+
+    #[test]
+    fn migrate_creates_monitor_tables_and_version_3() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let v: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 3);
+        conn.execute(
+            "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at)
+             VALUES ('tt-1','p','t','mainline',1,2,3)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected)
+             VALUES ('2026-09-13','Cursor','',1,0,15,0,0,0,0,0,0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO host_day_stats (day, host, samples, core, support, admin, side, distraction)
+             VALUES ('2026-09-13','arxiv.org',1,15,0,0,0,0)",
+            [],
+        )
+        .unwrap();
     }
 }
