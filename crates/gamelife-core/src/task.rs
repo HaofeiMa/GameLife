@@ -160,6 +160,29 @@ pub fn parse_task_snapshot_json(json: &str) -> Result<Vec<TaskSnapshot>, String>
     serde_json::from_str(json).map_err(|e| e.to_string())
 }
 
+pub fn tokenize_title(title: &str) -> Vec<String> {
+    title
+        .split(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | '，' | '。' | '；' | ';' | '|' | '/' | '\\')
+        })
+        .map(str::trim)
+        .filter(|tok| tok.chars().count() >= 2 && !tok.contains('#'))
+        .map(|tok| tok.to_string())
+        .collect()
+}
+
+pub fn snapshot_evidence_quests(snapshots: &[TaskSnapshot]) -> Vec<crate::types::Quest> {
+    snapshots
+        .iter()
+        .filter(|s| s.role == ListRole::Mainline)
+        .map(|s| crate::types::Quest {
+            text: s.title.clone(),
+            evidence: tokenize_title(&s.title),
+            hero: false,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +252,33 @@ mod tests {
     #[test]
     fn align_snaps_to_900() {
         assert_eq!(align_range(100, 1000), (0, 1800));
+    }
+
+    #[test]
+    fn tokenize_title_drops_hash_and_short_tokens() {
+        let t = tokenize_title("RAIDS+ 讨论 #杂项");
+        assert!(t.iter().any(|x| x == "RAIDS+"));
+        assert!(t.iter().any(|x| x == "讨论"));
+        assert!(!t.iter().any(|x| x.contains('#')));
+    }
+
+    #[test]
+    fn snapshot_evidence_only_mainline() {
+        let snaps = [
+            TaskSnapshot {
+                id: "tt-1".into(),
+                title: "HDP train".into(),
+                role: ListRole::Mainline,
+            },
+            TaskSnapshot {
+                id: "tt-2".into(),
+                title: "报销".into(),
+                role: ListRole::Chore,
+            },
+        ];
+        let q = snapshot_evidence_quests(&snaps);
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].text, "HDP train");
+        assert!(q[0].evidence.iter().any(|e| e == "HDP"));
     }
 }

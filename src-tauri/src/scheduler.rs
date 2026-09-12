@@ -178,10 +178,11 @@ pub fn compute_slot_activity(
     samples: &[Sample],
     policy: &Policy,
     quests: &[Quest],
+    snapshots: &[TaskSnapshot],
     slot_start: i64,
     slot_end: i64,
 ) -> (ActivitySeconds, i64, i64) {
-    let ev = analyze_slot_evidence(samples, policy, quests, slot_start, slot_end);
+    let ev = analyze_slot_evidence(samples, policy, quests, snapshots, slot_start, slot_end);
     (
         ev.activity,
         ev.strong_core_seconds,
@@ -1270,7 +1271,7 @@ pub fn finalize_slot_end(
     let quests = load_quests_for_version(conn, day, quest_vid)?;
     let tasks = load_slot_task_snapshots(conn, day, slot_start)?;
     let actual = slot_end - slot_start;
-    let evidence = analyze_slot_evidence(&samples, &policy, &quests, slot_start, slot_end);
+    let evidence = analyze_slot_evidence(&samples, &policy, &quests, &tasks, slot_start, slot_end);
     let decidable = metadata_decidable(
         &evidence.activity,
         evidence.strong_core_seconds,

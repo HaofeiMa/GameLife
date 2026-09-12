@@ -61,8 +61,8 @@ pub use streak::{
 pub use task::{
     ListRole, Task, TaskList, TaskListError, TaskRange, TaskSnapshot, MAX_JUDGMENT_TASKS,
     PRESET_CHORE_ID, PRESET_LONGTERM_ID, PRESET_MAINLINE_ID, PRESET_SIDE_ID, align_range,
-    in_judgment_set, judgment_tasks, parse_task_snapshot_json, preset_lists, snapshot_of,
-    validate_lists,
+    in_judgment_set, judgment_tasks, parse_task_snapshot_json, preset_lists, snapshot_evidence_quests,
+    snapshot_of, tokenize_title, validate_lists,
 };
 pub use task_parse::{ParseContext, ParsedTask, parse_task_line};
 pub use task_ai::{

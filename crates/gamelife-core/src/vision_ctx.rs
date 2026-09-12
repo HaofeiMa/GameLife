@@ -390,7 +390,7 @@ mod tests {
             admin_apps: vec![],
             category_guides: CategoryGuides::default(),
         };
-        let ev = analyze_slot_evidence(&samples, &policy, &[], 0, 40);
+        let ev = analyze_slot_evidence(&samples, &policy, &[], &[], 0, 40);
         let lead = ev.spans.iter().find(|s| s.start == 0).unwrap();
         assert_eq!(lead.sample_index, Some(0));
         let sum = activity_summary_for_vision(&ev, &samples);

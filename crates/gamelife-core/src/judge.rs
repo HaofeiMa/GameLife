@@ -135,9 +135,13 @@ pub fn analyze_slot_evidence(
     samples: &[Sample],
     policy: &Policy,
     quests: &[Quest],
+    snapshots: &[crate::task::TaskSnapshot],
     slot_start: i64,
     slot_end: i64,
 ) -> SlotEvidence {
+    let mut merged = quests.to_vec();
+    merged.extend(crate::task::snapshot_evidence_quests(snapshots));
+    let quests = merged.as_slice();
     let mut last_core_interaction_ts: Option<i64> = None;
     let mut hints = Vec::with_capacity(samples.len());
     for sample in samples {
@@ -207,6 +211,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
         input.samples,
         input.policy,
         input.quests,
+        input.tasks,
         input.slot_start,
         input.slot_end,
     );
@@ -1371,5 +1376,29 @@ mod tests {
             manual_core: None,
         });
         assert_eq!(out.credited_core_seconds, 0);
+    }
+
+    #[test]
+    fn mainline_snapshot_title_grounds_path() {
+        let p = pol();
+        let snaps = [crate::task::TaskSnapshot {
+            id: "tt-1".into(),
+            title: "HDP train".into(),
+            role: crate::task::ListRole::Mainline,
+        }];
+        let s = Sample {
+            ts: 0,
+            app: "Cursor".into(),
+            window_title: "train.py".into(),
+            url: None,
+            document_path: Some("/proj/HDP/train.py".into()),
+            bundle_id: None,
+            idle_seconds: 5,
+            screen_locked: false,
+            paused: false,
+            secure_input: false,
+        };
+        let ev = analyze_slot_evidence(&[s], &p, &[], &snaps, 0, 15);
+        assert!(ev.grounded_strong_core_seconds > 0);
     }
 }
