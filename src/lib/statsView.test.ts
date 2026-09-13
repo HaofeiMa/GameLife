@@ -15,7 +15,7 @@ describe("week range paging", () => {
         "2026-08-31",
         "2026-09-06",
       ),
-    ).toBe("2026-09-07 至 2026-09-13");
+    ).toBe("2026-09-07 至 09-13");
   });
 
   it("does not treat a live week as empty just because the rhythm anchor moved", () => {

@@ -709,7 +709,7 @@ export function Today() {
   const header = (
     <PageHeader
       title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">今日</h1>}
-      subtitle={data?.day}
+      subtitle={data ? `${data.day} ${weekdaySuffix(data.day)}` : undefined}
       actions={
         <Button
           variant="warm"

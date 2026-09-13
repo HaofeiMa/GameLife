@@ -5,10 +5,17 @@ export function weekRangeLabel(
   fallbackMonday: string,
   fallbackSunday: string,
 ): string {
-  if (byDay.length >= 2) {
-    return `${byDay[0].day} 至 ${byDay[byDay.length - 1].day}`;
-  }
-  return `${fallbackMonday} 至 ${fallbackSunday}`;
+  // The label comes from byDay's own span, never from the paged anchor.
+  const start = byDay.length >= 2 ? byDay[0]!.day : fallbackMonday;
+  const end = byDay.length >= 2 ? byDay[byDay.length - 1]!.day : fallbackSunday;
+  // The mockup writes the end short when it shares the start's year:
+  // "2026-09-07 至 09-13".
+  return `${start} 至 ${shortEnd(end, start)}`;
+}
+
+/** Drops a shared leading year: ("2026-09-07", "2026-09-13") → "09-13". */
+function shortEnd(end: string, start: string): string {
+  return end.slice(0, 4) === start.slice(0, 4) ? end.slice(5) : end;
 }
 
 export function weekHasObservation(categoryMinutes: number): boolean {
