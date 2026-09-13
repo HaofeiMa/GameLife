@@ -1,0 +1,20 @@
+---
+description: Spec overlay order — later docs replace earlier ones only where they say so
+globs: docs/superpowers/**/*.md
+alwaysApply: false
+---
+
+# Specs and plans
+
+`docs/superpowers/specs/` is the design source of truth. Plans in `docs/superpowers/plans/` are checkbox steps; each task ends in one English conventional commit (`feat:`, `fix:`).
+
+Later specs override earlier ones **only** where they say so. Read the 「本文覆盖并取代」 block at the top before treating a rule as current.
+
+- `2026-09-10-gamelife-design.md` — economy, gaps, ledger idempotency.
+- `2026-09-11-wave1-evidence-and-vision-design.md` — path split, capture context, vision JSON.
+- `2026-09-11-observation-engine-design.md` — ScreenCaptureKit + native `macos/`.
+- `2026-09-11-judgment-grounded-core-design.md` — `grounded_strong_core`; idle is not `away`.
+- `2026-09-11-planner-shell-design.md` — discounts, slot-pinned snapshots, text AI → vision, four-page rail. Its planner Today page and “no task ⇒ credited = 0” are superseded.
+- `2026-09-13-activity-monitor-design.md` + analytics + shop-desire — current shell / judgment / TickTick / 统计 / shop. Marked 待用户审阅; this is what `main` implements.
+
+UI copy and spec/plan prose stay Chinese. Do not reintroduce a local task CRUD UI or a drawn calendar.

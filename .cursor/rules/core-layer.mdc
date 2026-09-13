@@ -1,0 +1,16 @@
+---
+description: Pure-domain rules for gamelife-core (no I/O, in-process tests)
+globs: crates/gamelife-core/**/*.rs
+alwaysApply: false
+---
+
+# gamelife-core
+
+This crate is pure domain logic. Do not add `rusqlite`, `tauri`, filesystem, HTTP, or `std::env` I/O.
+
+- Dependencies stay `chrono` / `serde` / `serde_json` only.
+- Classification is `hint.rs`; slot decision is `judge.rs`; span math is `observe.rs`. TickTick types live in `task` / `task_parse` / `task_ai`.
+- Observation beats plan. Auto-Core uses `grounded_strong_core`, not idle-based `away`.
+- `screenshot_path` never enters a Judge haystack. `hint` reads `app`, `title`, `url`, `document_path` only — never invent a path from a window title.
+- Tests stay in-process. Do not call `std::env::set_var("HOME", …)`.
+- Gate: `cargo test --offline -p gamelife-core`.
