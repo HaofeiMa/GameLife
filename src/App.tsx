@@ -4,6 +4,7 @@ import { Settings } from "./pages/Settings";
 import { Today } from "./pages/Today";
 import { Week } from "./pages/Week";
 import { getSettings, getToday } from "./lib/api";
+import { CAL_DAY_KEY } from "./lib/calendar";
 import {
   nextFeelNotices,
   noticeText,
@@ -152,7 +153,18 @@ export function App() {
         </div>
         <main>
           {tab === "today" && <Today />}
-          {tab === "week" && <Week />}
+          {tab === "week" && (
+            <Week
+              onPickDay={(day) => {
+                try {
+                  window.localStorage.setItem(CAL_DAY_KEY, day);
+                } catch {
+                  /* private mode / quota */
+                }
+                setTab("today");
+              }}
+            />
+          )}
           {tab === "shop" && <Shop />}
           {tab === "settings" && <Settings />}
         </main>

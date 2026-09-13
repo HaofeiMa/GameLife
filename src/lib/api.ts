@@ -289,6 +289,8 @@ export function getDayView(day: string): Promise<DayView> {
   return invoke("get_day_view", { day });
 }
 
+export type StatsRangeKind = "week" | "month";
+
 export function getWeek(): Promise<WeekView> {
   return invoke("get_week");
 }
@@ -297,11 +299,11 @@ export function getMonthReport(year: number, month: number): Promise<MonthReport
   return invoke("get_month_report", { year, month });
 }
 
-export function getRhythmReport(kind: "week" | "month", anchor: string): Promise<RhythmReportView> {
+export function getRhythmReport(kind: StatsRangeKind, anchor: string): Promise<RhythmReportView> {
   return invoke("get_rhythm_report", { kind, anchor });
 }
 
-export function getAppReport(kind: "week" | "month", anchor: string): Promise<AppReportView> {
+export function getAppReport(kind: StatsRangeKind, anchor: string): Promise<AppReportView> {
   return invoke("get_app_report", { kind, anchor });
 }
 
