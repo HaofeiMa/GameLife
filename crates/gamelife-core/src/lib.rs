@@ -59,7 +59,7 @@ pub use shop::{
 };
 pub use streak::{
     DayOutcome, FREEZE_PER_MONTH, can_use_freeze, freeze_month_key, freeze_quota_used,
-    new_milestones, recompute_streak,
+    new_milestones, recompute_streak, settle_outcome, streak_at_risk,
 };
 pub use task::{
     ListRole, Task, TaskList, TaskListError, TaskRange, TaskSnapshot, TimedTask, MAX_JUDGMENT_TASKS,

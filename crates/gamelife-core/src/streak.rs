@@ -27,6 +27,27 @@ pub fn recompute_streak(days_newest_first: &[(NaiveDate, DayOutcome)]) -> u32 {
     streak
 }
 
+/// Non-weekdays still record; a miss must not become `Failed`.
+pub fn settle_outcome(credited: i64, chest_secs: i64, weekday: bool) -> Option<DayOutcome> {
+    if credited >= chest_secs {
+        Some(DayOutcome::Completed)
+    } else if weekday {
+        Some(DayOutcome::Failed)
+    } else {
+        None
+    }
+}
+
+pub fn streak_at_risk(
+    weekday: bool,
+    settled: bool,
+    streak: u32,
+    credited: i64,
+    chest_secs: i64,
+) -> bool {
+    weekday && !settled && streak > 0 && credited < chest_secs
+}
+
 pub fn freeze_month_key(protected: NaiveDate) -> String {
     format!("{:04}-{:02}", protected.year(), protected.month())
 }
@@ -61,7 +82,7 @@ mod tests {
 
     use super::{
         DayOutcome, can_use_freeze, freeze_month_key, freeze_quota_used, new_milestones,
-        recompute_streak,
+        recompute_streak, settle_outcome, streak_at_risk,
     };
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
@@ -126,5 +147,25 @@ mod tests {
             (d(2026, 9, 11), DayOutcome::Completed), // Fri
         ];
         assert_eq!(recompute_streak(&newest_first), 1);
+    }
+
+    #[test]
+    fn weekend_miss_is_not_a_failed_outcome() {
+        use crate::r#const::CHEST_SECS;
+        let chest = i64::try_from(CHEST_SECS).unwrap();
+        assert_eq!(settle_outcome(0, chest, false), None);
+        assert_eq!(settle_outcome(chest, chest, false), Some(DayOutcome::Completed));
+        assert_eq!(settle_outcome(0, chest, true), Some(DayOutcome::Failed));
+        assert_eq!(settle_outcome(chest, chest, true), Some(DayOutcome::Completed));
+    }
+
+    #[test]
+    fn weekend_does_not_put_streak_at_risk() {
+        use crate::r#const::CHEST_SECS;
+        let chest = i64::try_from(CHEST_SECS).unwrap();
+        assert!(!streak_at_risk(false, false, 3, 0, chest));
+        assert!(streak_at_risk(true, false, 3, 0, chest));
+        assert!(!streak_at_risk(true, true, 3, 0, chest));
+        assert!(!streak_at_risk(true, false, 0, 0, chest));
     }
 }

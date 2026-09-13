@@ -106,6 +106,40 @@ pub fn build_text_ai_prompt(
 }
 
 pub fn call_text_json(endpoint: &VisionEndpoint, prompt: &str) -> Result<String, TextAiError> {
+    call_text_json_timed(endpoint, prompt, VISION_TIMEOUT_SECS)
+}
+
+pub fn provider_test_prompt() -> &'static str {
+    "Reply with JSON {\"ok\": true, \"ping\": \"gamelife\"} and nothing else."
+}
+
+pub fn preview_provider_reply(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let count = trimmed.chars().count();
+    if count <= 240 {
+        return trimmed.to_string();
+    }
+    format!("{}…", trimmed.chars().take(240).collect::<String>())
+}
+
+pub fn call_provider_test(endpoint: &VisionEndpoint) -> Result<String, TextAiError> {
+    call_text_json_timed(endpoint, provider_test_prompt(), 10)
+}
+
+pub fn text_ai_error_message(err: TextAiError) -> &'static str {
+    match err {
+        TextAiError::Transport => "网络超时或连不上提供商",
+        TextAiError::Client => "提供商拒绝了请求，请核对 Key、Base URL 和模型",
+        TextAiError::Parse => "返回了内容，但不是可解析的回复",
+        TextAiError::EmptySummary => "测试 prompt 为空",
+    }
+}
+
+fn call_text_json_timed(
+    endpoint: &VisionEndpoint,
+    prompt: &str,
+    timeout_secs: u64,
+) -> Result<String, TextAiError> {
     if prompt.trim().is_empty() {
         return Err(TextAiError::EmptySummary);
     }
@@ -122,7 +156,7 @@ pub fn call_text_json(endpoint: &VisionEndpoint, prompt: &str) -> Result<String,
         "messages": [{ "role": "user", "content": prompt }]
     });
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(VISION_TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .user_agent(USER_AGENT)
         .build()
         .map_err(|_| TextAiError::Transport)?;
@@ -217,6 +251,21 @@ mod tests {
             protected: true,
         }]);
         assert!(!body.contains("secret"));
+    }
+
+    #[test]
+    fn provider_test_prompt_asks_for_ok_json() {
+        assert!(provider_test_prompt().contains("ok"));
+        assert!(provider_test_prompt().contains("gamelife"));
+    }
+
+    #[test]
+    fn preview_provider_reply_truncates_long_bodies() {
+        let long = "a".repeat(300);
+        let preview = preview_provider_reply(&long);
+        assert!(preview.chars().count() <= 241);
+        assert!(preview.ends_with('…'));
+        assert_eq!(preview_provider_reply("  {\"ok\":true}  "), "{\"ok\":true}");
     }
 
     #[test]

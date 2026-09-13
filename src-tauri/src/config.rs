@@ -12,6 +12,8 @@ pub const PROVIDER_OPENAI: &str = "openai";
 pub const PROVIDER_CUSTOM: &str = "custom";
 pub const PROVIDER_NONE: &str = "none";
 
+pub const THEME_SYSTEM: &str = "system";
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VisionProviderSettings {
@@ -39,6 +41,8 @@ pub struct AppSettings {
     pub vision_providers: Vec<VisionProviderSettings>,
     #[serde(default = "default_true")]
     pub show_rail_labels: bool,
+    #[serde(default = "default_true")]
+    pub silent_start: bool,
     #[serde(default)]
     pub admin_apps: Vec<String>,
     #[serde(default)]
@@ -47,6 +51,12 @@ pub struct AppSettings {
     pub ticktick_client_id: String,
     #[serde(default)]
     pub ticktick_project_roles: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub ticktick_column_roles: std::collections::BTreeMap<String, String>,
+    /// UI appearance: system | light | dark. Normalised on the frontend by
+    /// `normalizeThemePreference` in src/lib/theme.ts.
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 fn default_primary_provider() -> String {
@@ -59,6 +69,14 @@ fn default_fallback_provider() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_theme() -> String {
+    THEME_SYSTEM.into()
+}
+
+pub fn show_window_on_launch(silent_start: bool) -> bool {
+    !silent_start
 }
 
 pub fn default_vision_providers() -> Vec<VisionProviderSettings> {
@@ -101,10 +119,13 @@ pub fn default_settings() -> AppSettings {
         fallback_provider: default_fallback_provider(),
         vision_providers: default_vision_providers(),
         show_rail_labels: true,
+        silent_start: true,
         admin_apps: vec![],
         category_guides: CategoryGuides::default(),
         ticktick_client_id: String::new(),
         ticktick_project_roles: std::collections::BTreeMap::new(),
+        ticktick_column_roles: std::collections::BTreeMap::new(),
+        theme: default_theme(),
     }
 }
 
@@ -147,6 +168,19 @@ pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     let json = serde_json::to_string_pretty(settings).map_err(|e| format!("json: {e}"))?;
     fs::write(path, json).map_err(|e| format!("write config: {e}"))?;
     Ok(())
+}
+
+pub fn policy_snapshot_json(settings: &AppSettings) -> String {
+    serde_json::json!({
+        "trusted_apps": settings.trusted_apps,
+        "distraction_rules": settings.distraction_rules,
+        "side_project_rules": settings.side_project_rules,
+        "reading_apps": settings.reading_apps,
+        "never_capture_apps": settings.never_capture_apps,
+        "admin_apps": settings.admin_apps,
+        "category_guides": settings.category_guides,
+    })
+    .to_string()
 }
 
 pub fn retention_from_str(s: &str) -> ScreenshotRetention {
@@ -201,7 +235,23 @@ mod tests {
         )
         .unwrap();
         assert!(parsed.show_rail_labels);
+        assert!(parsed.silent_start);
         assert!(parsed.admin_apps.is_empty());
         assert!(parsed.ticktick_client_id.is_empty());
+    }
+
+    #[test]
+    fn silent_start_hides_window_on_launch() {
+        assert!(!show_window_on_launch(true));
+        assert!(show_window_on_launch(false));
+    }
+
+    #[test]
+    fn policy_snapshot_ignores_ticktick_client_id() {
+        let a = default_settings();
+        let mut b = default_settings();
+        b.ticktick_client_id = "changed".into();
+        b.primary_provider = "openai".into();
+        assert_eq!(policy_snapshot_json(&a), policy_snapshot_json(&b));
     }
 }

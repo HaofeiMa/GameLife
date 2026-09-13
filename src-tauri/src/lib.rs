@@ -24,16 +24,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use crate::config::{load_settings, show_window_on_launch};
 use sampler::PauseControl;
 
 use commands::{
     archive_wish, continue_previous_workday, create_list, create_wish, end_today, freeze,
     get_app_report, get_month_report, get_permission_status, get_rhythm_report, get_settings,
     get_today, get_day_view, get_week, has_api_key, list_tasks, parse_task_line_cmd,
-    provider_key_status, redeem, report_misclassification, request_screen_recording, review_slot,
-    save_settings, set_api_key, set_provider_api_key, set_quests, ticktick_begin_oauth,
-    ticktick_disconnect, ticktick_finish_oauth, ticktick_list_projects, ticktick_set_client_secret,
-    ticktick_status, ticktick_sync, toggle_task_done, update_wish, upsert_task,
+    open_privacy_settings, provider_key_status, redeem, report_misclassification, request_screen_recording, review_slot,
+    save_settings, set_api_key, set_provider_api_key, set_quests, test_vision_provider, ticktick_begin_oauth,
+    ticktick_disconnect, ticktick_finish_oauth, ticktick_set_client_secret,
+    ticktick_status, ticktick_sync, ticktick_tree, toggle_task_done, update_wish, upsert_task,
 };
 
 use tauri::{
@@ -107,15 +108,17 @@ pub fn run() {
             set_provider_api_key,
             has_api_key,
             provider_key_status,
+            test_vision_provider,
             get_permission_status,
             request_screen_recording,
+            open_privacy_settings,
             ticktick_status,
             ticktick_set_client_secret,
             ticktick_begin_oauth,
             ticktick_finish_oauth,
             ticktick_disconnect,
             ticktick_sync,
-            ticktick_list_projects,
+            ticktick_tree,
         ])
         .setup(|app| {
             let pause = PauseControl::new();
@@ -212,6 +215,9 @@ pub fn run() {
 
             update_tray_tooltip(app.handle());
             start_tray_tooltip_updater(app.handle().clone());
+            if show_window_on_launch(load_settings().silent_start) {
+                show_main_window(app.handle());
+            }
 
             Ok(())
         })

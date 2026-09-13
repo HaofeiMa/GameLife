@@ -8,7 +8,8 @@ use tauri::State;
 
 use gamelife_core::{
     distraction_runs, first_core_hour, format_estimated_minutes, hit_rate, is_weekday,
-    judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line, sum_activity,
+    judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line, streak_at_risk,
+    sum_activity,
     validate_lists, wow_delta, xp_shop_unlocked, ListRole,
     ParseContext, Policy, QuestDraft, Task, TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
     PRESET_MAINLINE_ID, SLOT_SECS,
@@ -17,7 +18,6 @@ use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
 
 use crate::config::{load_settings, retention_from_str, save_settings as write_settings_file, AppSettings};
-use crate::ticktick::TickTickHttp;
 use crate::db::{
     archive_wish as db_archive_wish, insert_wish as db_insert_wish, list_role_sql,
     load_active_session, load_task_lists, load_tasks, migrate, open, redeem as db_redeem,
@@ -233,6 +233,17 @@ pub struct DayView {
     pub app_top: Vec<AppTopRow>,
     pub pending_count: i64,
     pub plan_marks: Vec<PlanMark>,
+    pub ticktick_tasks: Vec<TickTickTaskView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickTickTaskView {
+    pub id: String,
+    pub title: String,
+    pub role: String,
+    pub start: i64,
+    pub end: i64,
 }
 
 #[derive(Serialize)]
@@ -1123,9 +1134,18 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
             |r| r.get::<_, i64>(0),
         )
         .map_err(crate::db_error::map_rusqlite)? > 0;
-    let at_risk = !settled
-        && streak > 0
-        && credited_seconds < i64::try_from(CHEST_SECS).unwrap_or(21600);
+    let at_risk = {
+        let weekday = NaiveDate::parse_from_str(day, "%Y-%m-%d")
+            .map(is_weekday)
+            .unwrap_or(false);
+        streak_at_risk(
+            weekday,
+            settled,
+            streak,
+            credited_seconds,
+            i64::try_from(CHEST_SECS).unwrap_or(21600),
+        )
+    };
     let first_core_label = first_core_label_for_day(conn, day, credited_seconds);
     let slots = load_today_slots(conn, day)?;
     let gold_day = credited_seconds >= i64::try_from(GOLD_DAY_SECS).unwrap_or(28800);
@@ -1307,6 +1327,26 @@ fn load_plan_marks(
     Ok(by_id.into_values().collect())
 }
 
+fn load_ticktick_day_tasks(
+    conn: &Connection,
+    day_start: i64,
+    day_end: i64,
+) -> Result<Vec<TickTickTaskView>, DbOpError> {
+    let mut tasks: Vec<TickTickTaskView> = crate::ticktick::load_ticktick_cache(conn)?
+        .into_iter()
+        .filter(|task| timed_overlaps_day(task.start, task.end, day_start, day_end))
+        .map(|task| TickTickTaskView {
+            id: task.id,
+            title: task.title,
+            role: list_role_sql(task.role).to_string(),
+            start: task.start,
+            end: task.end,
+        })
+        .collect();
+    tasks.sort_by_key(|task| (task.start, task.end, task.title.clone()));
+    Ok(tasks)
+}
+
 fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
     let day_start =
         start_of_named_day(day).ok_or_else(|| DbOpError::Rejected("bad_day".into()))?;
@@ -1314,6 +1354,7 @@ fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
     let slots = load_today_slots(conn, day)?;
     let pending_count = slots.iter().filter(|s| s.pending).count() as i64;
     let plan_marks = load_plan_marks(conn, day_start, day_end)?;
+    let ticktick_tasks = load_ticktick_day_tasks(conn, day_start, day_end)?;
     Ok(DayView {
         day: day.to_string(),
         day_start,
@@ -1323,6 +1364,7 @@ fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
         app_top: load_app_top(conn, day, 5)?,
         pending_count,
         plan_marks,
+        ticktick_tasks,
     })
 }
 
@@ -1356,11 +1398,26 @@ fn local_hour(ts: i64) -> i32 {
         .unwrap_or(0)
 }
 
-fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOpError> {
+/// `anchor` picks which week to report; `today` stays the anchor for the
+/// wallet fields (credited today, XP today, shop unlock, live sessions),
+/// which are always "now" regardless of the week being looked at.
+fn build_week(
+    conn: &Connection,
+    anchor: &str,
+    today: &str,
+    now: i64,
+) -> Result<WeekView, DbOpError> {
     let today_date =
         NaiveDate::parse_from_str(today, "%Y-%m-%d").map_err(|e| DbOpError::Fatal(e.to_string()))?;
-    let week_start = week_start_for(today_date);
+    let anchor_date =
+        NaiveDate::parse_from_str(anchor, "%Y-%m-%d").map_err(|e| DbOpError::Fatal(e.to_string()))?;
+    let week_start = week_start_for(anchor_date);
     let week_start_str = day_str(week_start);
+    // A past week runs Mon–Sun; the current week stops at today, so a
+    // future day is never counted as a missed day.
+    let week_end = week_start + chrono::Duration::days(6);
+    let range_end = if week_end < today_date { week_end } else { today_date };
+    let range_end_str = day_str(range_end);
     let mut by_day: Vec<WeekDayRow> = (0..7)
         .map(|i| {
             let day = week_start + chrono::Duration::days(i);
@@ -1372,7 +1429,7 @@ fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOp
             }
         })
         .collect();
-    let slots = load_slots_in_range(conn, &week_start_str, today)?;
+    let slots = load_slots_in_range(conn, &week_start_str, &range_end_str)?;
     let by_hour = fill_hour_rows(&slots);
     let mut activities = Vec::new();
     let mut pending_review_secs = 0i64;
@@ -1442,7 +1499,7 @@ fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOp
     };
     let credited_map = credited_by_day(&slots);
     let weekday_credited =
-        weekday_credited_slice(week_start, today_date, today_date, &credited_map);
+        weekday_credited_slice(week_start, range_end, today_date, &credited_map);
     Ok(WeekView {
         core: secs_to_minutes(total.core),
         support: secs_to_minutes(total.support),
@@ -1655,7 +1712,6 @@ fn build_app_report(
 #[tauri::command]
 pub fn get_today() -> Result<TodayView, String> {
     with_db(|conn| {
-        crate::scheduler::maybe_refresh_ticktick_cache(conn);
         let now = now_secs();
         let day = day_str_for_ts(now);
         build_today(conn, &day, now)
@@ -1668,11 +1724,12 @@ pub fn get_day_view(day: String) -> Result<DayView, String> {
 }
 
 #[tauri::command]
-pub fn get_week() -> Result<WeekView, String> {
+pub fn get_week(anchor: Option<String>) -> Result<WeekView, String> {
     with_db(|conn| {
         let now = now_secs();
-        let day = day_str_for_ts(now);
-        build_week(conn, &day, now)
+        let today = day_str_for_ts(now);
+        let anchor = anchor.as_deref().unwrap_or(&today);
+        build_week(conn, anchor, &today, now)
     })
 }
 
@@ -2013,6 +2070,24 @@ pub fn request_screen_recording() -> bool {
 }
 
 #[tauri::command]
+pub fn open_privacy_settings(kind: String) -> Result<(), String> {
+    let url = match kind.as_str() {
+        "accessibility" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        }
+        "screen" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+        _ => return Err("unknown pane".into()),
+    };
+    std::process::Command::new("open")
+        .arg(url)
+        .status()
+        .map_err(|e| format!("open: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn redeem(wish_id: String, redemption_id: String) -> Result<(), String> {
     with_db_err(|conn| {
         let day = day_str_for_ts(now_secs());
@@ -2079,22 +2154,17 @@ pub fn get_settings() -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-pub fn save_settings(settings: AppSettings) -> Result<(), String> {
+pub fn save_settings(settings: AppSettings, update_policy: Option<bool>) -> Result<(), String> {
     write_settings_file(&settings)?;
+    if !update_policy.unwrap_or(true) {
+        return Ok(());
+    }
     with_db(|conn| {
-        let json = serde_json::json!({
-            "trusted_apps": settings.trusted_apps,
-            "distraction_rules": settings.distraction_rules,
-            "side_project_rules": settings.side_project_rules,
-            "reading_apps": settings.reading_apps,
-            "never_capture_apps": settings.never_capture_apps,
-            "admin_apps": settings.admin_apps,
-            "category_guides": settings.category_guides,
-        });
+        let json = crate::config::policy_snapshot_json(&settings);
         let ts = now_secs();
         conn.execute(
             "INSERT INTO policy_versions (json, created_at) VALUES (?1, ?2)",
-            params![json.to_string(), ts],
+            params![json, ts],
         )
         .map_err(crate::db_error::map_rusqlite)?;
         Ok(())
@@ -2138,34 +2208,71 @@ pub fn provider_key_status() -> Result<ProviderKeyStatus, String> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderTestResult {
+    pub ok: bool,
+    pub preview: String,
+}
+
+/// `async` on purpose: Tauri runs sync commands on the main thread, so a
+/// blocking HTTP call in one freezes the webview for its whole duration.
+/// Every command below that touches the network is async for that reason.
+#[tauri::command]
+pub async fn test_vision_provider(provider: Option<String>) -> Result<ProviderTestResult, String> {
+    let settings = load_settings();
+    let id = provider
+        .unwrap_or_else(|| settings.primary_provider.clone())
+        .trim()
+        .to_string();
+    let spec = settings
+        .vision_providers
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| "未找到该提供商配置".to_string())?;
+    let api_key =
+        get_provider_api_key(&id).map_err(|_| "还没有保存 API Key".to_string())?;
+    if spec.base_url.trim().is_empty() || spec.model.trim().is_empty() {
+        return Err("请先填写 Base URL 和模型".into());
+    }
+    let endpoint = crate::vision::VisionEndpoint {
+        base_url: spec.base_url.clone(),
+        model: spec.model.clone(),
+        api_key,
+    };
+    match crate::text_ai::call_provider_test(&endpoint) {
+        Ok(body) => Ok(ProviderTestResult {
+            ok: true,
+            preview: crate::text_ai::preview_provider_reply(&body),
+        }),
+        Err(e) => Err(crate::text_ai::text_ai_error_message(e).into()),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TickTickStatus {
     pub connected: bool,
     pub last_sync: Option<i64>,
     pub last_error: Option<String>,
+    pub secret_present: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TickTickAuthorize {
     pub authorize_url: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TickTickProjectView {
-    pub id: String,
-    pub name: String,
-    pub role: String,
+    pub listen_ok: bool,
+    pub opened: bool,
 }
 
 #[tauri::command]
 pub fn ticktick_status() -> Result<TickTickStatus, String> {
     let connected = crate::keychain::get_ticktick_access_token().is_ok();
-    let last_sync = with_db(|conn| crate::ticktick::cache_fetched_at_max(conn)).ok().flatten();
+    let last_sync = with_db(|conn| crate::ticktick::ticktick_fetched_at(conn)).ok().flatten();
     Ok(TickTickStatus {
         connected,
         last_sync,
         last_error: crate::ticktick::oauth_last_error(),
+        secret_present: crate::ticktick::client_secret_present(),
     })
 }
 
@@ -2175,7 +2282,22 @@ pub fn ticktick_set_client_secret(secret: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn ticktick_begin_oauth() -> Result<TickTickAuthorize, String> {
+pub async fn ticktick_begin_oauth(
+    client_id: Option<String>,
+    client_secret: Option<String>,
+) -> Result<TickTickAuthorize, String> {
+    if let Some(id) = client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let mut settings = load_settings();
+        settings.ticktick_client_id = id.to_string();
+        write_settings_file(&settings)?;
+    }
+    if let Some(secret) = crate::ticktick::incoming_secret_to_store(client_secret.as_deref()) {
+        crate::keychain::set_ticktick_client_secret(&secret)?;
+    }
     let client_id = load_settings().ticktick_client_id.trim().to_string();
     crate::ticktick::oauth_begin_preflight(
         &client_id,
@@ -2185,28 +2307,49 @@ pub fn ticktick_begin_oauth() -> Result<TickTickAuthorize, String> {
         crate::ticktick::set_oauth_last_error(e.clone());
         e
     })?;
-    let listener = crate::ticktick::bind_oauth_loopback().map_err(|e| {
-        crate::ticktick::set_oauth_last_error(e.clone());
-        e
-    })?;
     crate::ticktick::clear_oauth_last_error();
     let verifier = crate::ticktick::pkce_verifier();
     let challenge = crate::ticktick::pkce_challenge(&verifier);
     crate::ticktick::store_pkce_verifier(verifier);
-    crate::ticktick::spawn_oauth_loopback(listener);
-    let url = format!(
-        "{}?client_id={}&redirect_uri=http%3A%2F%2F127.0.0.1%3A18789%2Fcallback&response_type=code&scope=tasks:read&code_challenge={}&code_challenge_method=S256",
-        crate::ticktick::TICKTICK_AUTHORIZE,
-        client_id,
-        challenge
-    );
-    Ok(TickTickAuthorize { authorize_url: url })
+    let listen_ok = match crate::ticktick::bind_oauth_loopback() {
+        Ok(listener) => {
+            crate::ticktick::spawn_oauth_loopback(listener);
+            true
+        }
+        Err(_) => false,
+    };
+    let url = crate::ticktick::build_authorize_url(&client_id, &challenge);
+    let opened = crate::ticktick::open_in_browser(&url).is_ok();
+    Ok(TickTickAuthorize {
+        authorize_url: url,
+        listen_ok,
+        opened,
+    })
 }
 
 #[tauri::command]
-pub fn ticktick_finish_oauth(callback_url: String) -> Result<(), String> {
+pub async fn ticktick_finish_oauth(
+    callback_url: String,
+    client_secret: Option<String>,
+) -> Result<(), String> {
+    match crate::ticktick::oauth_callback_kind(&callback_url) {
+        "setting" => {
+            let msg = "oauth redirect setting".to_string();
+            crate::ticktick::set_oauth_last_error(msg.clone());
+            return Err(msg);
+        }
+        "invalid" => {
+            let msg = "missing oauth code".to_string();
+            crate::ticktick::set_oauth_last_error(msg.clone());
+            return Err(msg);
+        }
+        _ => {}
+    }
+    if let Some(secret) = crate::ticktick::incoming_secret_to_store(client_secret.as_deref()) {
+        crate::keychain::set_ticktick_client_secret(&secret)?;
+    }
     let code = crate::ticktick::oauth_code_from_callback(&callback_url)?;
-    match crate::ticktick::complete_oauth_with_code(&crate::ticktick::ReqwestTickTick, &code) {
+    match crate::ticktick::complete_oauth_with_code(&crate::ticktick::ReqwestTickTick::manual(), &code) {
         Ok(()) => {
             crate::ticktick::clear_oauth_last_error();
             Ok(())
@@ -2230,10 +2373,17 @@ pub fn ticktick_disconnect() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn ticktick_sync() -> Result<crate::ticktick::TickTickSyncResult, String> {
+pub async fn ticktick_sync() -> Result<crate::ticktick::TickTickSyncResult, String> {
+    tauri::async_runtime::spawn_blocking(ticktick_sync_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn ticktick_sync_blocking() -> Result<crate::ticktick::TickTickSyncResult, String> {
     let now = now_secs();
     let access = crate::keychain::get_ticktick_access_token()?;
-    let roles = load_settings().ticktick_project_roles;
+    let settings = load_settings();
+    let maps = crate::ticktick::TickTickRoleMaps::from_settings(&settings);
     let day = day_str_for_ts(now);
     let day_start = start_of_named_day(&day).unwrap_or(now);
     let day_end = end_of_local_day(day_start);
@@ -2244,9 +2394,9 @@ pub fn ticktick_sync() -> Result<crate::ticktick::TickTickSyncResult, String> {
             }
         }
         match crate::ticktick::sync_projects(
-            &crate::ticktick::ReqwestTickTick,
+            &crate::ticktick::ReqwestTickTick::manual(),
             conn,
-            &roles,
+            &maps,
             &access,
             now,
         ) {
@@ -2266,30 +2416,30 @@ pub fn ticktick_sync() -> Result<crate::ticktick::TickTickSyncResult, String> {
 }
 
 #[tauri::command]
-pub fn ticktick_list_projects() -> Result<Vec<TickTickProjectView>, String> {
-    let access = crate::keychain::get_ticktick_access_token()?;
-    let roles = load_settings().ticktick_project_roles;
-    let json = crate::ticktick::ReqwestTickTick
-        .get_json(
-            &format!("{}/project", crate::ticktick::TICKTICK_API),
-            Some(&access),
-        )
-        .map_err(|e| e)?;
-    let projects: Vec<serde_json::Value> =
-        serde_json::from_str(&json).map_err(|e| format!("projects json: {e}"))?;
-    Ok(projects
-        .into_iter()
-        .filter_map(|p| {
-            let id = p.get("id")?.as_str()?.to_string();
-            let name = p
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let role = roles.get(&id).cloned().unwrap_or_else(|| "ignore".into());
-            Some(TickTickProjectView { id, name, role })
-        })
-        .collect())
+pub async fn ticktick_tree(
+    refresh: Option<bool>,
+) -> Result<crate::ticktick::TickTickTree, String> {
+    tauri::async_runtime::spawn_blocking(move || ticktick_tree_blocking(refresh))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn ticktick_tree_blocking(
+    refresh: Option<bool>,
+) -> Result<crate::ticktick::TickTickTree, String> {
+    let now = now_secs();
+    if refresh.unwrap_or(false) {
+        let access = crate::keychain::get_ticktick_access_token()?;
+        let tree =
+            crate::ticktick::fetch_tree(&crate::ticktick::ReqwestTickTick::manual(), &access, now)?;
+        with_db(|conn| crate::ticktick::store_tree(conn, &tree).map_err(DbOpError::Fatal))?;
+        return Ok(tree);
+    }
+    with_db(|conn| {
+        Ok(crate::ticktick::load_tree(conn)
+            .map_err(DbOpError::Fatal)?
+            .unwrap_or_default())
+    })
 }
 
 #[cfg(test)]
@@ -2428,10 +2578,64 @@ mod tests {
         )
         .unwrap();
         let view =
-            build_week(&conn, "2026-09-11", 1_789_091_100).expect("open slot must not fail get_week");
+            build_week(&conn, "2026-09-11", "2026-09-11", 1_789_091_100).expect("open slot must not fail get_week");
         assert_eq!(view.unobserved, 0);
         assert_eq!(view.by_day.len(), 7);
         assert_eq!(view.by_hour.len(), 24);
+    }
+
+    /// 2026-09-07 is a Monday and 2026-09-13 the Sunday that closes it.
+    #[test]
+    fn build_week_anchor_selects_that_week_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let json =
+            r#"{"core":1800,"support":0,"admin":0,"side":0,"distraction":0,"away":0,"unobserved":0}"#;
+        for day in ["2026-09-09", "2026-09-16"] {
+            let start = start_of_named_day(day).unwrap() + 10 * 3600;
+            conn.execute(
+                "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json)
+                 VALUES (?1, ?2, 'final', 1800, ?3)",
+                params![day, start, json],
+            )
+            .unwrap();
+        }
+
+        // Today sits in the *later* week; the anchor must still pick the earlier one.
+        let earlier = build_week(&conn, "2026-09-09", "2026-09-16", 1_789_500_000).unwrap();
+        assert_eq!(earlier.core, 30);
+        assert_eq!(earlier.by_day.first().unwrap().day, "2026-09-07");
+        assert_eq!(earlier.by_day.last().unwrap().day, "2026-09-13");
+
+        let later = build_week(&conn, "2026-09-16", "2026-09-16", 1_789_500_000).unwrap();
+        assert_eq!(later.core, 30);
+        assert_eq!(later.by_day.first().unwrap().day, "2026-09-14");
+    }
+
+    /// The current week stops at today so a future day is never a missed day;
+    /// once the week is over the same anchor sees all seven days.
+    #[test]
+    fn build_week_current_week_stops_at_today() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let json =
+            r#"{"core":28800,"support":0,"admin":0,"side":0,"distraction":0,"away":0,"unobserved":0}"#;
+        let saturday = "2026-09-12";
+        let start = start_of_named_day(saturday).unwrap() + 10 * 3600;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json)
+             VALUES (?1, ?2, 'final', 28800, ?3)",
+            params![saturday, start, json],
+        )
+        .unwrap();
+
+        // Today is Friday 2026-09-11: the Saturday is still in the future.
+        let live = build_week(&conn, "2026-09-11", "2026-09-11", 1_789_400_000).unwrap();
+        assert_eq!(live.core, 0);
+
+        // Same week, read after it finished.
+        let whole = build_week(&conn, "2026-09-11", "2026-09-20", 1_789_400_000).unwrap();
+        assert_eq!(whole.core, 480);
     }
 
     #[test]
@@ -2448,7 +2652,7 @@ mod tests {
             params![day, slot_start, json],
         )
         .unwrap();
-        let view = build_week(&conn, day, slot_start).unwrap();
+        let view = build_week(&conn, day, day, slot_start).unwrap();
         assert_eq!(view.core, 30);
         assert_eq!(view.side, 15);
         assert_eq!(view.admin, 10);
@@ -2588,6 +2792,20 @@ mod tests {
     }
 
     #[test]
+    fn weekend_today_is_not_at_risk() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO days (day, settled_at, outcome) VALUES ('2026-09-11', 1, 'completed')",
+            [],
+        )
+        .unwrap();
+        let view = build_today(&conn, "2026-09-13", 0).unwrap();
+        assert!(!view.at_risk);
+        assert_eq!(view.streak, 1);
+    }
+
+    #[test]
     fn tray_appends_entertainment_minutes() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
@@ -2621,7 +2839,7 @@ mod tests {
             params![day, day_start + 10 * 3600, json],
         )
         .unwrap();
-        let view = build_week(&conn, day, day_start + 10 * 3600).unwrap();
+        let view = build_week(&conn, day, day, day_start + 10 * 3600).unwrap();
         assert_eq!(view.core, 8);
         assert_eq!(view.side, 7);
         assert_ne!(view.core, 15);
@@ -2837,5 +3055,8 @@ mod tests {
         assert_eq!(view.plan_marks[0].title, "A");
         assert_eq!(view.plan_marks[0].start, day_start + 10 * 3600);
         assert_eq!(view.plan_marks[0].end, day_start + 11 * 3600);
+        assert_eq!(view.ticktick_tasks.len(), 1);
+        assert_eq!(view.ticktick_tasks[0].title, "A");
+        assert_eq!(view.ticktick_tasks[0].role, "mainline");
     }
 }

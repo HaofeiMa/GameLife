@@ -1,37 +1,19 @@
-use keyring::Entry;
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 pub const KEYCHAIN_ACCOUNT: &str = "GameLife";
-pub const KEYCHAIN_SERVICE: &str = "ma.haofei.gamelife.openai";
-pub const KEYCHAIN_SERVICE_OPENCODE_GO: &str = "ma.haofei.gamelife.opencode-go";
-pub const KEYCHAIN_SERVICE_CUSTOM: &str = "ma.haofei.gamelife.custom";
-pub const KEYCHAIN_SERVICE_TICKTICK_TOKEN: &str = "ma.haofei.gamelife.ticktick";
-pub const KEYCHAIN_SERVICE_TICKTICK_SECRET: &str = "ma.haofei.gamelife.ticktick-secret";
-pub const KEYCHAIN_ACCOUNT_ACCESS: &str = "access";
-pub const KEYCHAIN_ACCOUNT_REFRESH: &str = "refresh";
+pub const KEYCHAIN_SERVICE: &str = "openai";
+pub const KEYCHAIN_SERVICE_OPENCODE_GO: &str = "opencode-go";
+pub const KEYCHAIN_SERVICE_CUSTOM: &str = "custom";
+pub const KEYCHAIN_SERVICE_TICKTICK_TOKEN: &str = "ticktick-access";
+pub const KEYCHAIN_SERVICE_TICKTICK_SECRET: &str = "ticktick-secret";
+pub const KEYCHAIN_ACCOUNT_ACCESS: &str = "ticktick-access";
+pub const KEYCHAIN_ACCOUNT_REFRESH: &str = "ticktick-refresh";
 
-fn entry(service: &str, account: &str) -> Result<Entry, String> {
-    Entry::new(service, account).map_err(|e| format!("keychain entry: {e}"))
-}
-
-fn get_password(service: &str, account: &str) -> Result<String, String> {
-    entry(service, account)?
-        .get_password()
-        .map_err(|e| format!("keychain read: {e}"))
-}
-
-fn set_password(service: &str, account: &str, value: &str) -> Result<(), String> {
-    entry(service, account)?
-        .set_password(value)
-        .map_err(|e| format!("keychain write: {e}"))
-}
-
-fn delete_password(service: &str, account: &str) -> Result<(), String> {
-    match entry(service, account)?.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(format!("keychain delete: {e}")),
-    }
-}
+static SECRETS_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn service_for_provider(id: &str) -> &'static str {
     match id {
@@ -41,20 +23,86 @@ pub fn service_for_provider(id: &str) -> &'static str {
     }
 }
 
+pub fn secrets_path() -> Result<PathBuf, String> {
+    let dir = crate::scheduler::app_support_dir().ok_or_else(|| "home dir".to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
+    Ok(dir.join("secrets.json"))
+}
+
+pub fn load_map(path: &Path) -> Result<BTreeMap<String, String>, String> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let data = fs::read_to_string(path).map_err(|e| format!("read secrets: {e}"))?;
+    if data.trim().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let value: Value =
+        serde_json::from_str(&data).map_err(|e| format!("secrets json: {e}"))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "secrets json: expected object".to_string())?;
+    let mut map = BTreeMap::new();
+    for (k, v) in obj {
+        if let Some(s) = v.as_str() {
+            map.insert(k.clone(), s.to_string());
+        }
+    }
+    Ok(map)
+}
+
+pub fn save_map(path: &Path, map: &BTreeMap<String, String>) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(map).map_err(|e| format!("json: {e}"))?;
+    fs::write(path, json).map_err(|e| format!("write secrets: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod: {e}"))?;
+    }
+    Ok(())
+}
+
+pub fn get_in(path: &Path, slot: &str) -> Result<String, String> {
+    let map = load_map(path)?;
+    map.get(slot)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("secret missing: {slot}"))
+}
+
+pub fn set_in(path: &Path, slot: &str, value: &str) -> Result<(), String> {
+    let mut map = load_map(path)?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        map.remove(slot);
+    } else {
+        map.insert(slot.to_string(), trimmed.to_string());
+    }
+    save_map(path, &map)
+}
+
+pub fn delete_in(path: &Path, slot: &str) -> Result<(), String> {
+    let mut map = load_map(path)?;
+    map.remove(slot);
+    save_map(path, &map)
+}
+
+fn with_store<T>(f: impl FnOnce(&Path) -> Result<T, String>) -> Result<T, String> {
+    let _guard = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = secrets_path()?;
+    f(&path)
+}
+
 pub fn get_provider_api_key(provider: &str) -> Result<String, String> {
-    let entry = Entry::new(service_for_provider(provider), KEYCHAIN_ACCOUNT)
-        .map_err(|e| format!("keychain entry: {e}"))?;
-    entry
-        .get_password()
-        .map_err(|e| format!("keychain read: {e}"))
+    with_store(|path| get_in(path, service_for_provider(provider)))
 }
 
 pub fn set_provider_api_key(provider: &str, key: &str) -> Result<(), String> {
-    let entry = Entry::new(service_for_provider(provider), KEYCHAIN_ACCOUNT)
-        .map_err(|e| format!("keychain entry: {e}"))?;
-    entry
-        .set_password(key)
-        .map_err(|e| format!("keychain write: {e}"))
+    with_store(|path| set_in(path, service_for_provider(provider), key))
 }
 
 pub fn get_openai_api_key() -> Result<String, String> {
@@ -66,36 +114,38 @@ pub fn set_openai_api_key(key: &str) -> Result<(), String> {
 }
 
 pub fn delete_openai_api_key() -> Result<(), String> {
-    delete_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+    with_store(|path| delete_in(path, KEYCHAIN_SERVICE))
 }
 
 pub fn get_ticktick_access_token() -> Result<String, String> {
-    get_password(KEYCHAIN_SERVICE_TICKTICK_TOKEN, KEYCHAIN_ACCOUNT_ACCESS)
+    with_store(|path| get_in(path, KEYCHAIN_ACCOUNT_ACCESS))
 }
 
 pub fn set_ticktick_access_token(v: &str) -> Result<(), String> {
-    set_password(KEYCHAIN_SERVICE_TICKTICK_TOKEN, KEYCHAIN_ACCOUNT_ACCESS, v)
+    with_store(|path| set_in(path, KEYCHAIN_ACCOUNT_ACCESS, v))
 }
 
 pub fn get_ticktick_refresh_token() -> Result<String, String> {
-    get_password(KEYCHAIN_SERVICE_TICKTICK_TOKEN, KEYCHAIN_ACCOUNT_REFRESH)
+    with_store(|path| get_in(path, KEYCHAIN_ACCOUNT_REFRESH))
 }
 
 pub fn set_ticktick_refresh_token(v: &str) -> Result<(), String> {
-    set_password(KEYCHAIN_SERVICE_TICKTICK_TOKEN, KEYCHAIN_ACCOUNT_REFRESH, v)
+    with_store(|path| set_in(path, KEYCHAIN_ACCOUNT_REFRESH, v))
 }
 
 pub fn get_ticktick_client_secret() -> Result<String, String> {
-    get_password(KEYCHAIN_SERVICE_TICKTICK_SECRET, KEYCHAIN_ACCOUNT)
+    with_store(|path| get_in(path, KEYCHAIN_SERVICE_TICKTICK_SECRET))
 }
 
 pub fn set_ticktick_client_secret(v: &str) -> Result<(), String> {
-    set_password(KEYCHAIN_SERVICE_TICKTICK_SECRET, KEYCHAIN_ACCOUNT, v)
+    with_store(|path| set_in(path, KEYCHAIN_SERVICE_TICKTICK_SECRET, v))
 }
 
 pub fn clear_ticktick_tokens() -> Result<(), String> {
-    delete_password(KEYCHAIN_SERVICE_TICKTICK_TOKEN, KEYCHAIN_ACCOUNT_ACCESS)?;
-    delete_password(KEYCHAIN_SERVICE_TICKTICK_TOKEN, KEYCHAIN_ACCOUNT_REFRESH)
+    with_store(|path| {
+        delete_in(path, KEYCHAIN_ACCOUNT_ACCESS)?;
+        delete_in(path, KEYCHAIN_ACCOUNT_REFRESH)
+    })
 }
 
 #[cfg(test)]
@@ -120,5 +170,39 @@ mod tests {
             KEYCHAIN_SERVICE_TICKTICK_SECRET,
             KEYCHAIN_SERVICE_TICKTICK_TOKEN
         );
+    }
+
+    #[test]
+    fn file_store_roundtrip_keeps_sibling_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        assert!(get_in(&path, "openai").is_err());
+        set_in(&path, "openai", "sk-test").unwrap();
+        assert_eq!(get_in(&path, "openai").unwrap(), "sk-test");
+        set_in(&path, "opencode-go", "oc-test").unwrap();
+        assert_eq!(get_in(&path, "openai").unwrap(), "sk-test");
+        assert_eq!(get_in(&path, "opencode-go").unwrap(), "oc-test");
+        delete_in(&path, "openai").unwrap();
+        assert!(get_in(&path, "openai").is_err());
+        assert_eq!(get_in(&path, "opencode-go").unwrap(), "oc-test");
+    }
+
+    #[test]
+    fn file_store_treats_blank_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        set_in(&path, "openai", "  ").unwrap();
+        assert!(get_in(&path, "openai").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_store_is_mode_600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        set_in(&path, "openai", "sk-test").unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

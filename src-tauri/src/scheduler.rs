@@ -14,7 +14,7 @@ use gamelife_core::{
     default_distraction_rules, default_v01, early_start_anchor, early_start_coins_for_local_secs,
     heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity,
     new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
-    recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
+    recompute_streak, schedule_capture, settle_outcome, slot_end_exclusive, slot_start,
     spans_for_slot, ticktick_judgment_set, vision_quest_label, apply_category_match,
     apply_task_match, parse_category_match_json, parse_task_match_json, deltas_from_slot,
     CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest,
@@ -322,10 +322,13 @@ pub fn ensure_slot(
 }
 
 pub fn maybe_refresh_ticktick_cache(conn: &Connection) {
+    if cfg!(test) {
+        return;
+    }
     let Ok(access) = crate::keychain::get_ticktick_access_token() else {
         return;
     };
-    let fetched = crate::ticktick::cache_fetched_at_max(conn).ok().flatten();
+    let fetched = crate::ticktick::ticktick_fetched_at(conn).ok().flatten();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -341,14 +344,20 @@ pub fn maybe_refresh_ticktick_cache(conn: &Connection) {
             return;
         }
     }
-    let roles = crate::config::load_settings().ticktick_project_roles;
-    match crate::ticktick::sync_projects(
-        &crate::ticktick::ReqwestTickTick,
+    if !crate::ticktick::try_begin_ticktick_sync() {
+        return;
+    }
+    let roles = crate::config::load_settings();
+    let maps = crate::ticktick::TickTickRoleMaps::from_settings(&roles);
+    let result = crate::ticktick::sync_projects(
+        &crate::ticktick::ReqwestTickTick::slot_start(),
         conn,
-        &roles,
+        &maps,
         &access,
         now,
-    ) {
+    );
+    crate::ticktick::end_ticktick_sync();
+    match result {
         Ok(_) => {}
         Err(e) => {
             if e == "429" {
@@ -475,12 +484,6 @@ pub fn fill_heartbeat_unobserved(
             let secs = overlap_end - t;
             if secs > 0 {
                 let day = day_str_for_ts(ss);
-                if let Ok(date) = parse_day(&day) {
-                    if !is_weekday(date) {
-                        t = overlap_end;
-                        continue;
-                    }
-                }
                 let rng = slot_rng(&day, ss);
                 add_unobserved_secs(conn, &day, ss, secs, rng)?;
             }
@@ -1647,11 +1650,12 @@ pub fn settle_day(
         apply_capture_retention(conn, day, ss, retention, "unknown")?;
     }
     let credited = day_total_credited(conn, day)?;
-    let outcome = if credited >= i64::try_from(CHEST_SECS).unwrap_or(i64::MAX) {
-        "completed"
-    } else {
-        "failed"
-    };
+    let date = parse_day(day)?;
+    let computed = settle_outcome(
+        credited,
+        i64::try_from(CHEST_SECS).unwrap_or(i64::MAX),
+        is_weekday(date),
+    );
     let existing: Option<String> = conn
         .query_row(
             "SELECT outcome FROM days WHERE day = ?1",
@@ -1661,9 +1665,14 @@ pub fn settle_day(
         .optional()
         .map_err(map_rusqlite)?;
     let final_outcome = if existing.as_deref() == Some("protected") {
-        "protected"
+        Some("protected")
     } else {
-        outcome
+        match computed {
+            Some(DayOutcome::Completed) => Some("completed"),
+            Some(DayOutcome::Protected) => Some("protected"),
+            Some(DayOutcome::Failed) => Some("failed"),
+            None => None,
+        }
     };
     conn.execute(
         "INSERT INTO days (day, settled_at, outcome) VALUES (?1, ?2, ?3)
@@ -1847,11 +1856,7 @@ pub fn end_today(
 }
 
 pub fn sampling_allowed(conn: &Connection, day: &str) -> Result<bool, DbOpError> {
-    if day_is_settled(conn, day)? {
-        return Ok(false);
-    }
-    let date = parse_day(day)?;
-    Ok(is_weekday(date))
+    Ok(!day_is_settled(conn, day)?)
 }
 
 fn category_to_dominant(category: &str) -> Dominant {
@@ -3534,11 +3539,54 @@ mod tests {
     }
 
     #[test]
-    fn sampling_not_allowed_on_weekend() {
+    fn sampling_allowed_on_weekend_until_settled() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        assert!(!sampling_allowed(&conn, "2026-09-12").unwrap());
+        assert!(sampling_allowed(&conn, "2026-09-12").unwrap());
+        assert!(sampling_allowed(&conn, "2026-09-13").unwrap());
         assert!(sampling_allowed(&conn, "2026-09-11").unwrap());
+    }
+
+    #[test]
+    fn settle_weekend_miss_has_no_failed_outcome() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-12";
+        settle_day(&mut conn, day, 1, ScreenshotRetention::None).unwrap();
+        let outcome: Option<String> = conn
+            .query_row(
+                "SELECT outcome FROM days WHERE day = ?1",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outcome, None);
+        let settled: i64 = conn
+            .query_row(
+                "SELECT settled_at FROM days WHERE day = ?1",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(settled > 0);
+        assert!(!sampling_allowed(&conn, day).unwrap());
+        assert!(list_freeze_candidates(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fill_unobserved_covers_weekend() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let sat = start_of_named_day("2026-09-12").expect("saturday");
+        fill_heartbeat_unobserved(&conn, sat, sat + 600).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM slots WHERE day = '2026-09-12'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(n > 0);
     }
 
     #[test]
