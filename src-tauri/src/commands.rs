@@ -8,8 +8,8 @@ use tauri::State;
 
 use gamelife_core::{
     distraction_runs, first_core_hour, format_estimated_minutes, hit_rate, is_weekday,
-    judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line,
-    parse_task_snapshot_json, sum_activity, validate_lists, wow_delta, xp_shop_unlocked, ListRole,
+    judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line, sum_activity,
+    validate_lists, wow_delta, xp_shop_unlocked, ListRole,
     ParseContext, Policy, QuestDraft, Task, TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
     PRESET_MAINLINE_ID, SLOT_SECS,
 };
@@ -1290,7 +1290,6 @@ fn load_plan_marks(
     conn: &Connection,
     day_start: i64,
     day_end: i64,
-    slots: &[TodaySlot],
 ) -> Result<Vec<PlanMark>, DbOpError> {
     let cache = crate::ticktick::load_ticktick_cache(conn)?;
     let mut by_id: BTreeMap<String, PlanMark> = BTreeMap::new();
@@ -1305,33 +1304,6 @@ fn load_plan_marks(
             day_end,
         );
     }
-    for slot in slots {
-        let Some(raw) = slot.task_snapshot_json.as_deref() else {
-            continue;
-        };
-        if raw.trim().is_empty() {
-            continue;
-        }
-        let Ok(snaps) = parse_task_snapshot_json(raw) else {
-            continue;
-        };
-        for snap in snaps {
-            if by_id.contains_key(&snap.id) {
-                continue;
-            }
-            if let Some(task) = cache.iter().find(|t| t.id == snap.id) {
-                insert_plan_mark(
-                    &mut by_id,
-                    task.id.clone(),
-                    task.start,
-                    task.end,
-                    task.title.clone(),
-                    day_start,
-                    day_end,
-                );
-            }
-        }
-    }
     Ok(by_id.into_values().collect())
 }
 
@@ -1341,7 +1313,7 @@ fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
     let day_end = end_of_local_day(day_start);
     let slots = load_today_slots(conn, day)?;
     let pending_count = slots.iter().filter(|s| s.pending).count() as i64;
-    let plan_marks = load_plan_marks(conn, day_start, day_end, &slots)?;
+    let plan_marks = load_plan_marks(conn, day_start, day_end)?;
     Ok(DayView {
         day: day.to_string(),
         day_start,

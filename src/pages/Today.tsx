@@ -17,8 +17,12 @@ import {
 } from "../lib/api";
 import {
   addDays,
+  consumeStoredCalDay,
   dominantLabel,
+  peekStoredCalDay,
+  pendingActivityMinutes,
   planMarksFromSnapshots,
+  resolvedActivityMinutes,
   roleClass,
   weekdayLabel,
 } from "../lib/calendar";
@@ -49,7 +53,6 @@ const HOURS = Array.from({ length: 24 }, (_, h) => h);
 const SLOT_PX = 14;
 const SLOT_COUNT = 96;
 const GOAL_MINUTES = 480;
-const CAL_DAY_KEY = "gl-cal-day";
 
 function hm(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString("zh-CN", {
@@ -57,27 +60,6 @@ function hm(ts: number): string {
     minute: "2-digit",
     hour12: false,
   });
-}
-
-function activityTotal(a: SlotActivityMinutes): number {
-  return a.core + a.support + a.admin + a.side + a.distraction + a.away + a.unobserved;
-}
-
-function pendingMinutesOf(slots: TodaySlot[]): number {
-  return slots.filter((s) => s.pending).reduce((n, s) => n + activityTotal(s.activity), 0);
-}
-
-function readStoredCalDay(): string | null {
-  try {
-    const stored = window.localStorage.getItem(CAL_DAY_KEY);
-    if (stored) {
-      window.localStorage.removeItem(CAL_DAY_KEY);
-      return stored;
-    }
-  } catch {
-    /* ignore quota / private mode */
-  }
-  return null;
 }
 
 function StreakRing({ streak, atRisk }: { streak: number; atRisk: boolean }) {
@@ -209,7 +191,9 @@ function SlotReview({
 export function Today() {
   const [data, setData] = useState<TodayView | null>(null);
   const [dayView, setDayView] = useState<DayView | null>(null);
-  const [calDay, setCalDay] = useState<string | null>(readStoredCalDay);
+  const [calDay, setCalDay] = useState<string | null>(() =>
+    peekStoredCalDay(window.localStorage),
+  );
   const [error, setError] = useState<string | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -239,6 +223,10 @@ export function Today() {
   }, [calDay]);
 
   useEffect(() => {
+    consumeStoredCalDay(window.localStorage);
+  }, []);
+
+  useEffect(() => {
     void refresh();
     const id = setInterval(() => void refresh(), 30_000);
     return () => clearInterval(id);
@@ -248,6 +236,11 @@ export function Today() {
     const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 15_000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    setSelected(null);
+    setOpenApp(null);
+  }, [calDay]);
 
   async function handleEndToday() {
     setBusy(true);
@@ -307,10 +300,10 @@ export function Today() {
   const showNow = calDay === data.day;
   const nowOffset = Math.min(SLOT_COUNT * SLOT_PX, Math.max(0, ((now - dayStart) / 900) * SLOT_PX));
   const isTodayCal = calDay === data.day;
-  const activity = isTodayCal ? data.activity : dayView.activity;
+  const activity = resolvedActivityMinutes(dayView.slots);
   const appTop: AppTopRow[] = isTodayCal ? data.appTop : dayView.appTop;
   const pendingCount = isTodayCal ? data.pendingCount : dayView.pendingCount;
-  const pendingMinutes = pendingMinutesOf(dayView.slots);
+  const pendingMinutes = pendingActivityMinutes(dayView.slots);
   const catMax = Math.max(
     1,
     ...CAT_ROWS.map((c) => activity[c.key]),
@@ -380,7 +373,7 @@ export function Today() {
 
       <section className="today-report-card">
         <h3>类别</h3>
-        <p className="muted">跨槽求和 activity 分钟，不是 dominant × 15。</p>
+        <p className="muted">跨槽求和各类分钟；待复核单独计，不含进其他类别。</p>
         {emptyDay && <p className="muted">这一天没有监测记录</p>}
         <ul className="today-cat-list">
           {CAT_ROWS.map((c) => {

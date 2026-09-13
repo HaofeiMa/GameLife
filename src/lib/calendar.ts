@@ -29,6 +29,72 @@ export function planBlocks(tasks: PlanTask[], dayStart: number): PlanBlock[] {
     .filter((b) => b.rowStart < 96 && b.rowSpan > 0);
 }
 
+export const CAL_DAY_KEY = "gl-cal-day";
+
+export type ActivityMinutes = {
+  core: number;
+  support: number;
+  admin: number;
+  side: number;
+  distraction: number;
+  away: number;
+  unobserved: number;
+};
+
+const EMPTY_ACTIVITY: ActivityMinutes = {
+  core: 0,
+  support: 0,
+  admin: 0,
+  side: 0,
+  distraction: 0,
+  away: 0,
+  unobserved: 0,
+};
+
+export function peekStoredCalDay(storage: Pick<Storage, "getItem">): string | null {
+  try {
+    return storage.getItem(CAL_DAY_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function consumeStoredCalDay(storage: Pick<Storage, "removeItem">): void {
+  try {
+    storage.removeItem(CAL_DAY_KEY);
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+function activityTotal(a: ActivityMinutes): number {
+  return a.core + a.support + a.admin + a.side + a.distraction + a.away + a.unobserved;
+}
+
+export function resolvedActivityMinutes(
+  slots: { pending: boolean; activity: ActivityMinutes }[],
+): ActivityMinutes {
+  return slots.reduce((acc, slot) => {
+    if (slot.pending) return acc;
+    const a = slot.activity;
+    return {
+      core: acc.core + a.core,
+      support: acc.support + a.support,
+      admin: acc.admin + a.admin,
+      side: acc.side + a.side,
+      distraction: acc.distraction + a.distraction,
+      away: acc.away + a.away,
+      unobserved: acc.unobserved + a.unobserved,
+    };
+  }, { ...EMPTY_ACTIVITY });
+}
+
+export function pendingActivityMinutes(
+  slots: { pending: boolean; activity: ActivityMinutes }[],
+): number {
+  return slots.filter((s) => s.pending).reduce((n, s) => n + activityTotal(s.activity), 0);
+}
+
 export function planMarksFromSnapshots(
   tasks: { start: number | null; end: number | null; title: string }[],
   dayStart: number,
