@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use gamelife_core::{default_reading_apps, default_trusted_apps};
+use gamelife_core::{default_reading_apps, default_trusted_apps, CategoryGuides};
 
 use crate::scheduler::{app_support_dir, ScreenshotRetention};
 
@@ -37,6 +37,16 @@ pub struct AppSettings {
     pub fallback_provider: String,
     #[serde(default = "default_vision_providers")]
     pub vision_providers: Vec<VisionProviderSettings>,
+    #[serde(default = "default_true")]
+    pub show_rail_labels: bool,
+    #[serde(default)]
+    pub admin_apps: Vec<String>,
+    #[serde(default)]
+    pub category_guides: CategoryGuides,
+    #[serde(default)]
+    pub ticktick_client_id: String,
+    #[serde(default)]
+    pub ticktick_project_roles: std::collections::BTreeMap<String, String>,
 }
 
 fn default_primary_provider() -> String {
@@ -45,6 +55,10 @@ fn default_primary_provider() -> String {
 
 fn default_fallback_provider() -> String {
     PROVIDER_OPENAI.into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub fn default_vision_providers() -> Vec<VisionProviderSettings> {
@@ -86,6 +100,11 @@ pub fn default_settings() -> AppSettings {
         primary_provider: default_primary_provider(),
         fallback_provider: default_fallback_provider(),
         vision_providers: default_vision_providers(),
+        show_rail_labels: true,
+        admin_apps: vec![],
+        category_guides: CategoryGuides::default(),
+        ticktick_client_id: String::new(),
+        ticktick_project_roles: std::collections::BTreeMap::new(),
     }
 }
 
@@ -173,5 +192,16 @@ mod tests {
             .unwrap();
         assert_eq!(go.base_url, "https://opencode.ai/zen/go/v1");
         assert_eq!(go.model, "deepseek-v4-flash-vision-exp");
+    }
+
+    #[test]
+    fn old_config_json_defaults_rail_labels_true() {
+        let parsed: AppSettings = serde_json::from_str(
+            r#"{"screenshotRetention":"none","sampleKeepDays":7,"loginAtStartup":true,"trustedApps":[],"distractionRules":[],"sideProjectRules":[],"readingApps":[],"neverCaptureApps":[]}"#,
+        )
+        .unwrap();
+        assert!(parsed.show_rail_labels);
+        assert!(parsed.admin_apps.is_empty());
+        assert!(parsed.ticktick_client_id.is_empty());
     }
 }

@@ -159,6 +159,13 @@ export interface VisionProviderSettings {
   model: string;
 }
 
+export interface CategoryGuides {
+  mainline: string;
+  side: string;
+  admin: string;
+  entertainment: string;
+}
+
 export interface AppSettings {
   screenshotRetention: string;
   sampleKeepDays: number;
@@ -171,6 +178,11 @@ export interface AppSettings {
   primaryProvider: string;
   fallbackProvider: string;
   visionProviders: VisionProviderSettings[];
+  showRailLabels: boolean;
+  adminApps: string[];
+  categoryGuides: CategoryGuides;
+  ticktickClientId: string;
+  ticktickProjectRoles: Record<string, string>;
 }
 
 export interface ProviderKeyStatus {
