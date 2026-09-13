@@ -15,8 +15,8 @@ use gamelife_core::{
     heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity,
     new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
     recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
-    spans_for_slot, ticktick_judgment_set, vision_quest_label, apply_task_match,
-    parse_task_match_json,
+    spans_for_slot, ticktick_judgment_set, vision_quest_label, apply_category_match,
+    apply_task_match, parse_category_match_json, parse_task_match_json,
     CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest,
     QuestDraft, QuestListError,
     Sample, TASK_MATCH_MIN, TaskSnapshot, VisionContext, CHEST_SECS,
@@ -25,7 +25,7 @@ use gamelife_core::{
 use crate::db::{app_db_path, insert_ledger, migrate, open};
 use crate::db_error::{map_rusqlite, DbOpError};
 use crate::resolve::resolve_slot;
-use crate::text_ai::{call_text_task_match, sample_summary_lines, SampleLine};
+use crate::text_ai::{build_text_ai_prompt, call_text_json, sample_summary_lines, SampleLine};
 use crate::vision;
 
 const LOW_INPUT_IDLE_SECS: i64 = 180;
@@ -1367,10 +1367,18 @@ pub fn finalize_slot_end(
             Dominant::PendingReview | Dominant::Unknown
         );
     let mut matched_text = false;
-    if gray && !tasks.is_empty() && !summary.is_empty() {
+    if gray && !summary.is_empty() {
         if let Some(ep) = primary.as_ref().or(fallback.as_ref()) {
-            if let Ok(raw) = call_text_task_match(ep, &tasks, &summary) {
-                if let Ok(Some(m)) = parse_task_match_json(&raw, &tasks) {
+            let prompt = build_text_ai_prompt(&tasks, &policy.category_guides, &policy, &summary);
+            if let Ok(raw) = call_text_json(ep, &prompt) {
+                if tasks.is_empty() {
+                    if let Ok(Some(m)) = parse_category_match_json(&raw) {
+                        if m.confidence >= TASK_MATCH_MIN {
+                            output = apply_category_match(output, &evidence, &m);
+                            matched_text = true;
+                        }
+                    }
+                } else if let Ok(Some(m)) = parse_task_match_json(&raw, &tasks) {
                     if m.confidence >= TASK_MATCH_MIN {
                         output = apply_task_match(output, &evidence, &m);
                         matched_text = true;
