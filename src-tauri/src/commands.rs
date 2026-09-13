@@ -554,7 +554,7 @@ fn load_redemptions(conn: &Connection, now: i64) -> Result<Vec<RedemptionView>, 
              LEFT JOIN wishes w ON r.wish_id = w.id
              LEFT JOIN ledger l ON l.reward_event_key = 'shop_spend:' || r.redemption_id
              LEFT JOIN entertainment_sessions s ON s.redemption_id = r.redemption_id
-             ORDER BY r.ts DESC LIMIT 20",
+             ORDER BY r.ts DESC LIMIT 30",
         )
         .map_err(crate::db_error::map_rusqlite)?;
     let rows = stmt
@@ -2512,6 +2512,26 @@ mod tests {
         assert_eq!(rows[1].status, "—");
         let ended = load_redemptions(&conn, 200).unwrap();
         assert_eq!(ended[0].status, "已结束");
+    }
+
+    #[test]
+    fn load_redemptions_keeps_the_last_30() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        insert_wish(&conn, "w1", "奶茶", "coin", 32, None).unwrap();
+        for i in 1..=31 {
+            conn.execute(
+                "INSERT INTO redemptions (redemption_id, wish_id, ts, name, duration_minutes)
+                 VALUES (?1, 'w1', ?2, '奶茶', NULL)",
+                params![format!("r{i}"), i],
+            )
+            .unwrap();
+        }
+        let rows = load_redemptions(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 30);
+        assert_eq!(rows[0].id, "r31");
+        assert_eq!(rows[29].id, "r2");
+        assert!(rows.iter().all(|r| r.id != "r1"));
     }
 
     #[test]
