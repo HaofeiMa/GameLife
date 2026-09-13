@@ -1116,12 +1116,6 @@ button.danger {
   color: #6b7280;
 }
 
-.week-play-line-swatch {
-  background: var(--gl-play);
-  height: 3px;
-  border-radius: 99px;
-}
-
 .week-heat-swatch.empty {
   color: #9ca3af;
 }

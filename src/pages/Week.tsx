@@ -17,6 +17,13 @@ import {
 } from "../lib/api";
 import { addDays } from "../lib/calendar";
 import { calendarCells, monthHeatCell } from "../lib/monthGrid";
+import {
+  dayStackCaption,
+  monthShowsLedgerCards,
+  weekHasObservation,
+  weekRangeLabel,
+  weekRangePagingEnabled,
+} from "../lib/statsView";
 import { heatTone } from "../lib/weekHeat";
 
 type Segment = "week" | "month" | "rhythm" | "app";
@@ -245,15 +252,11 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
   return (
     <section className="week-card">
       <h3>按天</h3>
-      <p className="muted">工作日主线 / 支线 / 杂项堆叠。娱乐不进主线柱。周末显示未采样，不是 0 主线。</p>
+      <p className="muted">工作日主线 / 支线 / 杂项堆叠。周末显示未采样，不是 0 主线。无堆叠分钟标 —，不是假 0。</p>
       <div className="week-legend">
         <span><i className="week-swatch" style={{ background: "var(--gl-mainline)" }} />主线</span>
         <span><i className="week-swatch" style={{ background: "var(--gl-side)" }} />支线</span>
         <span><i className="week-swatch" style={{ background: "var(--gl-chore)" }} />杂项</span>
-        <span>
-          <i className="week-swatch week-play-line-swatch" />
-          娱乐（不计入堆叠）
-        </span>
       </div>
       <div className="week-day-chart">
         {days.map((d, i) => {
@@ -288,7 +291,7 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
                   </>
                 )}
               </div>
-              <strong>{weekend ? "未采样" : `${total}m`}</strong>
+              <strong>{dayStackCaption(weekend, total)}</strong>
               <span>{weekdayLabel(d.day, i)}</span>
             </div>
           );
@@ -808,16 +811,17 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
 
   const currentMonday = isoMonday(todayDay);
   const viewMonday = isoMonday(weekAnchor);
-  const weekIsCurrent = viewMonday === currentMonday;
   const thisMonth = {
     year: Number(todayDay.slice(0, 4)),
     month: Number(todayDay.slice(5, 7)),
   };
+  const canPage = weekRangePagingEnabled(segment);
   const atCurrentWeek = viewMonday >= currentMonday;
   const atCurrentMonth =
     monthYear > thisMonth.year || (monthYear === thisMonth.year && monthNum >= thisMonth.month);
 
   function goPrev() {
+    if (!canPage) return;
     if (effectiveKind === "week") {
       setWeekAnchor(addDays(isoMonday(weekAnchor), -7));
     } else {
@@ -828,6 +832,7 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
   }
 
   function goNext() {
+    if (!canPage) return;
     if (effectiveKind === "week") {
       if (atCurrentWeek) return;
       setWeekAnchor(addDays(isoMonday(weekAnchor), 7));
@@ -840,15 +845,18 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
   }
 
   function goHere() {
+    if (!canPage) return;
     setWeekAnchor(todayDay);
     setMonthYear(thisMonth.year);
     setMonthNum(thisMonth.month);
   }
 
   const rangeText =
-    effectiveKind === "week"
-      ? `${isoMonday(weekAnchor)} 至 ${isoSunday(weekAnchor)}`
-      : `${monthYear}年${monthNum}月`;
+    segment === "week"
+      ? weekRangeLabel(weekData?.byDay ?? [], isoMonday(todayDay), isoSunday(todayDay))
+      : effectiveKind === "week"
+        ? `${isoMonday(weekAnchor)} 至 ${isoSunday(weekAnchor)}`
+        : `${monthYear}年${monthNum}月`;
 
   if (error) {
     return (
@@ -861,8 +869,7 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
     );
   }
 
-  const weekEmpty =
-    !weekData || !weekIsCurrent || minutesOfWeek(weekData) === 0;
+  const weekEmpty = !weekData || !weekHasObservation(minutesOfWeek(weekData));
   const monthEmpty = !monthData || activityTotal(monthData.activity) === 0;
 
   return (
@@ -900,22 +907,24 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
             </button>
           </div>
         )}
-        <div className="stats-range">
-          <button type="button" aria-label="上一段" onClick={goPrev}>
-            ‹
-          </button>
-          <button type="button" className="stats-range-here" onClick={goHere}>
-            {effectiveKind === "week" ? "本周" : "本月"}
-          </button>
-          <button
-            type="button"
-            aria-label="下一段"
-            onClick={goNext}
-            disabled={effectiveKind === "week" ? atCurrentWeek : atCurrentMonth}
-          >
-            ›
-          </button>
-        </div>
+        {canPage && (
+          <div className="stats-range">
+            <button type="button" aria-label="上一段" onClick={goPrev}>
+              ‹
+            </button>
+            <button type="button" className="stats-range-here" onClick={goHere}>
+              {effectiveKind === "week" ? "本周" : "本月"}
+            </button>
+            <button
+              type="button"
+              aria-label="下一段"
+              onClick={goNext}
+              disabled={effectiveKind === "week" ? atCurrentWeek : atCurrentMonth}
+            >
+              ›
+            </button>
+          </div>
+        )}
       </header>
       <p className="muted stats-range-label">{rangeText}</p>
 
@@ -958,7 +967,7 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
               days={monthData.days}
               onPickDay={onPickDay}
             />
-            {monthEmpty ? null : (
+            {monthShowsLedgerCards(!monthEmpty) && (
               <CategoryPanel
                 rows={MONTH_CATEGORIES.map((c) => ({
                   key: c.key,
@@ -969,7 +978,9 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
                 observed={observedMinutes(monthData.activity)}
               />
             )}
-            <MonthExtras data={monthData} streak={streak} />
+            {monthShowsLedgerCards(!monthEmpty) && (
+              <MonthExtras data={monthData} streak={streak} />
+            )}
           </div>
         </>
       )}
