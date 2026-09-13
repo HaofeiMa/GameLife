@@ -12,6 +12,7 @@ pub mod ledger;
 pub mod observe;
 pub mod policy;
 pub mod quest;
+pub mod reports;
 pub mod shop;
 pub mod streak;
 pub mod task;
@@ -83,3 +84,4 @@ pub use vision_ctx::{
     is_protected_frontmost, sanitize_vision_context, activity_summary_for_vision,
 };
 pub use weekly::sum_activity;
+pub use reports::{distraction_runs, first_core_hour, hit_rate, month_heat_cell, wow_delta};

@@ -108,6 +108,15 @@ export interface TodayView {
   lists: TaskListView[];
   tasks: TaskView[];
   coinBalance: number;
+  activity: SlotActivityMinutes;
+  appTop: AppTopRow[];
+  pendingCount: number;
+}
+
+export interface AppTopRow {
+  name: string;
+  minutes: number;
+  dominant: string;
 }
 
 export interface WeekDayRow {
@@ -143,6 +152,64 @@ export interface WeekView {
   byHour: WeekHourRow[];
   coreLabel: string;
   creditedTodayMinutes: number;
+  coreHours: number;
+  wowCoreDeltaMinutes: number | null;
+  distractionObservedRatio: number;
+  pendingOverResolved: number;
+  daysGe6h: number;
+  daysGe8h: number;
+}
+
+export interface MonthDayCell {
+  day: string;
+  creditedCore: number;
+  isWeekend: boolean;
+  isFuture: boolean;
+}
+
+export interface MonthReportView {
+  days: MonthDayCell[];
+  activity: SlotActivityMinutes;
+  coinsEarned: number;
+  coinsSpent: number;
+  xpEarned: number;
+  goldDays: number;
+  freezeCount: number;
+  completedDays: number;
+}
+
+export interface RhythmStartHour {
+  day: string;
+  hour: number | null;
+}
+
+export interface RhythmReportView {
+  startHours: RhythmStartHour[];
+  rate6h: number;
+  rate8h: number;
+  distractionRunCount: number;
+  distractionRunSlots: number;
+  peakHours: number[];
+}
+
+export interface AppReportRow {
+  name: string;
+  minutes: number;
+  dominant: string;
+  listedAs: string;
+}
+
+export interface HostReportRow {
+  host: string;
+  minutes: number;
+  dominant: string;
+}
+
+export interface AppReportView {
+  apps: AppReportRow[];
+  newcomers: string[];
+  hosts: HostReportRow[];
+  protectedMinutes: number;
 }
 
 export interface WishView {
@@ -202,6 +269,9 @@ export interface DayView {
   dayStart: number;
   tasks: TaskView[];
   slots: TodaySlot[];
+  activity: SlotActivityMinutes;
+  appTop: AppTopRow[];
+  pendingCount: number;
 }
 
 export function getToday(): Promise<TodayView> {
@@ -214,6 +284,18 @@ export function getDayView(day: string): Promise<DayView> {
 
 export function getWeek(): Promise<WeekView> {
   return invoke("get_week");
+}
+
+export function getMonthReport(year: number, month: number): Promise<MonthReportView> {
+  return invoke("get_month_report", { year, month });
+}
+
+export function getRhythmReport(kind: "week" | "month", anchor: string): Promise<RhythmReportView> {
+  return invoke("get_rhythm_report", { kind, anchor });
+}
+
+export function getAppReport(kind: "week" | "month", anchor: string): Promise<AppReportView> {
+  return invoke("get_app_report", { kind, anchor });
 }
 
 export function setQuests(quests: QuestView[]): Promise<void> {

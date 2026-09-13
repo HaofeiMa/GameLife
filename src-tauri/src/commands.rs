@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike};
@@ -6,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use gamelife_core::{
-    format_estimated_minutes, judgment_tasks, matched_quest_index, matches_app_identity,
-    parse_task_line, sum_activity, validate_lists, xp_shop_unlocked, ListRole, ParseContext, QuestDraft,
-    Task, TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS, PRESET_MAINLINE_ID,
+    distraction_runs, first_core_hour, format_estimated_minutes, hit_rate, is_weekday,
+    judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line, sum_activity,
+    validate_lists, wow_delta, xp_shop_unlocked, ListRole, ParseContext, Policy, QuestDraft, Task,
+    TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS, PRESET_MAINLINE_ID,
 };
 use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
@@ -173,6 +175,14 @@ pub struct RedemptionView {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AppTopRow {
+    pub name: String,
+    pub minutes: i64,
+    pub dominant: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TodayView {
     pub day: String,
     pub quests: Vec<QuestView>,
@@ -198,6 +208,9 @@ pub struct TodayView {
     pub lists: Vec<TaskListView>,
     pub tasks: Vec<TaskView>,
     pub coin_balance: i64,
+    pub activity: SlotActivityMinutes,
+    pub app_top: Vec<AppTopRow>,
+    pub pending_count: i64,
 }
 
 #[derive(Serialize)]
@@ -207,6 +220,9 @@ pub struct DayView {
     pub day_start: i64,
     pub tasks: Vec<TaskView>,
     pub slots: Vec<TodaySlot>,
+    pub activity: SlotActivityMinutes,
+    pub app_top: Vec<AppTopRow>,
+    pub pending_count: i64,
 }
 
 #[derive(Serialize)]
@@ -262,6 +278,78 @@ pub struct WeekView {
     pub by_hour: Vec<WeekHourRow>,
     pub core_label: String,
     pub credited_today_minutes: i64,
+    pub core_hours: f64,
+    pub wow_core_delta_minutes: Option<i64>,
+    pub distraction_observed_ratio: f64,
+    pub pending_over_resolved: f64,
+    pub days_ge_6h: i64,
+    pub days_ge_8h: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthDayCell {
+    pub day: String,
+    pub credited_core: i64,
+    pub is_weekend: bool,
+    pub is_future: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthReportView {
+    pub days: Vec<MonthDayCell>,
+    pub activity: SlotActivityMinutes,
+    pub coins_earned: i64,
+    pub coins_spent: i64,
+    pub xp_earned: i64,
+    pub gold_days: i64,
+    pub freeze_count: i64,
+    pub completed_days: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RhythmStartHour {
+    pub day: String,
+    pub hour: Option<i32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RhythmReportView {
+    pub start_hours: Vec<RhythmStartHour>,
+    pub rate_6h: f64,
+    pub rate_8h: f64,
+    pub distraction_run_count: i64,
+    pub distraction_run_slots: i64,
+    pub peak_hours: Vec<i32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppReportRow {
+    pub name: String,
+    pub minutes: i64,
+    pub dominant: String,
+    pub listed_as: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostReportRow {
+    pub host: String,
+    pub minutes: i64,
+    pub dominant: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppReportView {
+    pub apps: Vec<AppReportRow>,
+    pub newcomers: Vec<String>,
+    pub hosts: Vec<HostReportRow>,
+    pub protected_minutes: i64,
 }
 
 #[derive(Serialize)]
@@ -504,6 +592,426 @@ fn week_start_for(date: NaiveDate) -> NaiveDate {
     date - chrono::Duration::days(offset as i64)
 }
 
+fn day_str(date: NaiveDate) -> String {
+    date.format("%Y-%m-%d").to_string()
+}
+
+fn parse_anchor(anchor: &str) -> Result<NaiveDate, DbOpError> {
+    NaiveDate::parse_from_str(anchor, "%Y-%m-%d")
+        .map_err(|_| DbOpError::Rejected("bad_anchor".into()))
+}
+
+#[derive(Clone, Copy)]
+enum ReportSpan {
+    Week,
+    Month,
+}
+
+fn parse_report_kind(kind: &str) -> Result<ReportSpan, DbOpError> {
+    match kind {
+        "week" => Ok(ReportSpan::Week),
+        "month" => Ok(ReportSpan::Month),
+        _ => Err(DbOpError::Rejected("bad_kind".into())),
+    }
+}
+
+fn span_bounds(kind: ReportSpan, anchor: NaiveDate) -> (NaiveDate, NaiveDate) {
+    match kind {
+        ReportSpan::Week => {
+            let start = week_start_for(anchor);
+            (start, start + chrono::Duration::days(6))
+        }
+        ReportSpan::Month => {
+            let start = NaiveDate::from_ymd_opt(anchor.year(), anchor.month(), 1)
+                .unwrap_or(anchor);
+            let end = if anchor.month() == 12 {
+                NaiveDate::from_ymd_opt(anchor.year() + 1, 1, 1).unwrap()
+                    - chrono::Duration::days(1)
+            } else {
+                NaiveDate::from_ymd_opt(anchor.year(), anchor.month() + 1, 1).unwrap()
+                    - chrono::Duration::days(1)
+            };
+            (start, end)
+        }
+    }
+}
+
+struct RangeSlot {
+    day: String,
+    slot_start: i64,
+    activity: ActivitySeconds,
+    status: String,
+    observed: i64,
+    credited_core: i64,
+    category: String,
+}
+
+fn load_slots_in_range(
+    conn: &Connection,
+    start: &str,
+    end: &str,
+) -> Result<Vec<RangeSlot>, DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT day, slot_start, activity_json, status, COALESCE(observed_seconds, 0),
+                    COALESCE(credited_core_seconds, 0), COALESCE(category, '')
+             FROM slots WHERE day >= ?1 AND day <= ?2 ORDER BY slot_start",
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let rows = stmt
+        .query_map(params![start, end], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(crate::db_error::map_rusqlite)?;
+    let mut slots = Vec::new();
+    for row in rows {
+        let (day, slot_start, json, status, observed, credited_core, category) =
+            row.map_err(crate::db_error::map_rusqlite)?;
+        slots.push(RangeSlot {
+            day,
+            slot_start,
+            activity: parse_activity_json(json),
+            status: status.unwrap_or_default(),
+            observed,
+            credited_core,
+            category,
+        });
+    }
+    Ok(slots)
+}
+
+fn is_pending_status(status: &str) -> bool {
+    status == "pending_review" || status == "unknown"
+}
+
+fn is_final_status(status: &str) -> bool {
+    status == "final"
+}
+
+fn activity_observed_secs(total: &ActivitySeconds) -> i64 {
+    total.core + total.support + total.admin + total.side + total.away + total.distraction
+}
+
+fn distraction_observed_ratio(total: &ActivitySeconds) -> f64 {
+    let observed = activity_observed_secs(total);
+    if observed <= 0 {
+        0.0
+    } else {
+        total.distraction as f64 / observed as f64
+    }
+}
+
+/// 待复核槽 / 已决议槽. pending / max(pending+final, 1) so the ratio cannot be NaN.
+fn pending_over_resolved(pending: i64, final_slots: i64) -> f64 {
+    pending as f64 / (pending + final_slots).max(1) as f64
+}
+
+fn chest_secs() -> i64 {
+    i64::try_from(CHEST_SECS).unwrap_or(21600)
+}
+
+fn gold_secs() -> i64 {
+    i64::try_from(GOLD_DAY_SECS).unwrap_or(28800)
+}
+
+fn weekday_credited_slice(
+    start: NaiveDate,
+    end: NaiveDate,
+    today: NaiveDate,
+    credited: &BTreeMap<String, i64>,
+) -> Vec<i64> {
+    let mut out = Vec::new();
+    let mut d = start;
+    while d <= end {
+        if is_weekday(d) && d <= today {
+            out.push(*credited.get(&day_str(d)).unwrap_or(&0));
+        }
+        d += chrono::Duration::days(1);
+    }
+    out
+}
+
+fn credited_by_day(slots: &[RangeSlot]) -> BTreeMap<String, i64> {
+    let mut map = BTreeMap::new();
+    for slot in slots {
+        if is_final_status(&slot.status) {
+            *map.entry(slot.day.clone()).or_insert(0) += slot.credited_core;
+        }
+    }
+    map
+}
+
+fn range_credited_and_count(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<(i64, i64), DbOpError> {
+    let start_s = day_str(start);
+    let end_s = day_str(end);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM slots WHERE day >= ?1 AND day <= ?2",
+            params![start_s, end_s],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let credited: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(credited_core_seconds), 0) FROM slots
+             WHERE day >= ?1 AND day <= ?2 AND status = 'final'",
+            params![start_s, end_s],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    Ok((credited, count))
+}
+
+fn load_day_activity(conn: &Connection, day: &str) -> Result<ActivitySeconds, DbOpError> {
+    let mut stmt = conn
+        .prepare("SELECT activity_json FROM slots WHERE day = ?1")
+        .map_err(crate::db_error::map_rusqlite)?;
+    let rows = stmt
+        .query_map(params![day], |r| r.get::<_, Option<String>>(0))
+        .map_err(crate::db_error::map_rusqlite)?;
+    let mut acts = Vec::new();
+    for row in rows {
+        acts.push(parse_activity_json(
+            row.map_err(crate::db_error::map_rusqlite)?,
+        ));
+    }
+    Ok(sum_activity(&acts))
+}
+
+fn dominant_category(
+    core: i64,
+    support: i64,
+    admin: i64,
+    side: i64,
+    distraction: i64,
+    away: i64,
+) -> String {
+    let mut best = ("", 0i64);
+    for (name, secs) in [
+        ("core", core),
+        ("support", support),
+        ("admin", admin),
+        ("side", side),
+        ("distraction", distraction),
+        ("away", away),
+    ] {
+        if secs > best.1 {
+            best = (name, secs);
+        }
+    }
+    if best.1 <= 0 {
+        String::new()
+    } else {
+        best.0.to_string()
+    }
+}
+
+fn listed_as_for(app: &str, bundle_id: &str, policy: &Policy) -> String {
+    let bid = if bundle_id.is_empty() {
+        None
+    } else {
+        Some(bundle_id)
+    };
+    if matches_app_identity(app, bid, &policy.trusted_apps) {
+        return "mainline".into();
+    }
+    if matches_app_identity(app, bid, &policy.side_project_rules) {
+        return "side".into();
+    }
+    if matches_app_identity(app, bid, &policy.admin_apps) {
+        return "admin".into();
+    }
+    if matches_app_identity(app, bid, &policy.distraction_rules) {
+        return "entertainment".into();
+    }
+    if matches_app_identity(app, bid, &policy.reading_apps) {
+        return "reading".into();
+    }
+    if matches_app_identity(app, bid, &policy.never_capture_apps) {
+        return "never_capture".into();
+    }
+    String::new()
+}
+
+struct AppAgg {
+    name: String,
+    minutes: i64,
+    dominant: String,
+    listed_as: String,
+}
+
+fn load_app_aggregates(
+    conn: &Connection,
+    start: &str,
+    end: &str,
+    policy: &Policy,
+) -> Result<(Vec<AppAgg>, i64), DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT app, bundle_id, core, support, admin, side, distraction, away, unobserved, protected
+             FROM app_day_stats WHERE day >= ?1 AND day <= ?2",
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let rows = stmt
+        .query_map(params![start, end], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, i64>(9)?,
+            ))
+        })
+        .map_err(crate::db_error::map_rusqlite)?;
+    let mut grouped: BTreeMap<String, (i64, i64, i64, i64, i64, i64, Vec<String>)> =
+        BTreeMap::new();
+    let mut protected_total = 0i64;
+    for row in rows {
+        let (app, bundle_id, core, support, admin, side, distraction, away, _unobserved, protected) =
+            row.map_err(crate::db_error::map_rusqlite)?;
+        protected_total += protected;
+        let entry = grouped.entry(app).or_insert((0, 0, 0, 0, 0, 0, Vec::new()));
+        entry.0 += core;
+        entry.1 += support;
+        entry.2 += admin;
+        entry.3 += side;
+        entry.4 += distraction;
+        entry.5 += away;
+        entry.6.push(bundle_id);
+    }
+    let mut apps = Vec::new();
+    for (name, (core, support, admin, side, distraction, away, bundles)) in grouped {
+        let mut listed = String::new();
+        for b in &bundles {
+            listed = listed_as_for(&name, b, policy);
+            if !listed.is_empty() {
+                break;
+            }
+        }
+        if listed.is_empty() {
+            listed = listed_as_for(&name, "", policy);
+        }
+        let cat_secs = core + support + admin + side + distraction + away;
+        apps.push(AppAgg {
+            name,
+            minutes: secs_to_minutes(cat_secs),
+            dominant: dominant_category(core, support, admin, side, distraction, away),
+            listed_as: listed,
+        });
+    }
+    apps.sort_by(|a, b| b.minutes.cmp(&a.minutes).then(a.name.cmp(&b.name)));
+    Ok((apps, protected_total))
+}
+
+fn load_app_top(conn: &Connection, day: &str, limit: usize) -> Result<Vec<AppTopRow>, DbOpError> {
+    let policy = load_policy(conn)?;
+    let (mut apps, _) = load_app_aggregates(conn, day, day, &policy)?;
+    apps.truncate(limit);
+    Ok(apps
+        .into_iter()
+        .map(|a| AppTopRow {
+            name: a.name,
+            minutes: a.minutes,
+            dominant: a.dominant,
+        })
+        .collect())
+}
+
+fn load_host_rows(
+    conn: &Connection,
+    start: &str,
+    end: &str,
+) -> Result<Vec<HostReportRow>, DbOpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT host, SUM(core), SUM(support), SUM(admin), SUM(side), SUM(distraction)
+             FROM host_day_stats WHERE day >= ?1 AND day <= ?2 GROUP BY host",
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let rows = stmt
+        .query_map(params![start, end], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(crate::db_error::map_rusqlite)?;
+    let mut hosts = Vec::new();
+    for row in rows {
+        let (host, core, support, admin, side, distraction) =
+            row.map_err(crate::db_error::map_rusqlite)?;
+        let minutes = secs_to_minutes(core + support + admin + side + distraction);
+        hosts.push(HostReportRow {
+            host,
+            minutes,
+            dominant: dominant_category(core, support, admin, side, distraction, 0),
+        });
+    }
+    hosts.sort_by(|a, b| b.minutes.cmp(&a.minutes).then(a.host.cmp(&b.host)));
+    hosts.truncate(15);
+    Ok(hosts)
+}
+
+fn empty_hour_rows() -> Vec<WeekHourRow> {
+    (0..24)
+        .map(|hour| WeekHourRow {
+            hour,
+            core: 0,
+            observed: 0,
+        })
+        .collect()
+}
+
+fn fill_hour_rows(slots: &[RangeSlot]) -> Vec<WeekHourRow> {
+    let mut by_hour = empty_hour_rows();
+    for slot in slots {
+        if let Some(hour_row) = by_hour.get_mut(local_hour(slot.slot_start) as usize) {
+            hour_row.core += slot.activity.core;
+            hour_row.observed += slot.observed;
+        }
+    }
+    by_hour
+}
+
+fn peak_hours_from(by_hour: &[WeekHourRow]) -> Vec<i32> {
+    let mut ranked: Vec<(f64, i32)> = by_hour
+        .iter()
+        .filter(|h| h.observed > 0)
+        .map(|h| (h.core as f64 / h.observed as f64, h.hour))
+        .collect();
+    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+    ranked.into_iter().take(3).map(|(_, hour)| hour).collect()
+}
+
+fn resolved_activities(slots: &[RangeSlot]) -> Vec<ActivitySeconds> {
+    slots
+        .iter()
+        .filter(|s| !is_pending_status(&s.status))
+        .map(|s| s.activity.clone())
+        .collect()
+}
+
 fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOpError> {
     let quests = load_quests_for_day(conn, day)?;
     let quest_views: Vec<QuestView> = quests
@@ -608,6 +1116,9 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
             |r| r.get(0),
         )
         .map_err(crate::db_error::map_rusqlite)?;
+    let activity = activity_to_minutes(&load_day_activity(conn, day)?);
+    let app_top = load_app_top(conn, day, 5)?;
+    let pending_count = slots.iter().filter(|s| s.pending).count() as i64;
     Ok(TodayView {
         day: day.to_string(),
         quests: quest_views,
@@ -641,6 +1152,9 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
         lists,
         tasks,
         coin_balance,
+        activity,
+        app_top,
+        pending_count,
     })
 }
 
@@ -730,11 +1244,16 @@ fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
     let day_start =
         start_of_named_day(day).ok_or_else(|| DbOpError::Rejected("bad_day".into()))?;
     let day_end = end_of_local_day(day_start);
+    let slots = load_today_slots(conn, day)?;
+    let pending_count = slots.iter().filter(|s| s.pending).count() as i64;
     Ok(DayView {
         day: day.to_string(),
         day_start,
         tasks: tasks_overlapping_day(conn, day_start, day_end)?,
-        slots: load_today_slots(conn, day)?,
+        slots,
+        activity: activity_to_minutes(&load_day_activity(conn, day)?),
+        app_top: load_app_top(conn, day, 5)?,
+        pending_count,
     })
 }
 
@@ -772,61 +1291,38 @@ fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOp
     let today_date =
         NaiveDate::parse_from_str(today, "%Y-%m-%d").map_err(|e| DbOpError::Fatal(e.to_string()))?;
     let week_start = week_start_for(today_date);
-    let week_start_str = week_start.format("%Y-%m-%d").to_string();
+    let week_start_str = day_str(week_start);
     let mut by_day: Vec<WeekDayRow> = (0..7)
         .map(|i| {
             let day = week_start + chrono::Duration::days(i);
             WeekDayRow {
-                day: day.format("%Y-%m-%d").to_string(),
+                day: day_str(day),
                 core: 0,
                 side: 0,
                 chore: 0,
             }
         })
         .collect();
-    let mut by_hour: Vec<WeekHourRow> = (0..24)
-        .map(|hour| WeekHourRow {
-            hour,
-            core: 0,
-            observed: 0,
-        })
-        .collect();
-    let mut stmt = conn
-        .prepare(
-            "SELECT day, slot_start, activity_json, status, COALESCE(observed_seconds, 0) FROM slots
-             WHERE day >= ?1 AND day <= ?2",
-        )
-        .map_err(crate::db_error::map_rusqlite)?;
-    let rows = stmt
-        .query_map(params![week_start_str, today], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, i64>(4)?,
-            ))
-        })
-        .map_err(crate::db_error::map_rusqlite)?;
+    let slots = load_slots_in_range(conn, &week_start_str, today)?;
+    let by_hour = fill_hour_rows(&slots);
     let mut activities = Vec::new();
     let mut pending_review_secs = 0i64;
-    for row in rows {
-        let (day, slot_start, json, status, observed) = row.map_err(crate::db_error::map_rusqlite)?;
-        let status = status.unwrap_or_default();
-        let activity = parse_activity_json(json);
-        if let Some(hour_row) = by_hour.get_mut(local_hour(slot_start) as usize) {
-            hour_row.core += activity.core;
-            hour_row.observed += observed;
-        }
-        if status == "pending_review" || status == "unknown" {
-            pending_review_secs += observed;
+    let mut pending_slots = 0i64;
+    let mut final_slots = 0i64;
+    for slot in &slots {
+        if is_pending_status(&slot.status) {
+            pending_review_secs += slot.observed;
+            pending_slots += 1;
             continue;
         }
-        activities.push(activity.clone());
-        if let Some(day_row) = by_day.iter_mut().find(|d| d.day == day) {
-            day_row.core += activity.core;
-            day_row.side += activity.side;
-            day_row.chore += activity.admin;
+        if is_final_status(&slot.status) {
+            final_slots += 1;
+        }
+        activities.push(slot.activity.clone());
+        if let Some(day_row) = by_day.iter_mut().find(|d| d.day == slot.day) {
+            day_row.core += slot.activity.core;
+            day_row.side += slot.activity.side;
+            day_row.chore += slot.activity.admin;
         }
     }
     let total = sum_activity(&activities);
@@ -862,6 +1358,22 @@ fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOp
     let ended_entertainment =
         load_ended_entertainment(conn, now, active_entertainment.is_some())?;
     let redemptions = load_redemptions(conn, now)?;
+    let this_credited: i64 = slots
+        .iter()
+        .filter(|s| is_final_status(&s.status))
+        .map(|s| s.credited_core)
+        .sum();
+    let last_start = week_start - chrono::Duration::days(7);
+    let last_end = week_start - chrono::Duration::days(1);
+    let (last_credited, last_count) = range_credited_and_count(conn, last_start, last_end)?;
+    let wow_core_delta_minutes = if last_count == 0 {
+        None
+    } else {
+        wow_delta(this_credited / 60, last_credited / 60)
+    };
+    let credited_map = credited_by_day(&slots);
+    let weekday_credited =
+        weekday_credited_slice(week_start, today_date, today_date, &credited_map);
     Ok(WeekView {
         core: secs_to_minutes(total.core),
         support: secs_to_minutes(total.support),
@@ -882,6 +1394,195 @@ fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOp
         by_hour,
         core_label: format_estimated_minutes(total.core),
         credited_today_minutes: secs_to_minutes(credited_today),
+        core_hours: this_credited as f64 / 3600.0,
+        wow_core_delta_minutes,
+        distraction_observed_ratio: distraction_observed_ratio(&total),
+        pending_over_resolved: pending_over_resolved(pending_slots, final_slots),
+        days_ge_6h: weekday_credited
+            .iter()
+            .filter(|&&s| s >= chest_secs())
+            .count() as i64,
+        days_ge_8h: weekday_credited
+            .iter()
+            .filter(|&&s| s >= gold_secs())
+            .count() as i64,
+    })
+}
+
+fn month_start(year: i32, month: u32) -> Result<NaiveDate, DbOpError> {
+    NaiveDate::from_ymd_opt(year, month, 1).ok_or_else(|| DbOpError::Rejected("bad_month".into()))
+}
+
+fn build_month_report(
+    conn: &Connection,
+    year: i32,
+    month: i32,
+    today: &str,
+) -> Result<MonthReportView, DbOpError> {
+    if !(1..=12).contains(&month) {
+        return Err(DbOpError::Rejected("bad_month".into()));
+    }
+    let start = month_start(year, month as u32)?;
+    let (span_start, end) = span_bounds(ReportSpan::Month, start);
+    let start_s = day_str(span_start);
+    let end_s = day_str(end);
+    let slots = load_slots_in_range(conn, &start_s, &end_s)?;
+    let total = sum_activity(&resolved_activities(&slots));
+    let credited_map = credited_by_day(&slots);
+    let mut days = Vec::new();
+    let mut d = span_start;
+    while d <= end {
+        let key = day_str(d);
+        days.push(MonthDayCell {
+            day: key.clone(),
+            credited_core: *credited_map.get(&key).unwrap_or(&0),
+            is_weekend: !is_weekday(d),
+            is_future: key.as_str() > today,
+        });
+        d += chrono::Duration::days(1);
+    }
+    let gold = gold_secs();
+    let gold_days = credited_map.values().filter(|&&s| s >= gold).count() as i64;
+    let coins_earned: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(CASE WHEN coin_delta > 0 THEN coin_delta ELSE 0 END), 0)
+             FROM ledger WHERE day >= ?1 AND day <= ?2",
+            params![start_s, end_s],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let coins_spent: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(CASE WHEN coin_delta < 0 THEN -coin_delta ELSE 0 END), 0)
+             FROM ledger WHERE day >= ?1 AND day <= ?2",
+            params![start_s, end_s],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let xp_earned: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(CASE WHEN xp_delta > 0 THEN xp_delta ELSE 0 END), 0)
+             FROM ledger WHERE day >= ?1 AND day <= ?2",
+            params![start_s, end_s],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let freeze_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM freeze_uses WHERE protected_date >= ?1 AND protected_date <= ?2",
+            params![start_s, end_s],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    let completed_days: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM days WHERE outcome = 'completed' AND day >= ?1 AND day <= ?2",
+            params![start_s, end_s],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    Ok(MonthReportView {
+        days,
+        activity: activity_to_minutes(&total),
+        coins_earned,
+        coins_spent,
+        xp_earned,
+        gold_days,
+        freeze_count,
+        completed_days,
+    })
+}
+
+fn build_rhythm_report(
+    conn: &Connection,
+    kind: &str,
+    anchor: &str,
+    today: &str,
+) -> Result<RhythmReportView, DbOpError> {
+    let kind = parse_report_kind(kind)?;
+    let anchor_date = parse_anchor(anchor)?;
+    let today_date = parse_anchor(today)?;
+    let (start, end) = span_bounds(kind, anchor_date);
+    let start_s = day_str(start);
+    let end_s = day_str(end);
+    let slots = load_slots_in_range(conn, &start_s, &end_s)?;
+    let credited_map = credited_by_day(&slots);
+    let mut starts_by_day: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    for slot in &slots {
+        if slot.credited_core > 0 {
+            starts_by_day
+                .entry(slot.day.clone())
+                .or_default()
+                .push(slot.slot_start);
+        }
+    }
+    let mut start_hours = Vec::new();
+    let mut d = start;
+    while d <= end {
+        let include = match kind {
+            ReportSpan::Week => true,
+            ReportSpan::Month => is_weekday(d),
+        };
+        if include {
+            let key = day_str(d);
+            let hour = starts_by_day.get(&key).and_then(|starts| {
+                let mut ordered = starts.clone();
+                ordered.sort_unstable();
+                let day_start = start_of_named_day(&key)?;
+                first_core_hour(&ordered, day_start)
+            });
+            start_hours.push(RhythmStartHour { day: key, hour });
+        }
+        d += chrono::Duration::days(1);
+    }
+    let weekday_credited = weekday_credited_slice(start, end, today_date, &credited_map);
+    let flags: Vec<bool> = slots
+        .iter()
+        .map(|s| s.category == "distraction")
+        .collect();
+    let (run_count, run_slots) = distraction_runs(&flags);
+    let by_hour = fill_hour_rows(&slots);
+    Ok(RhythmReportView {
+        start_hours,
+        rate_6h: hit_rate(&weekday_credited, chest_secs()),
+        rate_8h: hit_rate(&weekday_credited, gold_secs()),
+        distraction_run_count: run_count as i64,
+        distraction_run_slots: run_slots,
+        peak_hours: peak_hours_from(&by_hour),
+    })
+}
+
+fn build_app_report(
+    conn: &Connection,
+    kind: &str,
+    anchor: &str,
+) -> Result<AppReportView, DbOpError> {
+    let kind = parse_report_kind(kind)?;
+    let anchor_date = parse_anchor(anchor)?;
+    let (start, end) = span_bounds(kind, anchor_date);
+    let start_s = day_str(start);
+    let end_s = day_str(end);
+    let policy = load_policy(conn)?;
+    let (apps, protected_total) = load_app_aggregates(conn, &start_s, &end_s, &policy)?;
+    let newcomers: Vec<String> = apps
+        .iter()
+        .filter(|a| a.listed_as.is_empty())
+        .map(|a| a.name.clone())
+        .collect();
+    let rows = apps
+        .into_iter()
+        .map(|a| AppReportRow {
+            name: a.name,
+            minutes: a.minutes,
+            dominant: a.dominant,
+            listed_as: a.listed_as,
+        })
+        .collect();
+    Ok(AppReportView {
+        apps: rows,
+        newcomers,
+        hosts: load_host_rows(conn, &start_s, &end_s)?,
+        protected_minutes: secs_to_minutes(protected_total),
     })
 }
 
@@ -907,6 +1608,27 @@ pub fn get_week() -> Result<WeekView, String> {
         let day = day_str_for_ts(now);
         build_week(conn, &day, now)
     })
+}
+
+#[tauri::command]
+pub fn get_month_report(year: i32, month: i32) -> Result<MonthReportView, String> {
+    with_db_err(|conn| {
+        let today = day_str_for_ts(now_secs());
+        build_month_report(conn, year, month, &today)
+    })
+}
+
+#[tauri::command]
+pub fn get_rhythm_report(kind: String, anchor: String) -> Result<RhythmReportView, String> {
+    with_db_err(|conn| {
+        let today = day_str_for_ts(now_secs());
+        build_rhythm_report(conn, &kind, &anchor, &today)
+    })
+}
+
+#[tauri::command]
+pub fn get_app_report(kind: String, anchor: String) -> Result<AppReportView, String> {
+    with_db_err(|conn| build_app_report(conn, &kind, &anchor))
 }
 
 fn task_list_views(conn: &Connection) -> Result<Vec<TaskListView>, DbOpError> {
@@ -1786,5 +2508,171 @@ mod tests {
         assert!(label.ends_with(" · 视频 18m"), "{label}");
         let label_done = tray_tooltip_for_today(&conn, day, now + 30 * 60).unwrap();
         assert!(!label_done.contains("视频"), "{label_done}");
+    }
+
+    #[test]
+    fn build_week_mixed_slot_keeps_core_and_side() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        let day_start = start_of_named_day(day).unwrap();
+        let json = r#"{"core":480,"support":0,"admin":0,"side":420,"distraction":0,"away":0,"unobserved":0}"#;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json, credited_core_seconds, category)
+             VALUES (?1, ?2, 'final', 900, ?3, 480, 'core_research')",
+            params![day, day_start + 10 * 3600, json],
+        )
+        .unwrap();
+        let view = build_week(&conn, day, day_start + 10 * 3600).unwrap();
+        assert_eq!(view.core, 8);
+        assert_eq!(view.side, 7);
+        assert_ne!(view.core, 15);
+        assert!(view.pending_over_resolved.is_finite());
+        assert_eq!(view.pending_over_resolved, 0.0);
+        assert!(view.wow_core_delta_minutes.is_none());
+        assert!((view.core_hours - 480.0 / 3600.0).abs() < 1e-9);
+        assert_eq!(view.distraction_observed_ratio, 0.0);
+        assert_eq!(view.days_ge_6h, 0);
+        assert_eq!(view.days_ge_8h, 0);
+    }
+
+    #[test]
+    fn build_today_fills_app_top_pending_and_activity() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        let day_start = start_of_named_day(day).unwrap();
+        let json = r#"{"core":480,"support":0,"admin":0,"side":420,"distraction":0,"away":0,"unobserved":0}"#;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json, credited_core_seconds)
+             VALUES (?1, ?2, 'pending_review', 900, ?3, 0)",
+            params![day, day_start + 9 * 3600, json],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected)
+             VALUES (?1, 'Cursor', '', 32, 0, 480, 0, 0, 0, 0, 0, 0, 0)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected)
+             VALUES (?1, 'WeirdApp', '', 4, 0, 0, 0, 0, 0, 60, 0, 0, 0)",
+            params![day],
+        )
+        .unwrap();
+        let view = build_today(&conn, day, day_start).unwrap();
+        assert_eq!(view.pending_count, 1);
+        assert_eq!(view.activity.core, 8);
+        assert_eq!(view.activity.side, 7);
+        assert_eq!(view.app_top.len(), 2);
+        assert_eq!(view.app_top[0].name, "Cursor");
+        assert_eq!(view.app_top[0].minutes, 8);
+        assert_eq!(view.app_top[0].dominant, "core");
+    }
+
+    #[test]
+    fn build_month_rhythm_and_app_reports() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        let day_start = start_of_named_day(day).unwrap();
+        let json = r#"{"core":480,"support":0,"admin":0,"side":420,"distraction":0,"away":0,"unobserved":0}"#;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json, credited_core_seconds, category)
+             VALUES (?1, ?2, 'final', 900, ?3, 28800, 'core_research')",
+            params![day, day_start + 8 * 3600, json],
+        )
+        .unwrap();
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json, credited_core_seconds, category)
+                 VALUES (?1, ?2, 'final', 900, ?3, 0, 'distraction')",
+                params![
+                    day,
+                    day_start + 12 * 3600 + i * 900,
+                    r#"{"core":0,"support":0,"admin":0,"side":0,"distraction":900,"away":0,"unobserved":0}"#
+                ],
+            )
+            .unwrap();
+        }
+        insert_ledger(&conn, "coin:1", day, 10, 5).unwrap();
+        conn.execute(
+            "INSERT INTO ledger (reward_event_key, day, ts, coin_delta, xp_delta)
+             VALUES ('shop_spend:r1', ?1, 10, -4, 0)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO freeze_uses (protected_date) VALUES (?1)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO days (day, settled_at, outcome) VALUES (?1, 1, 'completed')",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected)
+             VALUES (?1, 'Cursor', '', 32, 0, 480, 0, 0, 0, 0, 0, 0, 0)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected)
+             VALUES (?1, 'Mystery', '', 4, 0, 0, 0, 0, 0, 60, 0, 0, 120)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO host_day_stats (day, host, samples, core, support, admin, side, distraction)
+             VALUES (?1, 'arxiv.org', 10, 150, 0, 0, 0, 0)",
+            params![day],
+        )
+        .unwrap();
+
+        let month = build_month_report(&conn, 2026, 9, day).unwrap();
+        assert_eq!(month.activity.core, 8);
+        assert_eq!(month.activity.side, 7);
+        assert_eq!(month.activity.distraction, 45);
+        assert_eq!(month.coins_earned, 10);
+        assert_eq!(month.coins_spent, 4);
+        assert_eq!(month.xp_earned, 5);
+        assert_eq!(month.gold_days, 1);
+        assert_eq!(month.freeze_count, 1);
+        assert_eq!(month.completed_days, 1);
+        let friday = month.days.iter().find(|d| d.day == day).unwrap();
+        assert!(!friday.is_weekend);
+        assert!(!friday.is_future);
+        assert_eq!(friday.credited_core, 28800);
+        let saturday = month.days.iter().find(|d| d.day == "2026-09-12").unwrap();
+        assert!(saturday.is_weekend);
+        let future = month.days.iter().find(|d| d.day == "2026-09-13").unwrap();
+        assert!(future.is_future);
+
+        let rhythm = build_rhythm_report(&conn, "week", day, day).unwrap();
+        assert_eq!(rhythm.start_hours.len(), 7);
+        let fri = rhythm
+            .start_hours
+            .iter()
+            .find(|h| h.day == day)
+            .unwrap();
+        assert_eq!(fri.hour, Some(8));
+        assert!((rhythm.rate_8h - 0.2).abs() < 1e-9);
+        assert_eq!(rhythm.distraction_run_count, 1);
+        assert_eq!(rhythm.distraction_run_slots, 3);
+        assert!(!rhythm.peak_hours.is_empty());
+
+        let apps = build_app_report(&conn, "week", day).unwrap();
+        assert_eq!(apps.protected_minutes, 2);
+        assert!(apps.newcomers.iter().any(|n| n == "Mystery"));
+        let cursor = apps.apps.iter().find(|a| a.name == "Cursor").unwrap();
+        assert_eq!(cursor.listed_as, "mainline");
+        assert_eq!(cursor.minutes, 8);
+        let mystery = apps.apps.iter().find(|a| a.name == "Mystery").unwrap();
+        assert_eq!(mystery.listed_as, "");
+        assert_eq!(apps.hosts[0].host, "arxiv.org");
+        assert_eq!(apps.hosts[0].minutes, 2);
     }
 }

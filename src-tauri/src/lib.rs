@@ -28,12 +28,12 @@ use sampler::PauseControl;
 
 use commands::{
     archive_wish, continue_previous_workday, create_list, create_wish, end_today, freeze,
-    get_permission_status, get_settings, get_today, get_day_view, get_week, has_api_key, list_tasks,
-    parse_task_line_cmd, provider_key_status, redeem, report_misclassification,
-    request_screen_recording, review_slot, save_settings, set_api_key, set_provider_api_key,
-    set_quests, ticktick_begin_oauth, ticktick_disconnect, ticktick_finish_oauth,
-    ticktick_list_projects, ticktick_set_client_secret, ticktick_status, ticktick_sync,
-    toggle_task_done, update_wish, upsert_task,
+    get_app_report, get_month_report, get_permission_status, get_rhythm_report, get_settings,
+    get_today, get_day_view, get_week, has_api_key, list_tasks, parse_task_line_cmd,
+    provider_key_status, redeem, report_misclassification, request_screen_recording, review_slot,
+    save_settings, set_api_key, set_provider_api_key, set_quests, ticktick_begin_oauth,
+    ticktick_disconnect, ticktick_finish_oauth, ticktick_list_projects, ticktick_set_client_secret,
+    ticktick_status, ticktick_sync, toggle_task_done, update_wish, upsert_task,
 };
 
 use tauri::{
@@ -85,6 +85,9 @@ pub fn run() {
             get_today,
             get_day_view,
             get_week,
+            get_month_report,
+            get_rhythm_report,
+            get_app_report,
             set_quests,
             list_tasks,
             upsert_task,
