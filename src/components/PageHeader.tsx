@@ -1,12 +1,15 @@
 import type { ReactNode } from "react";
 
 /**
- * The mockup's .hd is a flat 58px with its content vertically centred and
- * no space reserved for the macOS traffic lights — the design calls that out
- * as deliberate, so the bar reads the same on every platform.
+ * Enough room under the macOS traffic lights that the rail's mark is not
+ * covered. The design asks for no reserved space at all; this is the
+ * smallest strip that keeps the window controls usable.
  */
-export const TRAFFIC_LIGHT_STRIP = 0;
-/** The mockup's .hd height, owned by the header itself. */
+export const TRAFFIC_LIGHT_STRIP = 28;
+/**
+ * The mockup's .hd height. The header sits to the right of the rail, so it
+ * carries no traffic lights and keeps the design's flat 58px.
+ */
 export const TOOLBAR_ROW = 58;
 /** Breathing room under the brand row, above the shared border. */
 export const TOOLBAR_PAD_BOTTOM = 0;

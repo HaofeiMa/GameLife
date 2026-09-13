@@ -253,9 +253,6 @@ function Timeline({
   now,
   showNow,
   onPick,
-  onPrevDay,
-  onNextDay,
-  onBackToToday,
   scrollRef,
 }: {
   dayView: DayView;
@@ -266,14 +263,26 @@ function Timeline({
   now: number;
   showNow: boolean;
   onPick: (slot: TodaySlot) => void;
-  onPrevDay: () => void;
-  onNextDay: () => void;
-  onBackToToday: () => void;
   scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const dayStart = dayView.dayStart;
   const totalHeight = HOURS.length * HOUR_H;
   const nowTop = ((now - dayStart) / 900) * SLOT_H;
+  // The mockup's .ch meta is the window the timeline is showing ("14:00 –
+  // 22:00"), so it follows the scroll position rather than the whole day.
+  const [visibleRange, setVisibleRange] = useState<string>();
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const sync = () => {
+      const from = Math.floor(el.scrollTop / HOUR_H);
+      const to = Math.ceil((el.scrollTop + el.clientHeight) / HOUR_H);
+      setVisibleRange(`${pad2(Math.min(23, from))}:00 – ${pad2(Math.min(24, to))}:00`);
+    };
+    sync();
+    el.addEventListener("scroll", sync, { passive: true });
+    return () => el.removeEventListener("scroll", sync);
+  }, [scrollRef, dayView.day]);
   const scrolledForRef = useRef<string | null>(null);
 
   // Open the timeline on the current hour instead of 00:00 — the day being
@@ -289,36 +298,12 @@ function Timeline({
 
   return (
     <Card className="flex h-full min-w-0 flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center justify-between gap-2 px-[18px] pt-3 pb-[9px]">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="前一天"
-          onClick={onPrevDay}
-        >
-          <ChevronLeft className="size-4" />
-        </Button>
-        <div className="flex min-w-0 flex-col items-center">
-          <span className="truncate text-sm font-medium">{weekdayLabel(calDay)}</span>
-          {calDay !== today && (
-            <button
-              type="button"
-              onClick={onBackToToday}
-              className="text-[11px] text-primary hover:underline"
-            >
-              回到今天
-            </button>
-          )}
-        </div>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="后一天"
-          onClick={onNextDay}
-        >
-          <ChevronRight className="size-4" />
-        </Button>
-      </div>
+      {/* The mockup's .ch: the day's span as the title, the visible window
+          as the meta. Day paging lives in the page header, like 統計's. */}
+      <CardCh
+        title={calDay === today ? "今天的时间" : weekdayLabel(calDay)}
+        meta={visibleRange}
+      />
       <div
         ref={scrollRef}
         className="h-full overflow-y-auto overscroll-contain"
@@ -711,14 +696,46 @@ export function Today() {
       title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">今日</h1>}
       subtitle={data ? `${data.day} ${weekdaySuffix(data.day)}` : undefined}
       actions={
-        <Button
-          variant="warm"
-          size="sm"
-          disabled={busy || !data}
-          onClick={() => setConfirmEnd(true)}
-        >
-          结束今天
-        </Button>
+        <>
+          {/* Day paging sits here, the same place 統計 keeps its range
+              controls, so the timeline's own header can stay the mockup's. */}
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="前一天"
+              disabled={!calDay}
+              onClick={() => calDay && setCalDay(addDays(calDay, -1))}
+            >
+              <ChevronLeft className="size-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!data || calDay === data.day}
+              onClick={() => data && setCalDay(data.day)}
+            >
+              今天
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="后一天"
+              disabled={!calDay}
+              onClick={() => calDay && setCalDay(addDays(calDay, 1))}
+            >
+              <ChevronRight className="size-4" />
+            </Button>
+          </div>
+          <Button
+            variant="warm"
+            size="sm"
+            disabled={busy || !data}
+            onClick={() => setConfirmEnd(true)}
+          >
+            结束今天
+          </Button>
+        </>
       }
     />
   );
@@ -806,9 +823,6 @@ export function Today() {
               now={now}
               showNow={showNow}
               onPick={setSelected}
-              onPrevDay={() => setCalDay(addDays(calDay, -1))}
-              onNextDay={() => setCalDay(addDays(calDay, 1))}
-              onBackToToday={() => setCalDay(data.day)}
               scrollRef={timelineRef}
             />
             </div>

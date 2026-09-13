@@ -131,10 +131,10 @@ export function App() {
           !dragging && "transition-[width] duration-200",
         )}
       >
-        {/* The mockup's .brand is its own 54px — 4px shorter than .hd. */}
+        {/* Clears the traffic lights, then the design's own brand row. */}
         <div
           data-tauri-drag-region
-          style={{ height: 54 }}
+          style={{ height: 58 - TRAFFIC_LIGHT_STRIP }}
           className={cn(
             "flex shrink-0 items-center gap-2.5",
             !expanded && "justify-center",

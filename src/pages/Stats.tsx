@@ -28,7 +28,7 @@ import {
   type WeekView,
 } from "../lib/api";
 import { addDays } from "../lib/calendar";
-import { calendarCells, monthHeatCell } from "../lib/monthGrid";
+import { calendarCells } from "../lib/monthGrid";
 import {
   dayStackCaption,
   monthCellNote,
@@ -42,7 +42,6 @@ import {
   type CategoryKey,
 } from "../lib/theme";
 import { cn } from "../lib/utils";
-import { heatTone } from "../lib/weekHeat";
 
 type Segment = "week" | "month" | "rhythm" | "app";
 
@@ -321,7 +320,7 @@ function CategoryPanel({
   return (
     <PanelCard
       title="按类别"
-      meta={`跨槽求和 · 观测 ${Math.round(observed / 60)} 分钟`}
+      meta={`跨槽求和 · 观测 ${Math.floor(observed / 3600)}h ${Math.round((observed % 3600) / 60)}m`}
       caption="跨槽求和 activity 秒数 / 60 取整；占观测比不含未观测。条长按最大值归一，不是按 8 小时——这一段最长的那一类占满。"
     >
       <div className="space-y-3">
@@ -379,6 +378,9 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
           const total = d.core + d.side + d.chore;
           return (
             <div key={d.day} className="flex min-w-0 flex-1 flex-col items-center gap-1.5">
+              <span className="text-[11.5px] font-semibold tabular-nums">
+                {dayStackCaption(weekend, total)}
+              </span>
               <div
                 className="flex w-full flex-1 flex-col justify-end overflow-hidden rounded-[8px] bg-ribbon-gap"
                 title={`${total} 分钟`}
@@ -412,19 +414,8 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
                   </>
                 )}
               </div>
-              <span className="text-xs font-medium tabular-nums">
-                {dayStackCaption(weekend, total)}
-              </span>
               <span className="w-full text-center text-[10px] text-muted-foreground">
                 {`周${WEEKDAYS[i] ?? ""}`}
-              </span>
-              <span
-                className={cn(
-                  "w-full truncate text-center text-[10px] tabular-nums",
-                  weekend ? "text-muted-foreground/60" : "text-muted-foreground/80",
-                )}
-              >
-                {d.day.slice(5).replace("-", "/")}
               </span>
             </div>
           );
@@ -445,14 +436,17 @@ function HeatPanel({ hours }: { hours: WeekHourRow[] }) {
       <div className="grid grid-cols-[repeat(14,minmax(0,1fr))] gap-[5px]">
         {HEAT_HOURS.map((hour) => {
           const row = byHour.get(hour) ?? { hour, core: 0, observed: 0 };
-          const tone = heatTone(row.core, row.observed);
           const mins = Math.floor(row.core / 60);
           const observed = row.observed > 0;
+          // The mockup ramps the cell on absolute mainline minutes, not on
+          // the core/observed ratio: 18%…80% of the mainline colour.
+          const fill = 18 + (Math.min(mins, 180) / 180) * 62;
           return (
             <div key={hour} className="flex flex-col items-center gap-1">
               <div
                 className={cn(
                   "flex h-11 w-full items-center justify-center rounded-[8px] text-[11px] font-semibold tabular-nums transition-all duration-200",
+                  !observed && "bg-ribbon-gap text-dim2",
                   observed && "hover:ring-2 hover:ring-primary/40",
                 )}
                 title={
@@ -460,16 +454,16 @@ function HeatPanel({ hours }: { hours: WeekHourRow[] }) {
                     ? `${hour}:00 主线 ${mins} 分钟 / 观测 ${Math.floor(row.observed / 60)} 分钟`
                     : `${hour}:00 无观测`
                 }
-                style={{
-                  background: observed
-                    ? `linear-gradient(160deg, ${categoryColorAt(
-                        "mainline",
-                        14 + tone * 42,
-                      )}, ${categoryColorAt("mainline", 6 + tone * 26)})`
-                    : "hsl(var(--muted))",
-                }}
+                style={
+                  observed
+                    ? {
+                        background: `color-mix(in srgb, hsl(var(--cat-mainline)) ${fill}%, hsl(var(--card)))`,
+                        color: "hsl(var(--heat-ink))",
+                      }
+                    : undefined
+                }
               >
-                {observed ? mins : "·"}
+                {observed ? mins : null}
               </div>
               <span className="text-[10px] tabular-nums text-muted-foreground">{hour}</span>
             </div>
@@ -543,9 +537,11 @@ function MonthCalendar({
           const row = byDay.get(c.day);
           const weekend = row?.isWeekend ?? isWeekendDay(c.day);
           const future = row?.isFuture ?? false;
-          const tone = monthHeatCell(row?.creditedCore ?? 0);
           const coreMin = Math.floor((row?.creditedCore ?? 0) / 60);
           const credited = row?.creditedCore ?? 0;
+          // 18%…90% of the mainline colour, keyed on the day's minutes
+          // capped at the 8-hour goal — the mockup's own ramp.
+          const calFill = 18 + (Math.min(coreMin, 480) / 480) * 72;
 
           return (
             <button
@@ -558,17 +554,23 @@ function MonthCalendar({
                 !future && "hover:-translate-y-0.5 hover:shadow-md hover:shadow-primary/10",
                 future && "cursor-default opacity-50",
                 weekend && "ring-1 ring-inset ring-border",
-                c.day === today && "ring-2 ring-primary",
+                c.day === today && "ring-2 ring-inset ring-primary",
               )}
               style={{
+                // The mockup's three ramps: no data yet, no observation,
+                // or a mainline fill of 18%…90% keyed on the day's minutes.
                 background: future
-                  ? undefined
+                  ? "hsl(var(--cal-future))"
                   : credited > 0
-                    ? `linear-gradient(160deg, ${categoryColorAt(
-                        "mainline",
-                        12 + tone * 42,
-                      )}, ${categoryColorAt("mainline", 6 + tone * 24)})`
-                    : "hsl(var(--muted))",
+                    ? `color-mix(in srgb, hsl(var(--cat-mainline)) ${calFill}%, hsl(var(--card)))`
+                    : "hsl(var(--idle-soft))",
+                color: future
+                  ? "hsl(var(--cal-future-ink))"
+                  : credited > 0
+                    ? calFill > 62
+                      ? "hsl(var(--primary-foreground))"
+                      : "hsl(var(--heat-ink))"
+                    : "hsl(var(--dim2))",
               }}
             >
               <span className="font-medium tabular-nums leading-none">

@@ -14,12 +14,12 @@
       {
         "label": "main",
         "title": "",
+        "titleBarStyle": "Overlay",
         "width": 1100,
         "height": 720,
         "minWidth": 960,
         "minHeight": 640,
-        "visible": false,
-        "decorations": false
+        "visible": false
       }
     ],
     "security": {

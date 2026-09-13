@@ -65,6 +65,8 @@
   --heat-ink: 152.0 39.0% 30.2%;  /* #2F6B4F */
   --track-rail: 36.0 40.0% 90.2%;  /* #F0E8DC */
   --off-ink: 33.5 17.7% 62.4%;  /* #B0A18E */
+  --cal-future: 37.5 50.0% 96.9%;  /* #FBF8F3 */
+  --cal-future-ink: 34.6 25.0% 79.6%;  /* #D8CDBE */
   --energy: 220.0 76.9% 61.0%;  /* #4F82E8 */
 
   --cat-mainline: 152.4 43.2% 46.3%;  /* #43A97A */
@@ -123,6 +125,9 @@
   --gold-soft: 36.0 34.9% 16.9%;  /* #3A2E1C */
   --dim2: 34.0 13.8% 42.7%;  /* #7C6F5E */
   --switch-off: 30.0 16.0% 19.6%;  /* #3A322A */
+  --off-ink: 34.5 13.6% 47.6%;  /* #8A7C69 */
+  --cal-future: 33.3 17.0% 10.4%;  /* #1F1B16 */
+  --cal-future-ink: 31.4 13.2% 31.2%;  /* #5A5045 */
   --warm: 17.7 53.0% 67.5%;  /* #D89A80 */
   --btn-line: 33.3 17.3% 20.4%;  /* #3D352B */
   --btn-ink: 35.0 31.6% 77.6%;  /* #D8C9B4 */
@@ -213,6 +218,8 @@
   --color-heat-ink: hsl(var(--heat-ink));
   --color-track-rail: hsl(var(--track-rail));
   --color-off-ink: hsl(var(--off-ink));
+  --color-cal-future: hsl(var(--cal-future));
+  --color-cal-future-ink: hsl(var(--cal-future-ink));
   --color-energy: hsl(var(--energy));
 
   /* The mockup's radii: cards 18, hero 20, tiles 16, rows 14,
