@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GameLife</title>
+    <script>
+      // Pre-paint theme: resolve before first paint so a dark window never
+      // flashes light while config.json is still loading. Mirrors
+      // src/lib/theme.ts — the cached value wins over the system default.
+      (function () {
+        try {
+          var cached = localStorage.getItem("gl-theme");
+          var dark =
+            cached === "dark" ||
+            (cached !== "light" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.classList.add("dark");
+          document.documentElement.style.backgroundColor = dark
+            ? "hsl(24 10% 10%)"
+            : "hsl(36 50% 96%)";
+        } catch (e) {
+          /* storage unavailable — the app applies the theme once settings load */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

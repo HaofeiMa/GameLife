@@ -1,11 +1,23 @@
-import { useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { PageHeader } from "../components/PageHeader";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { EmptyLine } from "../components/ui/empty-state";
+import { Segmented } from "../components/ui/segmented";
+import { Select } from "../components/ui/select";
+import { SkeletonPanel } from "../components/ui/skeleton";
 import {
   getAppReport,
   getMonthReport,
   getRhythmReport,
+  getSettings,
   getToday,
   getWeek,
+  saveSettings,
   type AppReportView,
+  type AppSettings,
   type MonthDayCell,
   type MonthReportView,
   type RhythmReportView,
@@ -19,53 +31,82 @@ import { addDays } from "../lib/calendar";
 import { calendarCells, monthHeatCell } from "../lib/monthGrid";
 import {
   dayStackCaption,
+  monthCellNote,
   monthShowsLedgerCards,
   weekHasObservation,
   weekRangeLabel,
-  weekRangePagingEnabled,
 } from "../lib/statsView";
+import {
+  categoryColor,
+  categoryColorAt,
+  type CategoryKey,
+} from "../lib/theme";
+import { cn } from "../lib/utils";
 import { heatTone } from "../lib/weekHeat";
 
 type Segment = "week" | "month" | "rhythm" | "app";
 
-const SEGMENTS: { id: Segment; label: string }[] = [
-  { id: "week", label: "周" },
-  { id: "month", label: "月" },
-  { id: "rhythm", label: "节奏" },
-  { id: "app", label: "应用" },
+const SEGMENTS: { value: Segment; label: string }[] = [
+  { value: "week", label: "周" },
+  { value: "month", label: "月" },
+  { value: "rhythm", label: "习惯" },
+  { value: "app", label: "应用" },
 ];
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 const HEAT_HOURS = Array.from({ length: 14 }, (_, i) => i + 8);
 
-const WEEK_CATEGORIES: {
-  key: keyof WeekView;
-  label: string;
-  color: string;
-}[] = [
-  { key: "core", label: "主线", color: "var(--gl-mainline)" },
-  { key: "support", label: "辅助", color: "#86efac" },
-  { key: "side", label: "支线", color: "var(--gl-side)" },
-  { key: "admin", label: "杂项", color: "var(--gl-chore)" },
-  { key: "distraction", label: "娱乐", color: "var(--gl-play)" },
-  { key: "away", label: "离开", color: "#d1d5db" },
-  { key: "unobserved", label: "未观测", color: "#9ca3af" },
-  { key: "pendingReview", label: "待复核", color: "#fbbf24" },
+const WEEK_CATEGORIES: { key: keyof WeekView; cat: CategoryKey; label: string }[] = [
+  { key: "core", cat: "mainline", label: "主线" },
+  { key: "support", cat: "support", label: "辅助" },
+  { key: "side", cat: "side", label: "支线" },
+  { key: "admin", cat: "admin", label: "杂项" },
+  { key: "distraction", cat: "entertainment", label: "娱乐" },
+  { key: "away", cat: "away", label: "离开" },
+  { key: "unobserved", cat: "unobserved", label: "未观测" },
+  { key: "pendingReview", cat: "pending", label: "待复核" },
 ];
 
-const MONTH_CATEGORIES: {
-  key: keyof SlotActivityMinutes;
-  label: string;
-  color: string;
-}[] = [
-  { key: "core", label: "主线", color: "var(--gl-mainline)" },
-  { key: "support", label: "辅助", color: "#86efac" },
-  { key: "side", label: "支线", color: "var(--gl-side)" },
-  { key: "admin", label: "杂项", color: "var(--gl-chore)" },
-  { key: "distraction", label: "娱乐", color: "var(--gl-play)" },
-  { key: "away", label: "离开", color: "#d1d5db" },
-  { key: "unobserved", label: "未观测", color: "#9ca3af" },
+const MONTH_CATEGORIES: { key: keyof SlotActivityMinutes; cat: CategoryKey; label: string }[] = [
+  { key: "core", cat: "mainline", label: "主线" },
+  { key: "support", cat: "support", label: "辅助" },
+  { key: "side", cat: "side", label: "支线" },
+  { key: "admin", cat: "admin", label: "杂项" },
+  { key: "distraction", cat: "entertainment", label: "娱乐" },
+  { key: "away", cat: "away", label: "离开" },
+  { key: "unobserved", cat: "unobserved", label: "未观测" },
 ];
+
+/**
+ * Which policy list an app row can be filed under. "待定" is not a list —
+ * it means the app matches no rule, so the slot stays gray and the text /
+ * vision AI decides from the window title and screenshot.
+ */
+const APP_LISTS = [
+  { value: "unlisted", label: "待定（交给 AI）" },
+  { value: "mainline", label: "主线" },
+  { value: "side", label: "支线" },
+  { value: "admin", label: "杂项" },
+  { value: "entertainment", label: "娱乐" },
+  { value: "reading", label: "阅读" },
+] as const;
+
+type AppListTarget = (typeof APP_LISTS)[number]["value"];
+
+const LIST_FIELD: Record<
+  Exclude<AppListTarget, "unlisted">,
+  "trustedApps" | "sideProjectRules" | "adminApps" | "distractionRules" | "readingApps"
+> = {
+  mainline: "trustedApps",
+  side: "sideProjectRules",
+  admin: "adminApps",
+  entertainment: "distractionRules",
+  reading: "readingApps",
+};
+
+const LIST_FIELDS = Object.values(LIST_FIELD);
+
+/* ------------------------------ helpers ------------------------------ */
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
@@ -131,11 +172,6 @@ function activityTotal(a: SlotActivityMinutes): number {
   return a.core + a.support + a.admin + a.side + a.distraction + a.away + a.unobserved;
 }
 
-function weekdayLabel(day: string, index: number): string {
-  const md = day.slice(5).replace("-", "/");
-  return `周${WEEKDAYS[index] ?? ""} ${md}`;
-}
-
 function hintLabel(dominant: string): string {
   switch (dominant) {
     case "core":
@@ -180,6 +216,13 @@ function listedLabel(listed: string): string {
   }
 }
 
+/** The report's `listedAs` key → the value the picker should show. */
+function currentListOf(listedAs: string): AppListTarget {
+  return APP_LISTS.some((o) => o.value === listedAs)
+    ? (listedAs as AppListTarget)
+    : "unlisted";
+}
+
 function wowLabel(delta: number | null): string {
   if (delta == null) return "—";
   if (delta === 0) return "持平";
@@ -196,155 +239,226 @@ function monthAnchor(year: number, month: number): string {
   return `${year}-${pad2(month)}-01`;
 }
 
+/* ----------------------------静 elements ---------------------------- */
+
+function PanelCard({
+  title,
+  caption,
+  children,
+  wide,
+  className,
+}: {
+  title: string;
+  caption?: string;
+  children: ReactNode;
+  wide?: boolean;
+  className?: string;
+}) {
+  return (
+    <Card className={cn("flex flex-col", wide && "lg:col-span-2", className)}>
+      <div className="border-b px-5 py-3">
+        <h2 className="text-sm font-medium">{title}</h2>
+        {caption && (
+          <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+            {caption}
+          </p>
+        )}
+      </div>
+      <div className="flex-1 px-5 py-4">{children}</div>
+    </Card>
+  );
+}
+
+function Legend({ items }: { items: { label: string; cat?: CategoryKey; dot?: string }[] }) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
+      {items.map((item) => (
+        <span key={item.label} className="inline-flex items-center gap-1.5">
+          <i
+            className="size-2.5 shrink-0 rounded-full"
+            style={{ background: item.dot ?? categoryColor(item.cat ?? "away") }}
+          />
+          {item.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="space-y-0.5">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p className="text-base font-semibold tabular-nums tracking-tight">{value}</p>
+    </div>
+  );
+}
+
 function CategoryPanel({
   rows,
   observed,
 }: {
-  rows: { key: string; label: string; color: string; mins: number }[];
+  rows: { key: string; label: string; cat: CategoryKey; mins: number }[];
   observed: number;
 }) {
   const max = Math.max(1, ...rows.map((r) => r.mins));
   return (
-    <section className="week-card">
-      <h3>按类别</h3>
-      <p className="muted">跨槽求和 activity 秒数 / 60 取整。占观测比不含未观测。</p>
-      <div className="week-legend">
+    <PanelCard
+      title="按类别"
+      caption="跨槽求和 activity 秒数 / 60 取整。占观测比不含未观测。"
+    >
+      <div className="space-y-3">
         {rows.map((c) => (
-          <span key={c.key}>
-            <i className="week-swatch" style={{ background: c.color }} />
-            {c.label}
-          </span>
+          <div key={c.key} className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="flex items-center gap-2">
+                <i
+                  className="size-2.5 shrink-0 rounded-full"
+                  style={{ background: categoryColor(c.cat) }}
+                />
+                {c.label}
+              </span>
+              <span className="tabular-nums text-muted-foreground">
+                {c.mins} 分钟 ·{" "}
+                {c.key === "unobserved" ? "—" : shareLabel(c.mins, observed)}
+              </span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full transition-[width] duration-500 ease-out"
+                style={{
+                  width: `${(c.mins / max) * 100}%`,
+                  background: `linear-gradient(90deg, ${categoryColor(
+                    c.cat,
+                  )}, ${categoryColorAt(c.cat, 55)})`,
+                }}
+              />
+            </div>
+          </div>
         ))}
       </div>
-      <ul className="week-cat-list">
-        {rows.map((c) => {
-          const ratio = c.key === "unobserved" ? "—" : shareLabel(c.mins, observed);
-          return (
-            <li key={c.key}>
-              <div className="week-cat-meta">
-                <span>
-                  <i className="week-swatch" style={{ background: c.color }} />
-                  {c.label}
-                </span>
-                <strong>
-                  {c.mins} 分钟 · {ratio}
-                </strong>
-              </div>
-              <div className="week-bar-track">
-                <div
-                  className="week-bar-fill"
-                  style={{ width: `${(c.mins / max) * 100}%`, background: c.color }}
-                />
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
+    </PanelCard>
   );
 }
 
 function DailyPanel({ days }: { days: WeekDayRow[] }) {
-  const max = Math.max(
-    1,
-    ...days.filter((d) => !isWeekendDay(d.day)).map((d) => d.core + d.side + d.chore),
-  );
+  const max = Math.max(1, ...days.map((d) => d.core + d.side + d.chore));
   return (
-    <section className="week-card">
-      <h3>按天</h3>
-      <p className="muted">工作日主线 / 支线 / 杂项堆叠。周末显示未采样，不是 0 主线。无堆叠分钟标 —，不是假 0。</p>
-      <div className="week-legend">
-        <span><i className="week-swatch" style={{ background: "var(--gl-mainline)" }} />主线</span>
-        <span><i className="week-swatch" style={{ background: "var(--gl-side)" }} />支线</span>
-        <span><i className="week-swatch" style={{ background: "var(--gl-chore)" }} />杂项</span>
-      </div>
-      <div className="week-day-chart">
+    <PanelCard
+      title="按天"
+      caption="主线 / 支线 / 杂项堆叠。无堆叠分钟标 —，不是假 0。周末照常记录，未达标不惩罚。"
+    >
+      <Legend
+        items={[
+          { label: "主线", cat: "mainline" },
+          { label: "支线", cat: "side" },
+          { label: "杂项", cat: "admin" },
+        ]}
+      />
+      <div className="flex items-end gap-2">
         {days.map((d, i) => {
           const weekend = isWeekendDay(d.day);
           const total = d.core + d.side + d.chore;
           return (
-            <div key={d.day} className={`week-day-col ${weekend ? "weekend" : ""}`}>
-              <div className="week-day-stack" title={weekend ? "未采样" : `${total} 分钟`}>
-                {weekend || total === 0 ? (
-                  <div className="week-day-empty" />
-                ) : (
+            <div key={d.day} className="flex min-w-0 flex-1 flex-col items-center gap-1.5">
+              <div
+                className="flex h-36 w-full flex-col justify-end overflow-hidden rounded-md bg-muted/40"
+                title={`${total} 分钟`}
+              >
+                {total > 0 && (
                   <>
                     {d.core > 0 && (
                       <div
-                        className="week-stack-seg"
-                        style={{ flex: d.core, background: "var(--gl-mainline)" }}
+                        style={{
+                          height: `${(d.core / max) * 100}%`,
+                          background: `linear-gradient(180deg, ${categoryColor("mainline")}, ${categoryColorAt("mainline", 70)})`,
+                        }}
                       />
                     )}
                     {d.side > 0 && (
                       <div
-                        className="week-stack-seg"
-                        style={{ flex: d.side, background: "var(--gl-side)" }}
+                        style={{
+                          height: `${(d.side / max) * 100}%`,
+                          background: `linear-gradient(180deg, ${categoryColor("side")}, ${categoryColorAt("side", 70)})`,
+                        }}
                       />
                     )}
                     {d.chore > 0 && (
                       <div
-                        className="week-stack-seg"
-                        style={{ flex: d.chore, background: "var(--gl-chore)" }}
+                        style={{
+                          height: `${(d.chore / max) * 100}%`,
+                          background: `linear-gradient(180deg, ${categoryColor("admin")}, ${categoryColorAt("admin", 70)})`,
+                        }}
                       />
                     )}
-                    <div style={{ flex: Math.max(0, max - total) }} />
                   </>
                 )}
               </div>
-              <strong>{dayStackCaption(weekend, total)}</strong>
-              <span>{weekdayLabel(d.day, i)}</span>
+              <span className="text-xs font-medium tabular-nums">
+                {dayStackCaption(weekend, total)}
+              </span>
+              <span className="w-full text-center text-[10px] text-muted-foreground">
+                {`周${WEEKDAYS[i] ?? ""}`}
+              </span>
+              <span
+                className={cn(
+                  "w-full truncate text-center text-[10px] tabular-nums",
+                  weekend ? "text-muted-foreground/60" : "text-muted-foreground/80",
+                )}
+              >
+                {d.day.slice(5).replace("-", "/")}
+              </span>
             </div>
           );
         })}
       </div>
-    </section>
+    </PanelCard>
   );
 }
 
 function HeatPanel({ hours }: { hours: WeekHourRow[] }) {
   const byHour = new Map(hours.map((h) => [h.hour, h]));
   return (
-    <section className="week-card week-card-wide">
-      <h3>高效时段</h3>
-      <p className="muted">工作日 8–21 点：该小时主线秒 / 观测秒。无观测为灰，不是 0%。</p>
-      <div className="week-legend">
-        <span className="heat-legend-scale">
-          <i />低
-          <i />
-          <i />
-          <i />高
-        </span>
-        <span>无观测</span>
-      </div>
-      <div className="week-heat">
+    <PanelCard
+      wide
+      title="高效时段"
+      caption="工作日 8–21 点：该小时主线秒 / 观测秒。无观测为灰，不是 0%。"
+    >
+      <div className="grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1.5">
         {HEAT_HOURS.map((hour) => {
           const row = byHour.get(hour) ?? { hour, core: 0, observed: 0 };
           const tone = heatTone(row.core, row.observed);
           const mins = Math.floor(row.core / 60);
           const observed = row.observed > 0;
           return (
-            <div key={hour} className="week-heat-cell">
+            <div key={hour} className="flex flex-col items-center gap-1">
               <div
-                className={`week-heat-swatch ${observed ? "" : "empty"}`.trim()}
-                style={{
-                  background: observed
-                    ? `rgba(34, 197, 94, ${0.12 + tone * 0.88})`
-                    : "#e5e7eb",
-                }}
+                className={cn(
+                  "flex h-12 w-full items-center justify-center rounded-md text-[11px] font-medium tabular-nums transition-all duration-200",
+                  observed && "hover:ring-2 hover:ring-primary/40",
+                )}
                 title={
                   observed
                     ? `${hour}:00 主线 ${mins} 分钟 / 观测 ${Math.floor(row.observed / 60)} 分钟`
                     : `${hour}:00 无观测`
                 }
+                style={{
+                  background: observed
+                    ? `linear-gradient(160deg, ${categoryColorAt(
+                        "mainline",
+                        14 + tone * 42,
+                      )}, ${categoryColorAt("mainline", 6 + tone * 26)})`
+                    : "hsl(var(--muted))",
+                }}
               >
-                {observed ? `${mins}` : "·"}
+                {observed ? mins : "·"}
               </div>
-              <span>{hour}</span>
+              <span className="text-[10px] tabular-nums text-muted-foreground">{hour}</span>
             </div>
           );
         })}
       </div>
-    </section>
+    </PanelCard>
   );
 }
 
@@ -359,46 +473,20 @@ function WeekNumbers({
 }) {
   const playShare = observed <= 0 ? "无观测" : pct(data.distractionObservedRatio);
   return (
-    <section className="week-card">
-      <h3>本周数字</h3>
-      <p className="muted">主线小时来自 credited 秒 / 3600。环比无上周槽则为 —。达标只计工作日。</p>
-      <div className="week-legend">
-        <span>主线</span>
-        <span>环比</span>
-        <span>娱乐</span>
-        <span>复核</span>
-        <span>≥6h / ≥8h</span>
-        <span>连胜</span>
+    <PanelCard
+      wide
+      title="本周数字"
+      caption="主线小时来自 credited 秒 / 3600。环比无上周槽则为 —。达标只计工作日。"
+    >
+      <div className="grid grid-cols-2 gap-x-4 gap-y-5 sm:grid-cols-3 lg:grid-cols-6">
+        <MiniStat label="主线" value={`${data.coreHours.toFixed(1)} 小时`} />
+        <MiniStat label="较上周" value={wowLabel(data.wowCoreDeltaMinutes)} />
+        <MiniStat label="娱乐占观测" value={playShare} />
+        <MiniStat label="待复核率" value={pct(data.pendingOverResolved)} />
+        <MiniStat label="≥6h / ≥8h" value={`${data.daysGe6h} / ${data.daysGe8h} 日`} />
+        <MiniStat label="连胜" value={streak == null ? "—" : `${streak} 天`} />
       </div>
-      <div className="stats-nums">
-        <div>
-          <span className="muted">主线</span>
-          <strong>{data.coreHours.toFixed(1)} 小时</strong>
-        </div>
-        <div>
-          <span className="muted">较上周</span>
-          <strong>{wowLabel(data.wowCoreDeltaMinutes)}</strong>
-        </div>
-        <div>
-          <span className="muted">娱乐占观测</span>
-          <strong>{playShare}</strong>
-        </div>
-        <div>
-          <span className="muted">待复核率</span>
-          <strong>{pct(data.pendingOverResolved)}</strong>
-        </div>
-        <div>
-          <span className="muted">≥6h / ≥8h</span>
-          <strong>
-            {data.daysGe6h} 日 / {data.daysGe8h} 日
-          </strong>
-        </div>
-        <div>
-          <span className="muted">连胜</span>
-          <strong>{streak == null ? "—" : `${streak} 天`}</strong>
-        </div>
-      </div>
-    </section>
+    </PanelCard>
   );
 }
 
@@ -406,70 +494,76 @@ function MonthCalendar({
   year,
   month,
   days,
+  today,
   onPickDay,
 }: {
   year: number;
   month: number;
   days: MonthDayCell[];
+  today: string;
   onPickDay: (day: string) => void;
 }) {
   const byDay = new Map(days.map((d) => [d.day, d]));
   const cells = calendarCells(year, month);
   return (
-    <section className="week-card week-card-wide">
-      <h3>热力月历</h3>
-      <p className="muted">颜色按当天 credited 主线秒 / 28800（8h）钳制 0–1。周末未采样，不是 0 主线。点格打开该日日报。</p>
-      <div className="week-legend">
-        <span className="heat-legend-scale">
-          <i />低
-          <i />
-          <i />
-          <i />高
-        </span>
-        <span>周末未采样</span>
-        <span>未来日</span>
-      </div>
-      <div className="month-cal">
+    <PanelCard
+      wide
+      title="热力月历"
+      caption="颜色按当天 credited 主线秒 / 28800（8h）钳制 0–1。周末同样着色。点格打开该日日报。"
+    >
+      <div className="grid grid-cols-7 gap-1.5">
         {WEEKDAYS.map((w) => (
-          <div key={w} className="month-cal-head">
+          <div
+            key={w}
+            className="pb-1 text-center text-[10px] font-medium text-muted-foreground"
+          >
             {w}
           </div>
         ))}
         {cells.map((c, i) => {
-          if (!c.day) {
-            return <div key={`b-${i}`} className="month-cell blank" />;
-          }
+          if (!c.day) return <div key={`b-${i}`} className="aspect-square" />;
           const row = byDay.get(c.day);
           const weekend = row?.isWeekend ?? isWeekendDay(c.day);
           const future = row?.isFuture ?? false;
           const tone = monthHeatCell(row?.creditedCore ?? 0);
           const coreMin = Math.floor((row?.creditedCore ?? 0) / 60);
-          let note = "无观测";
-          if (weekend) note = "未采样";
-          else if (future) note = "未来";
-          else if (coreMin > 0) note = `${coreMin}m`;
           const credited = row?.creditedCore ?? 0;
-          const style =
-            weekend || future
-              ? undefined
-              : credited > 0
-                ? { background: `rgba(34, 197, 94, ${0.08 + tone * 0.88})` }
-                : { background: "#e5e7eb" };
+
           return (
             <button
               key={c.day}
               type="button"
-              className={`month-cell ${weekend ? "weekend" : ""} ${future ? "future" : ""}`.trim()}
-              style={style}
               onClick={() => onPickDay(c.day!)}
+              title={`${c.day} · ${monthCellNote(future, coreMin)}`}
+              className={cn(
+                "flex aspect-square flex-col items-center justify-center rounded-md text-xs transition-all duration-200",
+                !future && "hover:-translate-y-0.5 hover:shadow-md hover:shadow-primary/10",
+                future && "cursor-default opacity-50",
+                weekend && "ring-1 ring-inset ring-border",
+                c.day === today && "ring-2 ring-primary",
+              )}
+              style={{
+                background: future
+                  ? undefined
+                  : credited > 0
+                    ? `linear-gradient(160deg, ${categoryColorAt(
+                        "mainline",
+                        12 + tone * 42,
+                      )}, ${categoryColorAt("mainline", 6 + tone * 24)})`
+                    : "hsl(var(--muted))",
+              }}
             >
-              <span>{c.day.slice(8)}</span>
-              <em>{note}</em>
+              <span className="font-medium tabular-nums leading-none">
+                {c.day.slice(8)}
+              </span>
+              <span className="mt-0.5 text-[9px] leading-none text-muted-foreground">
+                {monthCellNote(future, coreMin)}
+              </span>
             </button>
           );
         })}
       </div>
-    </section>
+    </PanelCard>
   );
 }
 
@@ -480,64 +574,36 @@ function MonthExtras({
   data: MonthReportView;
   streak: number | null;
 }) {
-  const emptyCoins = data.coinsEarned === 0 && data.coinsSpent === 0 && data.xpEarned === 0;
+  const emptyCoins =
+    data.coinsEarned === 0 && data.coinsSpent === 0 && data.xpEarned === 0;
   return (
     <>
-      <section className="week-card">
-        <h3>硬币与能量</h3>
-        <p className="muted">本月 ledger 正增量合计 vs 兑换支出。能量只展示本月获得，不含未完成娱乐折算。</p>
-        <div className="week-legend">
-          <span>硬币获得</span>
-          <span>硬币兑换</span>
-          <span>能量获得</span>
-        </div>
+      <PanelCard
+        title="硬币与能量"
+        caption="本月 ledger 正增量合计 vs 兑换支出。能量只展示本月获得，不含未完成娱乐折算。"
+      >
         {emptyCoins ? (
-          <p className="week-empty-inline">本月还没有账本记录</p>
+          <EmptyLine>本月还没有账本记录</EmptyLine>
         ) : (
-          <div className="stats-nums">
-            <div>
-              <span className="muted">硬币获得</span>
-              <strong>{data.coinsEarned}</strong>
-            </div>
-            <div>
-              <span className="muted">兑换支出</span>
-              <strong>{data.coinsSpent}</strong>
-            </div>
-            <div>
-              <span className="muted">能量获得</span>
-              <strong>{data.xpEarned}</strong>
-            </div>
+          <div className="grid grid-cols-3 gap-4">
+            <MiniStat label="硬币获得" value={data.coinsEarned} />
+            <MiniStat label="兑换支出" value={data.coinsSpent} />
+            <MiniStat label="能量获得" value={data.xpEarned} />
           </div>
         )}
-      </section>
-      <section className="week-card">
-        <h3>月份徽章</h3>
-        <p className="muted">黄金日按 credited ≥ 8h。冻结按被保护日所在月。连胜是今日快照，不考古历史最长。</p>
-        <div className="week-legend">
-          <span>黄金日</span>
-          <span>冻结</span>
-          <span>completed 日</span>
-          <span>连胜</span>
+      </PanelCard>
+      <PanelCard
+        wide
+        title="月份徽章"
+        caption="黄金日按 credited ≥ 8h。冻结按被保护日所在月。连胜是今日快照，不考古历史最长。"
+      >
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <MiniStat label="黄金日" value={`${data.goldDays} 天`} />
+          <MiniStat label="冻结" value={`${data.freezeCount} 次`} />
+          <MiniStat label="本月完成" value={`${data.completedDays} 日`} />
+          <MiniStat label="当前连胜" value={streak == null ? "—" : `${streak} 天`} />
         </div>
-        <div className="stats-nums">
-          <div>
-            <span className="muted">黄金日</span>
-            <strong>{data.goldDays} 天</strong>
-          </div>
-          <div>
-            <span className="muted">冻结</span>
-            <strong>{data.freezeCount} 次</strong>
-          </div>
-          <div>
-            <span className="muted">本月完成</span>
-            <strong>{data.completedDays} 日</strong>
-          </div>
-          <div>
-            <span className="muted">当前连胜</span>
-            <strong>{streak == null ? "—" : `${streak} 天`}</strong>
-          </div>
-        </div>
-      </section>
+      </PanelCard>
     </>
   );
 }
@@ -546,97 +612,92 @@ function RhythmPanel({ data }: { data: RhythmReportView }) {
   const hasStart = data.startHours.some((s) => s.hour != null);
   const runMinutes = data.distractionRunSlots * 15;
   return (
-    <div className="week-grid">
-      <section className="week-card">
-        <h3>开工时刻</h3>
-        <p className="muted">每个工作日第一个 credited 主线 &gt; 0 的槽开始钟点。尚无主线的日子不画点。</p>
-        <div className="week-legend">
-          <span>点的高度 = 钟点 / 24</span>
-        </div>
+    <div className="grid gap-4 lg:grid-cols-2">
+      <PanelCard
+        title="开工时刻"
+        caption="每个工作日第一个 credited 主线 > 0 的槽开始钟点。尚无主线的日子不画点。"
+      >
         {hasStart ? (
-          <div className="rhythm-start-chart">
+          <div className="flex items-end gap-2">
             {data.startHours.map((s) => (
-              <div key={s.day} className="rhythm-start-col-wrap">
-                <div className="rhythm-start-col">
+              <div key={s.day} className="flex min-w-0 flex-1 flex-col items-center gap-1.5">
+                <div className="relative h-36 w-full rounded-md bg-muted/40">
                   {s.hour != null && (
                     <div
-                      className="rhythm-start-dot"
-                      style={{ bottom: `${(s.hour / 24) * 100}%` }}
+                      className="absolute left-1/2 size-3 -translate-x-1/2 translate-y-1/2 rounded-full"
+                      style={{
+                        bottom: `${(s.hour / 24) * 100}%`,
+                        background: categoryColor("mainline"),
+                      }}
                       title={`${s.day} ${s.hour} 点`}
                     />
                   )}
                 </div>
-                <span>{s.day.slice(5)}</span>
-                <strong>{s.hour == null ? "—" : `${s.hour}点`}</strong>
+                <span className="truncate text-[10px] text-muted-foreground">
+                  {s.day.slice(5)}
+                </span>
+                <span className="text-xs font-medium tabular-nums">
+                  {s.hour == null ? "—" : `${s.hour}点`}
+                </span>
               </div>
             ))}
           </div>
         ) : (
-          <p className="week-empty-inline">尚无主线开工记录</p>
+          <EmptyLine>尚无主线开工记录</EmptyLine>
         )}
-      </section>
-      <section className="week-card">
-        <h3>达标率</h3>
-        <p className="muted">范围内工作日 credited ≥6h / ≥8h 的比例。周末不采样，不进分母。</p>
-        <div className="week-legend">
-          <span>≥6h</span>
-          <span>≥8h</span>
+      </PanelCard>
+
+      <PanelCard
+        title="达标率"
+        caption="范围内工作日 credited ≥6h / ≥8h 的比例。周末照常记录，但不进分母、未达标不惩罚。"
+      >
+        <div className="grid grid-cols-2 gap-4">
+          <MiniStat label="≥6h" value={pct(data.rate6h)} />
+          <MiniStat label="≥8h" value={pct(data.rate8h)} />
         </div>
-        <div className="stats-nums">
-          <div>
-            <span className="muted">≥6h</span>
-            <strong>{pct(data.rate6h)}</strong>
-          </div>
-          <div>
-            <span className="muted">≥8h</span>
-            <strong>{pct(data.rate8h)}</strong>
-          </div>
-        </div>
-        <p className="muted">周末不采样</p>
-      </section>
-      <section className="week-card">
-        <h3>娱乐连段</h3>
-        <p className="muted">连续 ≥3 个槽 dominant 为娱乐的次数与总分钟（槽 × 15）。用来看是不是一滑就半小时。</p>
-        <div className="week-legend">
-          <span>次数</span>
-          <span>分钟</span>
-        </div>
+        <p className="mt-4 text-[11px] text-muted-foreground">周末未达标不断连</p>
+      </PanelCard>
+
+      <PanelCard
+        title="娱乐连段"
+        caption="连续 ≥3 个槽 dominant 为娱乐的次数与总分钟（槽 × 15）。用来看是不是一滑就半小时。"
+      >
         {data.distractionRunCount === 0 ? (
-          <p className="week-empty-inline">没有连续娱乐段</p>
+          <EmptyLine>没有连续娱乐段</EmptyLine>
         ) : (
-          <div className="stats-nums">
-            <div>
-              <span className="muted">次数</span>
-              <strong>{data.distractionRunCount}</strong>
-            </div>
-            <div>
-              <span className="muted">总分钟</span>
-              <strong>{runMinutes}</strong>
-            </div>
+          <div className="grid grid-cols-2 gap-4">
+            <MiniStat label="次数" value={data.distractionRunCount} />
+            <MiniStat label="总分钟" value={runMinutes} />
           </div>
         )}
-      </section>
-      <section className="week-card">
-        <h3>深时段</h3>
-        <p className="muted">范围内主线占观测比最高的三个钟点（热力同一口径）。</p>
-        <div className="week-legend">
-          <span>高峰钟点</span>
-        </div>
+      </PanelCard>
+
+      <PanelCard title="深时段" caption="范围内主线占观测比最高的三个钟点（热力同一口径）。">
         {data.peakHours.length === 0 ? (
-          <p className="week-empty-inline">没有足够的小时观测</p>
+          <EmptyLine>没有足够的小时观测</EmptyLine>
         ) : (
-          <ol className="stats-peak-list">
+          <div className="flex flex-wrap gap-2">
             {data.peakHours.map((h) => (
-              <li key={h}>{h} 点</li>
+              <Badge key={h} tone="primary" className="text-xs">
+                {h} 点
+              </Badge>
             ))}
-          </ol>
+          </div>
         )}
-      </section>
+      </PanelCard>
     </div>
   );
 }
 
-function AppPanel({ data }: { data: AppReportView }) {
+function AppPanel({
+  data,
+  busyApp,
+  onAssign,
+}: {
+  data: AppReportView;
+  busyApp: string | null;
+  onAssign: (app: string, target: AppListTarget) => void;
+}) {
   const newSet = new Set(data.newcomers);
   const apps = [...data.apps].sort((a, b) => {
     const an = newSet.has(a.name) ? 0 : 1;
@@ -645,90 +706,130 @@ function AppPanel({ data }: { data: AppReportView }) {
     return b.minutes - a.minutes;
   });
   return (
-    <div className="week-grid">
-      <section className="week-card">
-        <h3>应用</h3>
-        <p className="muted">范围内 app_day_stats 按 hint 秒 / 60 取整。主类别取秒最大者。排序默认总分钟降序，新面孔置顶。</p>
+    <div className="grid gap-4 lg:grid-cols-2">
+      <PanelCard
+        wide
+        title="应用"
+        caption="范围内 app_day_stats 按 hint 秒 / 60 取整。主类别取秒最大者。右侧可直接把应用归到某个名单；选「待定」则不进任何规则，留给 AI 按标题与截图判断。改动从下一个还没开始的槽生效。"
+      >
         {data.newcomers.length > 0 && (
-          <p className="app-newcomers">
-            新面孔（考虑加进名单）：{data.newcomers.join("、")}
+          <p className="mb-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+            有 <strong className="font-medium">{data.newcomers.length}</strong>{" "}
+            个应用还没在任何名单里，标了「新」。用右侧的菜单归类；不确定就留「待定」，
+            交给 AI 按标题和截图判断。
           </p>
         )}
         {apps.length === 0 ? (
-          <p className="week-empty-inline">无应用明细</p>
+          <>
+            <EmptyLine>无应用明细</EmptyLine>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              从本版本上线后的槽才有 App 明细。
+            </p>
+          </>
         ) : (
-          <table className="stats-table">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>分钟</th>
-                <th>主类别</th>
-                <th>名单</th>
-              </tr>
-            </thead>
-            <tbody>
-              {apps.map((row) => (
-                <tr key={row.name} className={newSet.has(row.name) ? "newcomer" : ""}>
-                  <td>{row.name}</td>
-                  <td>{row.minutes}</td>
-                  <td>{hintLabel(row.dominant)}</td>
-                  <td>{listedLabel(row.listedAs)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th className="h-9 pr-3 font-medium">名称</th>
+                  <th className="h-9 pr-3 text-right font-medium">分钟</th>
+                  <th className="h-9 pr-3 font-medium">主类别</th>
+                  <th className="h-9 w-40 font-medium">名单</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {apps.map((row) => (
+                  <tr
+                    key={row.name}
+                    className="border-b transition-colors last:border-0 hover:bg-muted/50"
+                  >
+                    <td className="py-2 pr-3">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate">{row.name}</span>
+                        {newSet.has(row.name) && <Badge tone="warning">新</Badge>}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{row.minutes}</td>
+                    <td className="py-2 pr-3">{hintLabel(row.dominant)}</td>
+                    <td className="py-2">
+                      {row.listedAs === "never_capture" ? (
+                        <Badge tone="neutral">{listedLabel(row.listedAs)}</Badge>
+                      ) : (
+                        <Select
+                          size="sm"
+                          className="w-36"
+                          aria-label={`${row.name} 的名单`}
+                          disabled={busyApp !== null}
+                          value={currentListOf(row.listedAs)}
+                          onChange={(e) =>
+                            onAssign(row.name, e.target.value as AppListTarget)
+                          }
+                        >
+                          {APP_LISTS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {busyApp === row.name ? "保存中…" : opt.label}
+                            </option>
+                          ))}
+                        </Select>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-        {apps.length === 0 && (
-          <p className="muted">从本版本上线后的槽才有 App 明细。</p>
-        )}
-      </section>
-      <section className="week-card">
-        <h3>浏览器 Host</h3>
-        <p className="muted">Top 15 host，类别同样来自 hint 秒，不是 dominant × 15。</p>
-        <div className="week-legend">
-          <span>host</span>
-          <span>分钟</span>
-          <span>主类别</span>
-        </div>
+      </PanelCard>
+
+      <PanelCard title="浏览器 Host" caption="Top 15 host，类别同样来自 hint 秒，不是 dominant × 15。">
         {data.hosts.length === 0 ? (
-          <p className="week-empty-inline">没有浏览器 host 明细</p>
+          <EmptyLine>没有浏览器 host 明细</EmptyLine>
         ) : (
-          <table className="stats-table">
-            <thead>
-              <tr>
-                <th>Host</th>
-                <th>分钟</th>
-                <th>主类别</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.hosts.map((row) => (
-                <tr key={row.host}>
-                  <td>{row.host}</td>
-                  <td>{row.minutes}</td>
-                  <td>{hintLabel(row.dominant)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th className="h-9 pr-3 font-medium">Host</th>
+                  <th className="h-9 pr-3 text-right font-medium">分钟</th>
+                  <th className="h-9 font-medium">主类别</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.hosts.map((row) => (
+                  <tr
+                    key={row.host}
+                    className="border-b transition-colors last:border-0 hover:bg-muted/50"
+                  >
+                    <td className="py-2 pr-3">{row.host}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{row.minutes}</td>
+                    <td className="py-2">{hintLabel(row.dominant)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-      </section>
-      <section className="week-card">
-        <h3>保护时长</h3>
-        <p className="muted">永不截屏 / 密码框，不发币，不进主线也不进娱乐。</p>
-        <div className="week-legend">
-          <span>保护分钟</span>
+      </PanelCard>
+
+      <PanelCard
+        wide
+        title="保护时长"
+        caption="永不截屏 / 密码框，不发币，不进主线也不进娱乐。"
+      >
+        <div className="flex items-baseline gap-3">
+          <span className="text-3xl font-semibold tabular-nums tracking-tight">
+            {data.protectedMinutes}
+          </span>
+          <span className="text-sm text-muted-foreground">分钟未观测</span>
         </div>
-        <div className="app-protected">
-          <strong>{data.protectedMinutes} 分钟</strong>
-          <span className="muted">永不截屏 / 密码框，不发币</span>
-        </div>
-      </section>
+      </PanelCard>
     </div>
   );
 }
 
-export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
+/* -------------------------------- page ------------------------------- */
+
+export function Stats({ onPickDay }: { onPickDay: (day: string) => void }) {
   const [segment, setSegment] = useState<Segment>("week");
   const [rangeKind, setRangeKind] = useState<StatsRangeKind>("week");
   const [weekAnchor, setWeekAnchor] = useState(todayIso);
@@ -743,6 +844,8 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
+  const [busyApp, setBusyApp] = useState<string | null>(null);
+  const [assignError, setAssignError] = useState<string | null>(null);
 
   const effectiveKind: StatsRangeKind =
     segment === "month" ? "month" : segment === "week" ? "week" : rangeKind;
@@ -763,7 +866,7 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
     async function load() {
       try {
         if (segment === "week") {
-          const w = await getWeek();
+          const w = await getWeek(weekAnchor);
           if (cancelled) return;
           setWeekData(w);
           try {
@@ -809,19 +912,48 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
     };
   }, [segment, effectiveKind, weekAnchor, monthYear, monthNum, reload]);
 
+  /**
+   * File an app under one policy list, or under none. Reuses the existing
+   * settings round trip, and passes `updatePolicy: true` so a new policy
+   * version is pinned — per the versioning invariant this only affects
+   * slots that have not started yet.
+   */
+  async function assignApp(app: string, target: AppListTarget) {
+    setBusyApp(app);
+    setAssignError(null);
+    try {
+      const current = await getSettings();
+      const withoutApp = (list: string[]) =>
+        list.filter((x) => x.toLowerCase() !== app.toLowerCase());
+      const next: AppSettings = { ...current };
+      for (const field of LIST_FIELDS) {
+        next[field] = withoutApp(current[field]);
+      }
+      if (target !== "unlisted") {
+        const field = LIST_FIELD[target];
+        next[field] = [...next[field], app];
+      }
+      await saveSettings(next, true);
+      setReload((n) => n + 1);
+    } catch (e) {
+      setAssignError(String(e));
+    } finally {
+      setBusyApp(null);
+    }
+  }
+
   const currentMonday = isoMonday(todayDay);
   const viewMonday = isoMonday(weekAnchor);
   const thisMonth = {
     year: Number(todayDay.slice(0, 4)),
     month: Number(todayDay.slice(5, 7)),
   };
-  const canPage = weekRangePagingEnabled(segment);
   const atCurrentWeek = viewMonday >= currentMonday;
   const atCurrentMonth =
-    monthYear > thisMonth.year || (monthYear === thisMonth.year && monthNum >= thisMonth.month);
+    monthYear > thisMonth.year ||
+    (monthYear === thisMonth.year && monthNum >= thisMonth.month);
 
   function goPrev() {
-    if (!canPage) return;
     if (effectiveKind === "week") {
       setWeekAnchor(addDays(isoMonday(weekAnchor), -7));
     } else {
@@ -832,7 +964,6 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
   }
 
   function goNext() {
-    if (!canPage) return;
     if (effectiveKind === "week") {
       if (atCurrentWeek) return;
       setWeekAnchor(addDays(isoMonday(weekAnchor), 7));
@@ -845,7 +976,6 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
   }
 
   function goHere() {
-    if (!canPage) return;
     setWeekAnchor(todayDay);
     setMonthYear(thisMonth.year);
     setMonthNum(thisMonth.month);
@@ -858,135 +988,152 @@ export function Week({ onPickDay }: { onPickDay: (day: string) => void }) {
         ? `${isoMonday(weekAnchor)} 至 ${isoSunday(weekAnchor)}`
         : `${monthYear}年${monthNum}月`;
 
-  if (error) {
-    return (
-      <div className="page">
-        <p className="error">{error}</p>
-        <button type="button" onClick={() => setReload((n) => n + 1)}>
-          重试
-        </button>
-      </div>
-    );
-  }
-
   const weekEmpty = !weekData || !weekHasObservation(minutesOfWeek(weekData));
   const monthEmpty = !monthData || activityTotal(monthData.activity) === 0;
 
-  return (
-    <div className="page week-page">
-      <header className="stats-head">
-        <div className="stats-seg" role="tablist" aria-label="统计分段">
-          {SEGMENTS.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              role="tab"
-              aria-selected={segment === s.id}
-              className={segment === s.id ? "active" : ""}
-              onClick={() => pickSegment(s.id)}
-            >
-              {s.label}
-            </button>
-          ))}
+  const header = (
+    <PageHeader
+      title={<h1 className="text-lg font-semibold tracking-tight">统计</h1>}
+      subtitle={rangeText}
+      center={
+        <div className="flex items-center gap-2">
+          <Segmented
+            aria-label="统计分段"
+            size="sm"
+            value={segment}
+            onChange={pickSegment}
+            options={SEGMENTS}
+          />
+          {(segment === "rhythm" || segment === "app") && (
+            <Segmented
+              aria-label="范围种类"
+              size="sm"
+              value={rangeKind}
+              onChange={setRangeKind}
+              options={[
+                { value: "week", label: "按周" },
+                { value: "month", label: "按月" },
+              ]}
+            />
+          )}
         </div>
-        {(segment === "rhythm" || segment === "app") && (
-          <div className="stats-kind" aria-label="范围种类">
-            <button
-              type="button"
-              className={rangeKind === "week" ? "active" : ""}
-              onClick={() => setRangeKind("week")}
-            >
-              按周
-            </button>
-            <button
-              type="button"
-              className={rangeKind === "month" ? "active" : ""}
-              onClick={() => setRangeKind("month")}
-            >
-              按月
-            </button>
-          </div>
-        )}
-        {canPage && (
-          <div className="stats-range">
-            <button type="button" aria-label="上一段" onClick={goPrev}>
-              ‹
-            </button>
-            <button type="button" className="stats-range-here" onClick={goHere}>
-              {effectiveKind === "week" ? "本周" : "本月"}
-            </button>
-            <button
-              type="button"
-              aria-label="下一段"
-              onClick={goNext}
-              disabled={effectiveKind === "week" ? atCurrentWeek : atCurrentMonth}
-            >
-              ›
-            </button>
-          </div>
-        )}
-      </header>
-      <p className="muted stats-range-label">{rangeText}</p>
+      }
+      actions={
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="icon-sm" aria-label="上一段" onClick={goPrev}>
+            <ChevronLeft className="size-4" />
+          </Button>
+          <Button variant="outline" size="sm" onClick={goHere}>
+            {effectiveKind === "week" ? "本周" : "本月"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="下一段"
+            onClick={goNext}
+            disabled={effectiveKind === "week" ? atCurrentWeek : atCurrentMonth}
+          >
+            <ChevronRight className="size-4" />
+          </Button>
+        </div>
+      }
+    />
+  );
 
-      {loading && <p className="muted">加载中…</p>}
+  return (
+    <>
+      {header}
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl space-y-4 px-6 py-4">
+          {error && (
+            <Card className="flex flex-col items-center gap-3 p-8 text-center">
+              <p className="text-sm text-destructive">{error}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setReload((n) => n + 1)}
+              >
+                重试
+              </Button>
+            </Card>
+          )}
 
-      {!loading && segment === "week" && weekData && (
-        <>
-          {weekEmpty ? (
-            <p className="week-empty">本周还没有观测</p>
-          ) : (
-            <div className="week-grid">
-              <CategoryPanel
-                rows={WEEK_CATEGORIES.map((c) => ({
-                  key: String(c.key),
-                  label: c.label,
-                  color: c.color,
-                  mins: weekData[c.key] as number,
-                }))}
-                observed={observedMinutes(weekData)}
-              />
-              <DailyPanel days={weekData.byDay} />
-              <HeatPanel hours={weekData.byHour} />
-              <WeekNumbers
-                data={weekData}
-                streak={streak}
-                observed={observedMinutes(weekData)}
-              />
+          {!error && loading && (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <SkeletonPanel rows={2} />
+              <SkeletonPanel rows={2} />
             </div>
           )}
-        </>
-      )}
 
-      {!loading && segment === "month" && monthData && (
-        <>
-          {monthEmpty && <p className="week-empty">本月还没有观测</p>}
-          <div className="week-grid">
-            <MonthCalendar
-              year={monthYear}
-              month={monthNum}
-              days={monthData.days}
-              onPickDay={onPickDay}
-            />
-            {monthShowsLedgerCards(!monthEmpty) && (
-              <CategoryPanel
-                rows={MONTH_CATEGORIES.map((c) => ({
-                  key: c.key,
-                  label: c.label,
-                  color: c.color,
-                  mins: monthData.activity[c.key],
-                }))}
-                observed={observedMinutes(monthData.activity)}
+          {!error && !loading && segment === "week" && weekData && (
+            <>
+              {weekEmpty ? (
+                <EmptyLine>本周还没有观测</EmptyLine>
+              ) : (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <CategoryPanel
+                    rows={WEEK_CATEGORIES.map((c) => ({
+                      key: String(c.key),
+                      label: c.label,
+                      cat: c.cat,
+                      mins: weekData[c.key] as number,
+                    }))}
+                    observed={observedMinutes(weekData)}
+                  />
+                  <DailyPanel days={weekData.byDay} />
+                  <HeatPanel hours={weekData.byHour} />
+                  <WeekNumbers
+                    data={weekData}
+                    streak={streak}
+                    observed={observedMinutes(weekData)}
+                  />
+                </div>
+              )}
+            </>
+          )}
+
+          {!error && !loading && segment === "month" && monthData && (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <MonthCalendar
+                year={monthYear}
+                month={monthNum}
+                days={monthData.days}
+                today={todayDay}
+                onPickDay={onPickDay}
               />
-            )}
-            {monthShowsLedgerCards(!monthEmpty) && (
-              <MonthExtras data={monthData} streak={streak} />
-            )}
-          </div>
-        </>
-      )}
+              {monthEmpty && <EmptyLine className="lg:col-span-2">本月还没有观测</EmptyLine>}
+              {monthShowsLedgerCards(!monthEmpty) && (
+                <CategoryPanel
+                  rows={MONTH_CATEGORIES.map((c) => ({
+                    key: c.key,
+                    label: c.label,
+                    cat: c.cat,
+                    mins: monthData.activity[c.key],
+                  }))}
+                  observed={observedMinutes(monthData.activity)}
+                />
+              )}
+              {monthShowsLedgerCards(!monthEmpty) && (
+                <MonthExtras data={monthData} streak={streak} />
+              )}
+            </div>
+          )}
 
-      {!loading && segment === "rhythm" && rhythm && <RhythmPanel data={rhythm} />}
-      {!loading && segment === "app" && apps && <AppPanel data={apps} />}
-    </div>
+          {!error && !loading && segment === "rhythm" && rhythm && (
+            <RhythmPanel data={rhythm} />
+          )}
+          {!error && !loading && segment === "app" && apps && (
+            <>
+              {assignError && (
+                <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {assignError}
+                </p>
+              )}
+              <AppPanel data={apps} busyApp={busyApp} onAssign={assignApp} />
+            </>
+          )}
+        </div>
+      </div>
+    </>
   );
 }

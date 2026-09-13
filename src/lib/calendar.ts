@@ -128,33 +128,6 @@ export function dayStartUnix(day: string): number {
   return Math.floor(new Date(y, m - 1, d).getTime() / 1000);
 }
 
-export function roleClass(role: string): string {
-  switch (role) {
-    case "mainline":
-    case "core_research":
-    case "core":
-      return "role-mainline";
-    case "research_support":
-    case "support":
-      return "role-support";
-    case "side":
-    case "side_project":
-    case "custom":
-      return "role-side";
-    case "longterm":
-      return "role-longterm";
-    case "chore":
-    case "admin":
-      return "role-chore";
-    case "distraction":
-      return "role-play";
-    case "pending_review":
-      return "role-pending";
-    default:
-      return "role-muted";
-  }
-}
-
 export function dominantLabel(dominant: string): string {
   switch (dominant) {
     case "core_research":

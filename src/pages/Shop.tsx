@@ -1,4 +1,20 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Check, Coins, Pencil, Plus, Timer, Zap } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
+import { PageHeader } from "../components/PageHeader";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { EmptyLine } from "../components/ui/empty-state";
+import { Input } from "../components/ui/input";
+import { Progress } from "../components/ui/progress";
+import { SkeletonPanel } from "../components/ui/skeleton";
 import {
   archiveWish,
   createWish,
@@ -16,10 +32,12 @@ import {
 } from "../lib/feel";
 import { minutesUntilShopUnlock } from "../lib/shopUnlock";
 import { splitWishes } from "../lib/shopSplit";
+import { cn } from "../lib/utils";
 
 const GOLD_DAY_MINUTES = 480;
 const HISTORY_LIMIT = 30;
 
+/** Module-level single-flight guard: a double click must not spend twice. */
 let redeemInFlight = false;
 
 function newId(): string {
@@ -85,10 +103,12 @@ function parseWishFields(
   return { name: trimmed, price: priceNum, duration: durationNum, err: null };
 }
 
+/* --------------------------- wish glyphs ---------------------------- */
+
 function GlyphSvg({ children, label }: { children: ReactNode; label: string }) {
   return (
     <svg
-      className="gift-glyph-svg"
+      className="size-7"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -150,8 +170,14 @@ function WishGlyph({ name }: { name: string }) {
     );
   }
   const glyph = name.trim().slice(0, 1) || "礼";
-  return <span aria-hidden="true">{glyph}</span>;
+  return (
+    <span className="text-xl font-semibold" aria-hidden="true">
+      {glyph}
+    </span>
+  );
 }
+
+/* ---------------------------- gift card ----------------------------- */
 
 function GiftCard({
   wish,
@@ -253,72 +279,123 @@ function GiftCard({
 
   if (editing) {
     return (
-      <form className="gift-card gift-edit" onSubmit={(e) => void handleSave(e)}>
-        <input value={editName} disabled={busy} onChange={(e) => setEditName(e.target.value)} />
-        <input
+      <form
+        onSubmit={(e) => void handleSave(e)}
+        className="flex flex-col gap-2 rounded-xl border bg-card p-4"
+      >
+        <Input
+          value={editName}
+          disabled={busy}
+          placeholder="名称"
+          onChange={(e) => setEditName(e.target.value)}
+        />
+        <Input
           type="number"
           min={1}
           value={editPrice}
           disabled={busy}
+          placeholder="价格"
           onChange={(e) => setEditPrice(e.target.value)}
         />
         {isEnergy && (
-          <input
+          <Input
             type="number"
             min={5}
             value={editDuration}
             disabled={busy}
+            placeholder="分钟"
             onChange={(e) => setEditDuration(e.target.value)}
           />
         )}
-        {err && <p className="error">{err}</p>}
-        <button type="submit" disabled={busy}>
-          保存
-        </button>
-        <button type="button" className="secondary" onClick={() => setEditing(false)}>
-          取消
-        </button>
+        {err && <p className="text-[11px] text-destructive">{err}</p>}
+        <div className="mt-auto flex gap-2">
+          <Button type="submit" size="sm" disabled={busy} className="flex-1">
+            保存
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setEditing(false)}
+          >
+            取消
+          </Button>
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={busy}
+          onClick={() => void handleArchive()}
+          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+        >
+          停用这个愿望
+        </Button>
       </form>
     );
   }
 
   return (
-    <article className={`gift-card ${isEnergy ? "energy" : "coin"}${justRedeemed ? " just-redeemed" : ""}`}>
-      <span className="gift-glyph" aria-hidden="true">
-        <WishGlyph name={wish.name} />
-      </span>
-      <strong>{wish.name}</strong>
-      <p className="gift-price">
-        {wish.price} {isEnergy ? "能量" : "硬币"}
-      </p>
-      {wish.durationMinutes != null && <p className="gift-duration">{wish.durationMinutes} 分钟</p>}
-      {err && <p className="error">{err}</p>}
+    <article
+      className={cn(
+        "group relative flex flex-col rounded-xl border bg-card p-4 transition-all duration-200",
+        "hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5",
+        justRedeemed && "animate-pop border-success/60 bg-success/5",
+      )}
+    >
       <button
         type="button"
+        aria-label={`编辑 ${wish.name}`}
+        disabled={busy}
+        onClick={() => setEditing(true)}
+        className={cn(
+          "absolute right-2 top-2 rounded-md p-1.5 text-muted-foreground transition-opacity",
+          "hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100",
+          "opacity-0 disabled:pointer-events-none",
+        )}
+      >
+        <Pencil className="size-3.5" aria-hidden />
+      </button>
+
+      <div
+        className={cn(
+          "mx-auto flex size-12 items-center justify-center rounded-xl bg-gradient-to-br ring-1 ring-inset ring-current/10",
+          isEnergy
+            ? "from-primary/25 to-primary/5 text-primary"
+            : "from-warning/30 to-warning/5 text-warning",
+        )}
+      >
+        <WishGlyph name={wish.name} />
+      </div>
+      <p className="mt-3 line-clamp-2 text-center text-sm font-medium leading-snug">
+        {wish.name}
+      </p>
+      <p className="mt-0.5 text-center text-xs text-muted-foreground">
+        {wish.price} {isEnergy ? "能量" : "硬币"}
+      </p>
+      {wish.durationMinutes != null && (
+        <p className="mt-0.5 flex items-center justify-center gap-1 text-[11px] text-muted-foreground">
+          <Timer className="size-3" aria-hidden />
+          {wish.durationMinutes} 分钟
+        </p>
+      )}
+      <div className="h-3" />
+      {err && <p className="mt-2 text-[11px] text-destructive">{err}</p>}
+
+      <Button
+        size="sm"
+        className="mt-auto w-full"
+        variant={justRedeemed ? "outline" : "primary"}
         disabled={busy || locked || entertainmentBlocked || justRedeemed}
         onClick={() => void handleRedeem()}
       >
         {redeemLabel}
-      </button>
-      <div className="gift-more">
-        <button type="button" className="secondary" disabled={busy} onClick={() => setEditing(true)}>
-          改
-        </button>
-        <button type="button" className="secondary" disabled={busy} onClick={() => void handleArchive()}>
-          停用
-        </button>
-      </div>
+      </Button>
     </article>
   );
 }
 
-function AddCard({
-  kind,
-  onCreated,
-}: {
-  kind: "coin" | "xp";
-  onCreated: () => void;
-}) {
+function AddCard({ kind, onCreated }: { kind: "coin" | "xp"; onCreated: () => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [price, setPrice] = useState(kind === "coin" ? "32" : "20");
@@ -355,44 +432,55 @@ function AddCard({
 
   if (!open) {
     return (
-      <button type="button" className="gift-card gift-add" onClick={() => setOpen(true)}>
-        <span aria-hidden="true">+</span>
-        添加
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex min-h-[9.5rem] flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-muted-foreground transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/50 hover:text-primary"
+      >
+        <Plus className="size-5" aria-hidden />
+        <span className="text-xs">添加</span>
       </button>
     );
   }
 
   return (
-    <form className="gift-card gift-edit" onSubmit={(e) => void handleSubmit(e)}>
-      <input
+    <form
+      onSubmit={(e) => void handleSubmit(e)}
+      className="flex flex-col gap-2 rounded-xl border bg-card p-4"
+    >
+      <Input
         value={name}
         disabled={busy}
         placeholder="名称"
         onChange={(e) => setName(e.target.value)}
       />
-      <input
+      <Input
         type="number"
         min={1}
         value={price}
         disabled={busy}
+        placeholder="价格"
         onChange={(e) => setPrice(e.target.value)}
       />
       {kind === "xp" && (
-        <input
+        <Input
           type="number"
           min={5}
           value={duration}
           disabled={busy}
+          placeholder="分钟"
           onChange={(e) => setDuration(e.target.value)}
         />
       )}
-      {err && <p className="error">{err}</p>}
-      <button type="submit" disabled={busy}>
-        添加
-      </button>
-      <button type="button" className="secondary" onClick={() => setOpen(false)}>
-        取消
-      </button>
+      {err && <p className="text-[11px] text-destructive">{err}</p>}
+      <div className="mt-auto flex gap-2">
+        <Button type="submit" size="sm" disabled={busy} className="flex-1">
+          添加
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
+          取消
+        </Button>
+      </div>
     </form>
   );
 }
@@ -417,10 +505,12 @@ function GiftSection({
   onChanged: () => void;
 }) {
   return (
-    <section className="shop-section">
-      <h3>{title}</h3>
-      <p className="muted">{hint}</p>
-      <div className="gift-grid">
+    <section className="space-y-3">
+      <div>
+        <h2 className="text-sm font-medium">{title}</h2>
+        <p className="text-[11px] text-muted-foreground">{hint}</p>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-3">
         {wishes.map((w) => (
           <GiftCard
             key={w.id}
@@ -437,40 +527,30 @@ function GiftSection({
   );
 }
 
-function UnlockMeter({
-  creditedTodayMinutes,
-  unlocked,
-  goldDay,
+function HeaderStat({
+  icon,
+  label,
+  value,
+  emphasis,
 }: {
-  creditedTodayMinutes: number;
-  unlocked: boolean;
-  goldDay: boolean;
+  icon: React.ReactNode;
+  label: string;
+  value: React.ReactNode;
+  emphasis?: boolean;
 }) {
-  const have = Math.min(60, Math.max(0, creditedTodayMinutes));
-  const remaining = minutesUntilShopUnlock(creditedTodayMinutes);
-  const pct = (have / 60) * 100;
   return (
-    <div className="shop-hero-col">
-      <span className="shop-hero-label">解锁</span>
-      {unlocked ? (
-        <strong className="shop-hero-value shop-hero-unlocked">
-          <span className="shop-unlock-check" aria-hidden="true">✓</span>
-          商店已开
-        </strong>
-      ) : (
-        <>
-          <strong className="shop-hero-value">
-            {have}
-            <span className="shop-hero-unit"> / 60 分钟</span>
-          </strong>
-          <div className="shop-unlock-track" role="progressbar" aria-valuemin={0} aria-valuemax={60} aria-valuenow={have}>
-            <div className="shop-unlock-fill" style={{ width: `${pct}%` }} />
-          </div>
-          <p className="shop-hero-note">差 {remaining} 分钟</p>
-        </>
-      )}
-      {goldDay && <p className="shop-hero-gold">不再获得新币，余额可继续花</p>}
-    </div>
+    <span className="flex items-center gap-1.5">
+      {icon}
+      <span className="text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "font-medium tabular-nums",
+          emphasis && "animate-pulse-soft text-primary",
+        )}
+      >
+        {value}
+      </span>
+    </span>
   );
 }
 
@@ -502,116 +582,196 @@ export function Shop() {
     };
   }, [refresh]);
 
+  const { coin, energy } = week
+    ? splitWishes(week.wishes)
+    : { coin: [], energy: [] };
+  const remainingMins = week ? minutesUntilShopUnlock(week.creditedTodayMinutes) : 0;
+  const session = week?.activeEntertainment ?? null;
+  const remainSecs = session ? session.endsAt - nowSecs : 0;
+  const goldDay = (week?.creditedTodayMinutes ?? 0) >= GOLD_DAY_MINUTES;
+  const have = Math.min(60, Math.max(0, week?.creditedTodayMinutes ?? 0));
+  const history = (week?.redemptions ?? []).slice(0, HISTORY_LIMIT);
+
+  const header = (
+    <PageHeader
+      title={<h1 className="text-lg font-semibold tracking-tight">商店</h1>}
+      actions={
+        week ? (
+          <div className="flex items-center gap-3 text-xs">
+            <HeaderStat
+              icon={<Coins className="size-3.5 text-warning" aria-hidden />}
+              label="硬币"
+              value={week.coinBalance}
+            />
+            <span className="text-border">|</span>
+            {session ? (
+              <HeaderStat
+                icon={<Timer className="size-3.5 text-primary" aria-hidden />}
+                label={`${session.name} 剩余`}
+                value={formatMmSs(remainSecs)}
+                emphasis
+              />
+            ) : (
+              <HeaderStat
+                icon={<Zap className="size-3.5 text-primary" aria-hidden />}
+                label="今日能量"
+                value={week.xpToday}
+              />
+            )}
+            <span className="text-border">|</span>
+            {week.xpShopUnlocked ? (
+              <span className="flex items-center gap-1.5 text-success">
+                <Check className="size-3.5" aria-hidden />
+                商店已开
+              </span>
+            ) : (
+              <span className="flex items-center gap-2">
+                <span className="text-muted-foreground">解锁</span>
+                <span className="w-20">
+                  <Progress
+                    value={(have / 60) * 100}
+                    aria-label="商店解锁进度"
+                    barClassName="bg-gradient-to-r from-primary/70 to-primary"
+                  />
+                </span>
+                <span className="tabular-nums text-muted-foreground">
+                  {have}/60 分钟
+                </span>
+              </span>
+            )}
+            {goldDay && (
+              <span className="text-warning">黄金日 · 不再获得新币</span>
+            )}
+          </div>
+        ) : undefined
+      }
+    />
+  );
+
   if (error) {
     return (
-      <div className="page">
-        <p className="error">{error}</p>
-        <button type="button" onClick={() => refresh()}>
-          重试
-        </button>
-      </div>
+      <>
+        {header}
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-5xl px-6 py-5">
+            <Card className="flex flex-col items-center gap-3 p-8 text-center">
+              <p className="text-sm text-destructive">{error}</p>
+              <Button variant="outline" size="sm" onClick={() => refresh()}>
+                重试
+              </Button>
+            </Card>
+          </div>
+        </div>
+      </>
     );
   }
-  if (!week) return <p className="muted">加载中…</p>;
 
-  const { coin, energy } = splitWishes(week.wishes);
-  const remainingMins = minutesUntilShopUnlock(week.creditedTodayMinutes);
-  const session = week.activeEntertainment;
-  const remainSecs = session ? session.endsAt - nowSecs : 0;
-  const goldDay = week.creditedTodayMinutes >= GOLD_DAY_MINUTES;
-  const history = week.redemptions.slice(0, HISTORY_LIMIT);
+  if (!week) {
+    return (
+      <>
+        {header}
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-5xl space-y-4 px-6 py-5">
+            <SkeletonPanel rows={3} />
+          </div>
+        </div>
+      </>
+    );
+  }
+
 
   return (
-    <div className="page shop-page">
-      <section className="shop-hero">
-        <div className="shop-hero-col">
-          <span className="shop-hero-label">硬币</span>
-          <strong className="shop-hero-value">{week.coinBalance}</strong>
-          <p className="shop-hero-note">可兑换愿望</p>
-        </div>
-        <div className="shop-hero-col">
-          {session ? (
-            <>
-              <span className="shop-hero-label">进行中剩余</span>
-              <strong className="shop-hero-value shop-live-remain">{formatMmSs(remainSecs)}</strong>
-              <p className="shop-hero-note">{session.name}</p>
-            </>
-          ) : (
-            <>
-              <span className="shop-hero-label">今日能量</span>
-              <strong className="shop-hero-value">{week.xpToday}</strong>
-            </>
+    <>
+      {header}
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl space-y-5 px-6 py-4">
+          {session && (
+            <Card className="shine relative overflow-hidden border-transparent bg-gradient-to-br from-primary to-primary/70 p-6 text-primary-foreground shadow-xl shadow-primary/25">
+              <p className="text-[11px] font-medium uppercase tracking-wide opacity-80">
+                进行中
+              </p>
+              <h3 className="mt-1 text-base font-semibold">{session.name}</h3>
+              <p className="animate-pulse-soft mt-2 text-4xl font-semibold tabular-nums tracking-tight">
+                {formatMmSs(remainSecs)}
+              </p>
+              <p className="mt-1 text-xs opacity-80">到期 {formatClock(session.endsAt)}</p>
+              <p className="mt-3 text-[11px] opacity-70">结束后仍按规则判定娱乐</p>
+            </Card>
           )}
+
+          <GiftSection
+            title="硬币兑换"
+            hint="无时长，兑完即得。"
+            wishes={coin}
+            kind="coin"
+            week={week}
+            nowSecs={nowSecs}
+            remainingMins={remainingMins}
+            onChanged={refresh}
+          />
+
+          <GiftSection
+            title="能量兑换"
+            hint="有时长。同时只能一段娱乐。"
+            wishes={energy}
+            kind="xp"
+            week={week}
+            nowSecs={nowSecs}
+            remainingMins={remainingMins}
+            onChanged={refresh}
+          />
+
+          <section className="space-y-3">
+            <h2 className="text-sm font-medium">兑换记录</h2>
+            {history.length === 0 ? (
+              <EmptyLine>还没有兑换。</EmptyLine>
+            ) : (
+              <Card className="overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="h-10 px-4 font-medium">时间</th>
+                        <th className="h-10 px-4 font-medium">商品</th>
+                        <th className="h-10 px-4 font-medium">类型</th>
+                        <th className="h-10 px-4 text-right font-medium">扣额</th>
+                        <th className="h-10 px-4 font-medium">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {history.map((r: RedemptionView) => (
+                        <tr
+                          key={r.id}
+                          className={cn(
+                            "border-b transition-colors last:border-0 hover:bg-muted/50",
+                            r.status === "进行中" && "bg-primary/5",
+                          )}
+                        >
+                          <td className="px-4 py-2.5 tabular-nums text-muted-foreground">
+                            {formatRedemptionTs(r.ts)}
+                          </td>
+                          <td className="px-4 py-2.5">{r.name}</td>
+                          <td className="px-4 py-2.5">{r.kind === "coin" ? "硬币" : "能量"}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">{r.spent}</td>
+                          <td className="px-4 py-2.5">
+                            {r.status === "进行中" ? (
+                              <Badge tone="primary">进行中</Badge>
+                            ) : (
+                              <span className="text-muted-foreground">
+                                {redemptionStatusLabel(r.kind, r.status)}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )}
+          </section>
         </div>
-        <UnlockMeter
-          creditedTodayMinutes={week.creditedTodayMinutes}
-          unlocked={week.xpShopUnlocked}
-          goldDay={goldDay}
-        />
-      </section>
-
-      {session && (
-        <section className="shop-live-card">
-          <p className="shop-live-kicker">进行中</p>
-          <h3 className="shop-live-name">{session.name}</h3>
-          <p className="shop-live-remain">{formatMmSs(remainSecs)}</p>
-          <p className="shop-live-ends">到期 {formatClock(session.endsAt)}</p>
-          <p className="shop-live-rule">结束后仍按规则判定娱乐</p>
-        </section>
-      )}
-
-      <GiftSection
-        title="硬币兑换"
-        hint="无时长，兑完即得。"
-        wishes={coin}
-        kind="coin"
-        week={week}
-        nowSecs={nowSecs}
-        remainingMins={remainingMins}
-        onChanged={refresh}
-      />
-      <GiftSection
-        title="能量兑换"
-        hint="有时长。同时只能一段娱乐。"
-        wishes={energy}
-        kind="xp"
-        week={week}
-        nowSecs={nowSecs}
-        remainingMins={remainingMins}
-        onChanged={refresh}
-      />
-      <section className="shop-history">
-        <h3>兑换记录</h3>
-        {history.length === 0 ? (
-          <p className="muted">还没有兑换。</p>
-        ) : (
-          <table className="history-table">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>商品</th>
-                <th>类型</th>
-                <th>扣额</th>
-                <th>状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((r: RedemptionView) => (
-                <tr
-                  key={r.id}
-                  className={r.status === "进行中" ? "history-live" : undefined}
-                >
-                  <td>{formatRedemptionTs(r.ts)}</td>
-                  <td>{r.name}</td>
-                  <td>{r.kind === "coin" ? "硬币" : "能量"}</td>
-                  <td>{r.spent}</td>
-                  <td>{redemptionStatusLabel(r.kind, r.status)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-    </div>
+      </div>
+    </>
   );
 }

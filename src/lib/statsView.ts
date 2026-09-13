@@ -1,10 +1,5 @@
 export type StatsSegment = "week" | "month" | "rhythm" | "app";
 
-/** `getWeek()` has no historical anchor; only month / rhythm / app may page. */
-export function weekRangePagingEnabled(segment: StatsSegment): boolean {
-  return segment !== "week";
-}
-
 export function weekRangeLabel(
   byDay: { day: string }[],
   fallbackMonday: string,
@@ -20,10 +15,15 @@ export function weekHasObservation(categoryMinutes: number): boolean {
   return categoryMinutes > 0;
 }
 
-export function dayStackCaption(weekend: boolean, stackMinutes: number): string {
-  if (weekend) return "未采样";
+export function dayStackCaption(_weekend: boolean, stackMinutes: number): string {
   if (stackMinutes <= 0) return "—";
   return `${stackMinutes}m`;
+}
+
+export function monthCellNote(isFuture: boolean, coreMinutes: number): string {
+  if (isFuture) return "未来";
+  if (coreMinutes > 0) return `${coreMinutes}m`;
+  return "无观测";
 }
 
 export function monthShowsLedgerCards(hasObservation: boolean): boolean {

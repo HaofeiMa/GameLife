@@ -246,10 +246,14 @@ export interface AppSettings {
   fallbackProvider: string;
   visionProviders: VisionProviderSettings[];
   showRailLabels: boolean;
+  silentStart: boolean;
   adminApps: string[];
   categoryGuides: CategoryGuides;
   ticktickClientId: string;
   ticktickProjectRoles: Record<string, string>;
+  ticktickColumnRoles: Record<string, string>;
+  /** system | light | dark — see src/lib/theme.ts */
+  theme: string;
 }
 
 export interface ProviderKeyStatus {
@@ -273,6 +277,15 @@ export interface DayView {
   appTop: AppTopRow[];
   pendingCount: number;
   planMarks: PlanMark[];
+  ticktickTasks: TickTickTask[];
+}
+
+export interface TickTickTask {
+  id: string;
+  title: string;
+  role: string;
+  start: number;
+  end: number;
 }
 
 export interface PlanMark {
@@ -291,8 +304,13 @@ export function getDayView(day: string): Promise<DayView> {
 
 export type StatsRangeKind = "week" | "month";
 
-export function getWeek(): Promise<WeekView> {
-  return invoke("get_week");
+/**
+ * `anchor` is any day inside the wanted week. Omit it for the current week.
+ * The wallet fields in the response (coin balance, XP today, live session)
+ * are always "now" regardless of the anchor.
+ */
+export function getWeek(anchor?: string): Promise<WeekView> {
+  return invoke("get_week", { anchor: anchor ?? null });
 }
 
 export function getMonthReport(year: number, month: number): Promise<MonthReportView> {
@@ -399,8 +417,11 @@ export function getSettings(): Promise<AppSettings> {
   return invoke("get_settings");
 }
 
-export function saveSettings(settings: AppSettings): Promise<void> {
-  return invoke("save_settings", { settings });
+export function saveSettings(
+  settings: AppSettings,
+  updatePolicy = true,
+): Promise<void> {
+  return invoke("save_settings", { settings, updatePolicy });
 }
 
 export function setApiKey(key: string): Promise<void> {
@@ -419,6 +440,15 @@ export function providerKeyStatus(): Promise<ProviderKeyStatus> {
   return invoke("provider_key_status");
 }
 
+export interface ProviderTestResult {
+  ok: boolean;
+  preview: string;
+}
+
+export function testVisionProvider(provider?: string | null): Promise<ProviderTestResult> {
+  return invoke("test_vision_provider", { provider });
+}
+
 export interface PermissionStatus {
   accessibility: boolean;
   screenRecording: boolean;
@@ -434,20 +464,21 @@ export function requestScreenRecording(): Promise<boolean> {
   return invoke("request_screen_recording");
 }
 
+export function openPrivacySettings(kind: "accessibility" | "screen"): Promise<void> {
+  return invoke("open_privacy_settings", { kind });
+}
+
 export interface TickTickStatus {
   connected: boolean;
   lastSync: number | null;
   lastError: string | null;
+  secretPresent: boolean;
 }
 
 export interface TickTickAuthorize {
   authorizeUrl: string;
-}
-
-export interface TickTickProject {
-  id: string;
-  name: string;
-  role: string;
+  listenOk: boolean;
+  opened: boolean;
 }
 
 export function ticktickStatus(): Promise<TickTickStatus> {
@@ -458,12 +489,18 @@ export function ticktickSetClientSecret(secret: string): Promise<void> {
   return invoke("ticktick_set_client_secret", { secret });
 }
 
-export function ticktickBeginOauth(): Promise<TickTickAuthorize> {
-  return invoke("ticktick_begin_oauth");
+export function ticktickBeginOauth(
+  clientId?: string | null,
+  clientSecret?: string | null,
+): Promise<TickTickAuthorize> {
+  return invoke("ticktick_begin_oauth", { clientId, clientSecret });
 }
 
-export function ticktickFinishOauth(callbackUrl: string): Promise<void> {
-  return invoke("ticktick_finish_oauth", { callbackUrl });
+export function ticktickFinishOauth(
+  callbackUrl: string,
+  clientSecret?: string | null,
+): Promise<void> {
+  return invoke("ticktick_finish_oauth", { callbackUrl, clientSecret });
 }
 
 export function ticktickDisconnect(): Promise<void> {
@@ -479,6 +516,27 @@ export function ticktickSync(): Promise<TickTickSyncResult> {
   return invoke("ticktick_sync");
 }
 
-export function ticktickListProjects(): Promise<TickTickProject[]> {
-  return invoke("ticktick_list_projects");
+export interface TickTickTreeColumn {
+  id: string;
+  name: string;
+}
+
+export interface TickTickTreeProject {
+  id: string;
+  name: string;
+  columns: TickTickTreeColumn[];
+}
+
+export interface TickTickTree {
+  fetchedAt: number;
+  projects: TickTickTreeProject[];
+}
+
+/**
+ * The cached project/column structure. Pass `refresh` to hit the API;
+ * without it this reads the local cache and returns immediately, which is
+ * what keeps opening 设置 → TickTick instant.
+ */
+export function ticktickTree(refresh = false): Promise<TickTickTree> {
+  return invoke("ticktick_tree", { refresh });
 }

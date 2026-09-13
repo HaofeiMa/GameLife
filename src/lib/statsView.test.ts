@@ -1,20 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   dayStackCaption,
+  monthCellNote,
   monthShowsLedgerCards,
   weekHasObservation,
   weekRangeLabel,
-  weekRangePagingEnabled,
 } from "./statsView";
 
 describe("week range paging", () => {
-  it("freezes paging on the week tab", () => {
-    expect(weekRangePagingEnabled("week")).toBe(false);
-    expect(weekRangePagingEnabled("month")).toBe(true);
-    expect(weekRangePagingEnabled("rhythm")).toBe(true);
-    expect(weekRangePagingEnabled("app")).toBe(true);
-  });
-
   it("labels the week from byDay, not a paged anchor", () => {
     expect(
       weekRangeLabel(
@@ -35,7 +28,19 @@ describe("day stack caption", () => {
   it("does not call a weekday with no stack 0m", () => {
     expect(dayStackCaption(false, 0)).toBe("—");
     expect(dayStackCaption(false, 40)).toBe("40m");
-    expect(dayStackCaption(true, 0)).toBe("未采样");
+  });
+
+  it("shows weekend minutes the same as weekdays", () => {
+    expect(dayStackCaption(true, 0)).toBe("—");
+    expect(dayStackCaption(true, 25)).toBe("25m");
+  });
+});
+
+describe("month cell note", () => {
+  it("does not label a weekend as unscanned", () => {
+    expect(monthCellNote(false, 0)).toBe("无观测");
+    expect(monthCellNote(false, 12)).toBe("12m");
+    expect(monthCellNote(true, 0)).toBe("未来");
   });
 });
 

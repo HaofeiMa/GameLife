@@ -1,33 +1,155 @@
-import { useEffect, useState } from "react";
-import { PermissionBanner } from "../components/PermissionBanner";
+import { ChevronRight, X } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import appIcon from "../../src-tauri/icons/128x128@2x.png";
+import { PageHeader } from "../components/PageHeader";
+import { PermissionPanel } from "../components/PermissionBanner";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Segmented } from "../components/ui/segmented";
+import { Select } from "../components/ui/select";
+import { Switch } from "../components/ui/switch";
+import { Textarea } from "../components/ui/textarea";
 import {
   BUILTIN_NEVER_CAPTURE,
   getSettings,
   providerKeyStatus,
   saveSettings,
   setProviderApiKey,
+  testVisionProvider,
   ticktickBeginOauth,
   ticktickDisconnect,
   ticktickFinishOauth,
-  ticktickListProjects,
   ticktickSetClientSecret,
   ticktickStatus,
   ticktickSync,
+  ticktickTree,
   type AppSettings,
   type ProviderKeyStatus,
-  type TickTickProject,
+  type TickTickTree,
   type TickTickStatus,
   type VisionProviderSettings,
 } from "../lib/api";
 import { GUIDE_PLACEHOLDERS, savedCategoryGuides } from "../lib/guides";
+import {
+  callbackPasteKind,
+  oauthErrorMessage,
+  oauthWaitingHint,
+  primaryProviderHasKey,
+  saveTouchesPolicy,
+  SECRET_MASK,
+  secretToPersist,
+  showSecretMask,
+  ticktickSecretReady,
+} from "../lib/secretField";
+import { notifySettingsChanged } from "../lib/settingsEvents";
+import {
+  columnRoleKey,
+  formatTicktickLastSync,
+  nextRoleMap,
+  TICKTICK_ROLE_COLUMNS,
+  ticktickRoleLabel,
+  ticktickSyncButtonLabel,
+  ticktickSyncErrorMessage,
+} from "../lib/ticktickBoard";
+import { cn } from "../lib/utils";
 
-const TICKTICK_ROLES = [
-  ["ignore", "忽略"],
-  ["mainline", "主线"],
-  ["side", "支线"],
-  ["longterm", "长期"],
-  ["chore", "杂项"],
-] as const;
+type SettingsTab = "basic" | "api" | "lists" | "ticktick" | "permissions" | "about";
+
+/** One draggable thing in the TickTick tree. */
+type AssignTarget =
+  | { kind: "project"; projectId: string; label: string }
+  | { kind: "column"; projectId: string; columnId: string; label: string };
+
+const TABS: { value: SettingsTab; label: string }[] = [
+  { value: "basic", label: "基础" },
+  { value: "api", label: "API" },
+  { value: "lists", label: "名单" },
+  { value: "ticktick", label: "TickTick" },
+  { value: "permissions", label: "权限" },
+  { value: "about", label: "关于" },
+];
+
+/* --------------------------- layout atoms --------------------------- */
+
+function Section({
+  title,
+  caption,
+  children,
+  className,
+}: {
+  title: string;
+  caption?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <Card className={cn("overflow-hidden", className)}>
+      <div className="border-b px-5 py-3">
+        <h2 className="text-sm font-medium">{title}</h2>
+        {caption && (
+          <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+            {caption}
+          </div>
+        )}
+      </div>
+      <div className="space-y-4 px-5 py-4">{children}</div>
+    </Card>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-3">
+      <Label>{label}</Label>
+      {children}
+      {hint && <p className="text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+function ToggleRow({
+  title,
+  description,
+  checked,
+  disabled,
+  onChange,
+}: {
+  title: string;
+  description?: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-xl border bg-card/50 p-4">
+      <div className="space-y-0.5">
+        <p className="text-sm font-medium leading-none">{title}</p>
+        {description && (
+          <p className="text-xs leading-relaxed text-muted-foreground">{description}</p>
+        )}
+      </div>
+      <Switch
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={onChange}
+        aria-label={title}
+      />
+    </div>
+  );
+}
+
+/* ---------------------------- field atoms --------------------------- */
 
 function ListEditor({
   label,
@@ -54,24 +176,31 @@ function ListEditor({
   }
 
   return (
-    <section>
-      <h3>{label}</h3>
-      <ul>
+    <Section title={label} className="gap-0">
+      <div className="flex flex-wrap gap-1.5">
+        {items.length === 0 && (
+          <span className="text-xs text-muted-foreground">还没有条目</span>
+        )}
         {items.map((item) => (
-          <li key={item}>
+          <span
+            key={item}
+            className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
+          >
             {item}
             <button
               type="button"
               disabled={disabled}
+              aria-label={`删除 ${item}`}
+              className="text-muted-foreground transition-colors hover:text-destructive disabled:opacity-50"
               onClick={() => onChange(items.filter((x) => x !== item))}
             >
-              删除
+              <X className="size-3" />
             </button>
-          </li>
+          </span>
         ))}
-      </ul>
-      <div className="slot-actions">
-        <input
+      </div>
+      <div className="flex gap-2">
+        <Input
           value={draft}
           disabled={disabled}
           placeholder="输入名称后回车或点添加"
@@ -83,17 +212,138 @@ function ListEditor({
             }
           }}
         />
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={add}
-        >
+        <Button size="sm" disabled={disabled} onClick={add} className="shrink-0">
           添加
-        </button>
+        </Button>
       </div>
-    </section>
+    </Section>
   );
 }
+
+function SecretField({
+  label,
+  present,
+  draft,
+  busy,
+  placeholder,
+  onDraftChange,
+}: {
+  label: string;
+  present: boolean;
+  draft: string;
+  busy: boolean;
+  placeholder: string;
+  onDraftChange: (value: string) => void;
+}) {
+  const [replacing, setReplacing] = useState(false);
+  const masked = showSecretMask(present, draft) && !replacing;
+
+  useEffect(() => {
+    if (present && !draft) setReplacing(false);
+  }, [present, draft]);
+
+  return (
+    <Field label={label}>
+      {masked ? (
+        <div className="flex items-center gap-2">
+          <div
+            className="flex h-9 flex-1 select-none items-center rounded-md border bg-muted px-3 font-mono text-sm text-muted-foreground"
+            aria-label="已保存"
+            onCopy={(e) => e.preventDefault()}
+            onCut={(e) => e.preventDefault()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            {SECRET_MASK}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              setReplacing(true);
+              onDraftChange("");
+            }}
+          >
+            更换
+          </Button>
+        </div>
+      ) : (
+        <Input
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          value={draft}
+          disabled={busy}
+          placeholder={present ? "输入新密钥以替换" : placeholder}
+          onChange={(e) => onDraftChange(e.target.value)}
+        />
+      )}
+    </Field>
+  );
+}
+
+function ProviderEditor({
+  title,
+  spec,
+  keyPresent,
+  keyValue,
+  busy,
+  onPatch,
+  onKeyChange,
+  onTest,
+}: {
+  title: string;
+  spec: VisionProviderSettings;
+  keyPresent: boolean;
+  keyValue: string;
+  busy: boolean;
+  onPatch: (patch: Partial<VisionProviderSettings>) => void;
+  onKeyChange: (value: string) => void;
+  onTest: () => void;
+}) {
+  return (
+    <Section
+      title={title}
+      caption={
+        <span className={keyPresent ? "text-success" : undefined}>
+          {keyPresent ? "已保存" : "未配置"}
+        </span>
+      }
+    >
+      <Field label="Base URL">
+        <Input
+          value={spec.baseUrl}
+          disabled={busy}
+          placeholder="https://…"
+          onChange={(e) => onPatch({ baseUrl: e.target.value })}
+        />
+      </Field>
+      <Field label="模型">
+        <Input
+          value={spec.model}
+          disabled={busy}
+          placeholder="模型 ID"
+          onChange={(e) => onPatch({ model: e.target.value })}
+        />
+      </Field>
+      <SecretField
+        label="API Key"
+        present={keyPresent}
+        draft={keyValue}
+        busy={busy}
+        placeholder="新 Key（保存时写入本机）"
+        onDraftChange={onKeyChange}
+      />
+      {keyPresent && (
+        <Button variant="outline" size="sm" disabled={busy} onClick={onTest}>
+          测试连接
+        </Button>
+      )}
+    </Section>
+  );
+}
+
+/* -------------------------------- page ------------------------------ */
 
 export function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -107,19 +357,32 @@ export function Settings() {
     openai: false,
     custom: false,
   });
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"basic" | "api" | "lists" | "ticktick">("basic");
+  const [tab, setTab] = useState<SettingsTab>("basic");
   const [ticktickSecret, setTicktickSecret] = useState("");
   const [ttStatus, setTtStatus] = useState<TickTickStatus>({
     connected: false,
     lastSync: null,
     lastError: null,
+    secretPresent: false,
   });
   const [callbackDraft, setCallbackDraft] = useState("");
-  const [projects, setProjects] = useState<TickTickProject[]>([]);
+  const [authorizeUrl, setAuthorizeUrl] = useState("");
+  const [tree, setTree] = useState<TickTickTree | null>(null);
+  const [treeLoading, setTreeLoading] = useState(false);
+  const [treeError, setTreeError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [picked, setPicked] = useState<AssignTarget | null>(null);
+  const [dragPayload, setDragPayload] = useState<AssignTarget | null>(null);
+  const [dragOverRole, setDragOverRole] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+  const formLocked = saving;
 
   useEffect(() => {
     getSettings()
@@ -131,19 +394,28 @@ export function Settings() {
     providerKeyStatus().then(setKeyStatus).catch(() => undefined);
   }, []);
 
+  // Opening the tab reads local status plus the *cached* tree; the network
+  // round trip only happens on an explicit sync.
   useEffect(() => {
     if (tab !== "ticktick") return;
     let cancelled = false;
     ticktickStatus()
-      .then(async (status) => {
+      .then((status) => {
         if (cancelled) return;
         setTtStatus(status);
-        if (!status.connected) {
-          setProjects([]);
-          return;
-        }
-        const list = await ticktickListProjects();
-        if (!cancelled) setProjects(list);
+        if (!status.connected) return;
+        setTreeLoading(true);
+        setTreeError(null);
+        void ticktickTree(false)
+          .then((t) => {
+            if (!cancelled) setTree(t);
+          })
+          .catch((e) => {
+            if (!cancelled) setTreeError(String(e));
+          })
+          .finally(() => {
+            if (!cancelled) setTreeLoading(false);
+          });
       })
       .catch(() => undefined);
     return () => {
@@ -151,14 +423,73 @@ export function Settings() {
     };
   }, [tab]);
 
+  const header = (
+    <PageHeader
+      title={<h1 className="text-lg font-semibold tracking-tight">设置</h1>}
+      center={
+        <Segmented
+          size="sm"
+          aria-label="设置分区"
+          value={tab}
+          onChange={setTab}
+          options={TABS}
+        />
+      }
+      actions={
+        tab !== "permissions" && tab !== "about" ? (
+          <Button
+            size="sm"
+            disabled={formLocked || connecting || !settings}
+            onClick={() => void handleSave()}
+          >
+            {saving ? "保存中…" : "保存设置"}
+          </Button>
+        ) : undefined
+      }
+    />
+  );
+
   if (loadError) {
     return (
-      <div className="page">
-        <p className="error">{loadError}</p>
-      </div>
+      <>
+        {header}
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-3xl px-6 py-5">
+            <Card className="flex flex-col items-center gap-3 p-8 text-center">
+              <p className="text-sm text-destructive">{loadError}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setLoadError(null);
+                  getSettings()
+                    .then(setSettings)
+                    .catch((e) => setLoadError(String(e)));
+                }}
+              >
+                重试
+              </Button>
+            </Card>
+          </div>
+        </div>
+      </>
     );
   }
-  if (!settings) return <p className="muted">加载中…</p>;
+
+  if (!settings) {
+    return (
+      <>
+        {header}
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-3xl space-y-4 px-6 py-5">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-32 animate-shimmer rounded-xl bg-muted" />
+            ))}
+          </div>
+        </div>
+      </>
+    );
+  }
 
   function provider(id: string): VisionProviderSettings {
     return (
@@ -174,612 +505,963 @@ export function Settings() {
     if (!settings) return;
     const exists = settings.visionProviders.some((p) => p.id === id);
     const visionProviders = exists
-      ? settings.visionProviders.map((p) =>
-          p.id === id ? { ...p, ...patch } : p,
-        )
+      ? settings.visionProviders.map((p) => (p.id === id ? { ...p, ...patch } : p))
       : [...settings.visionProviders, { id, baseUrl: "", model: "", ...patch }];
     setSettings({ ...settings, visionProviders });
   }
 
-  async function persistSecret() {
-    const secret = ticktickSecret.trim();
-    if (!secret) return;
-    await ticktickSetClientSecret(secret);
-    setTicktickSecret("");
-  }
-
-  async function persistSettings(next: AppSettings) {
+  async function persistSettings(next: AppSettings, updatePolicy: boolean) {
     const trimmed = {
       ...next,
       categoryGuides: savedCategoryGuides(next.categoryGuides),
+      ticktickProjectRoles: next.ticktickProjectRoles ?? {},
+      ticktickColumnRoles: next.ticktickColumnRoles ?? {},
     };
-    await saveSettings(trimmed);
+    await saveSettings(trimmed, updatePolicy);
     setSettings(trimmed);
-    await persistSecret();
     return trimmed;
+  }
+
+  async function persistBasic(next: AppSettings) {
+    setSettings(next);
+    setSaving(true);
+    setMsg(null);
+    try {
+      await persistSettings(next, false);
+      notifySettingsChanged();
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleSave() {
     if (!settings) return;
-    setBusy(true);
+    setSaving(true);
     setMsg(null);
     try {
-      await persistSettings(settings);
-      const nextStatus = { ...keyStatus };
       for (const id of ["opencode-go", "openai", "custom"] as const) {
-        const typed = keys[id]?.trim();
+        const typed = secretToPersist(keys[id] ?? "");
         if (!typed) continue;
         await setProviderApiKey(id, typed);
-        if (id === "opencode-go") nextStatus.opencodeGo = true;
-        if (id === "openai") nextStatus.openai = true;
-        if (id === "custom") nextStatus.custom = true;
       }
-      setKeyStatus(nextStatus);
+      const tt = secretToPersist(ticktickSecret);
+      if (tt) {
+        await ticktickSetClientSecret(tt);
+        setTicktickSecret("");
+      }
+      await persistSettings(settings, saveTouchesPolicy(tab));
+      notifySettingsChanged();
+      const confirmed = await providerKeyStatus();
+      setKeyStatus(confirmed);
       setKeys({ "opencode-go": "", openai: "", custom: "" });
-      setMsg("已保存");
+      const nextTt = await ticktickStatus();
+      setTtStatus(nextTt);
+      if (!primaryProviderHasKey(settings.primaryProvider, confirmed)) {
+        setMsg("设置已写入，但主用 API Key 尚未保存，请重新填写后保存");
+      } else {
+        setMsg("已保存");
+      }
     } catch (e) {
       setMsg(String(e));
     } finally {
-      setBusy(false);
+      setSaving(false);
+    }
+  }
+
+  async function handleTestProvider(id: string) {
+    setTesting(true);
+    setMsg(null);
+    try {
+      const result = await testVisionProvider(id);
+      setMsg(result.ok ? `测试成功：${result.preview}` : result.preview);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setTesting(false);
     }
   }
 
   async function handleConnect() {
     if (!settings) return;
-    setBusy(true);
+    const ready = ticktickSecretReady(ticktickSecret, ttStatus.secretPresent);
+    if (!ready.ok) {
+      setMsg(ready.error);
+      return;
+    }
+    if (!settings.ticktickClientId.trim()) {
+      setMsg("请填写 Client ID");
+      return;
+    }
+    setConnecting(true);
     setMsg(null);
     try {
-      await persistSettings(settings);
-      const { authorizeUrl } = await ticktickBeginOauth();
-      window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+      const result = await ticktickBeginOauth(settings.ticktickClientId, ready.toWrite);
+      setAuthorizeUrl(result.authorizeUrl);
+      const statusAfter = await ticktickStatus();
+      setTtStatus(statusAfter);
+      if (ready.toWrite) setTicktickSecret("");
+      if (!result.listenOk) {
+        setMsg(
+          `${oauthWaitingHint()} 本机未能自动收回调。授权后请把浏览器地址栏整段粘贴回来。`,
+        );
+        return;
+      }
+      setMsg(
+        result.opened
+          ? oauthWaitingHint()
+          : "未能自动打开浏览器，请复制下方授权链接到浏览器打开。",
+      );
       const deadline = Date.now() + 180_000;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 1000));
         const status = await ticktickStatus();
         setTtStatus(status);
-        if (status.lastError) {
-          setMsg(status.lastError);
-          return;
-        }
         if (status.connected) {
-          const list = await ticktickListProjects();
-          setProjects(list);
+          setTree(await ticktickTree(true));
+          setAuthorizeUrl("");
           setMsg("已连接 TickTick");
           return;
         }
       }
-      setMsg("等待授权超时");
+      setMsg("等待授权超时。可复制下方授权链接到浏览器，或把跳转后的地址粘贴回来");
     } catch (e) {
-      setMsg(String(e));
+      setMsg(oauthErrorMessage(String(e)));
     } finally {
-      setBusy(false);
+      setConnecting(false);
     }
   }
 
   async function handleDisconnect() {
-    setBusy(true);
+    setSaving(true);
     setMsg(null);
     try {
       await ticktickDisconnect();
-      setTtStatus({ connected: false, lastSync: null, lastError: null });
-      setProjects([]);
+      setTtStatus({
+        connected: false,
+        lastSync: null,
+        lastError: null,
+        secretPresent: ttStatus.secretPresent,
+      });
+      setTree(null);
       setTruncated(false);
+      setPicked(null);
+      setExpanded({});
+      setAuthorizeUrl("");
       setMsg("已断开 TickTick");
     } catch (e) {
       setMsg(String(e));
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   }
 
   async function handlePasteCallback() {
     const url = callbackDraft.trim();
-    if (!url) return;
-    setBusy(true);
+    const kind = callbackPasteKind(url);
+    if (kind === "empty") return;
+    if (kind !== "code") {
+      setMsg(oauthErrorMessage("oauth redirect setting"));
+      return;
+    }
+    const ready = ticktickSecretReady(ticktickSecret, ttStatus.secretPresent);
+    if (!ready.ok) {
+      setMsg(ready.error);
+      return;
+    }
+    setConnecting(true);
     setMsg(null);
     try {
-      await ticktickFinishOauth(url);
+      await ticktickFinishOauth(url, ready.toWrite);
       setCallbackDraft("");
+      if (ready.toWrite) setTicktickSecret("");
       const status = await ticktickStatus();
       setTtStatus(status);
       if (status.connected) {
-        const list = await ticktickListProjects();
-        setProjects(list);
+        setTree(await ticktickTree(true));
+        setAuthorizeUrl("");
         setMsg("已连接 TickTick");
       } else if (status.lastError) {
-        setMsg(status.lastError);
+        setMsg(oauthErrorMessage(status.lastError));
       }
+    } catch (e) {
+      setMsg(oauthErrorMessage(String(e)));
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  /**
+   * Files a project or one of its columns under a role. Roles are not part
+   * of the policy snapshot, so this does not need a new policy version.
+   */
+  async function assignRole(target: AssignTarget, role: string) {
+    if (!settings) return;
+    const next = { ...settings };
+    if (target.kind === "project") {
+      next.ticktickProjectRoles = nextRoleMap(
+        settings.ticktickProjectRoles ?? {},
+        target.projectId,
+        role,
+      );
+    } else {
+      next.ticktickColumnRoles = nextRoleMap(
+        settings.ticktickColumnRoles ?? {},
+        columnRoleKey(target.projectId, target.columnId),
+        role,
+      );
+    }
+    setSettings(next);
+    setPicked(null);
+    setSaving(true);
+    setMsg(null);
+    try {
+      await persistSettings(next, false);
     } catch (e) {
       setMsg(String(e));
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   }
 
   async function handleSync() {
-    setBusy(true);
-    setMsg(null);
+    setSyncing(true);
+    setSyncNote(null);
     try {
       const result = await ticktickSync();
       setTruncated(result.truncated);
-      const status = await ticktickStatus();
-      setTtStatus(status);
-      setMsg(result.truncated ? "同步完成" : `同步完成（${result.count}）`);
+      setTtStatus(await ticktickStatus());
+      // sync_projects also refreshes the cached tree.
+      setTree(await ticktickTree(false));
+      setSyncNote(
+        result.truncated
+          ? "同步完成（当天时段任务超过 20）"
+          : `同步完成（${result.count} 条时段任务）`,
+      );
     } catch (e) {
-      setMsg(String(e));
+      setSyncNote(ticktickSyncErrorMessage(String(e)));
     } finally {
-      setBusy(false);
+      setSyncing(false);
     }
   }
 
-  async function handleProjectRole(id: string, role: string) {
-    if (!settings) return;
-    const ticktickProjectRoles = { ...settings.ticktickProjectRoles };
-    if (role === "ignore") {
-      delete ticktickProjectRoles[id];
-    } else {
-      ticktickProjectRoles[id] = role;
-    }
-    const next = { ...settings, ticktickProjectRoles };
-    setSettings(next);
-    setProjects((rows) => rows.map((p) => (p.id === id ? { ...p, role } : p)));
-    setBusy(true);
-    setMsg(null);
+
+
+
+
+  async function copyRedirectUri() {
     try {
-      await persistSettings(next);
-    } catch (e) {
-      setMsg(String(e));
-    } finally {
-      setBusy(false);
+      await navigator.clipboard.writeText("http://127.0.0.1:18789/callback");
+      setMsg("已复制 Redirect URI（仅填开发者中心，不要用浏览器打开）");
+    } catch {
+      setMsg("请手动复制 http://127.0.0.1:18789/callback");
+    }
+  }
+
+  async function copyAuthorizeUrl() {
+    if (!authorizeUrl) return;
+    try {
+      await navigator.clipboard.writeText(authorizeUrl);
+      setMsg("已复制授权链接，请粘贴到浏览器打开");
+    } catch {
+      setMsg("请手动选中下方授权链接并复制");
     }
   }
 
   const userNeverCapture = settings.neverCaptureApps.filter(
     (n) => !BUILTIN_NEVER_CAPTURE.some((b) => b.toLowerCase() === n.toLowerCase()),
   );
+  // How many things sit in each role bucket, for the drop targets.
+  const roleCounts: Record<string, number> = {};
+  for (const role of settings?.ticktickProjectRoles
+    ? Object.values(settings.ticktickProjectRoles)
+    : []) {
+    roleCounts[role] = (roleCounts[role] ?? 0) + 1;
+  }
+  for (const role of settings?.ticktickColumnRoles
+    ? Object.values(settings.ticktickColumnRoles)
+    : []) {
+    roleCounts[role] = (roleCounts[role] ?? 0) + 1;
+  }
 
   return (
-    <div className="page settings-page">
-      <h2>设置</h2>
-      <PermissionBanner />
-      <div className="settings-tabs" role="tablist">
-        {(
-          [
-            ["basic", "基础"],
-            ["api", "API"],
-            ["lists", "名单"],
-            ["ticktick", "TickTick"],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            className={tab === id ? "active" : ""}
-            onClick={() => setTab(id)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "basic" && (
-        <>
-          <section>
-            <label className="quest-hero-toggle">
-              <input
-                type="checkbox"
-                checked={settings.loginAtStartup}
-                disabled={busy}
-                onChange={(e) =>
-                  setSettings({ ...settings, loginAtStartup: e.target.checked })
-                }
-              />
-              登录时启动（默认开启）
-            </label>
-          </section>
-          <section>
-            <label className="quest-hero-toggle">
-              <input
-                type="checkbox"
-                checked={settings.showRailLabels}
-                disabled={busy}
-                onChange={(e) =>
-                  setSettings({ ...settings, showRailLabels: e.target.checked })
-                }
-              />
-              导航显示文字
-            </label>
-          </section>
-          <section>
-            <label>
-              截图保留
-              <select
-                value={settings.screenshotRetention}
-                disabled={busy}
-                onChange={(e) =>
-                  setSettings({ ...settings, screenshotRetention: e.target.value })
-                }
-              >
-                <option value="none">不保留</option>
-                <option value="24h">24 小时</option>
-                <option value="3d">3 天</option>
-                <option value="14d">14 天</option>
-              </select>
-            </label>
-            <p className="muted">过期截图由采样器按此策略自动清理。</p>
-          </section>
-          <section>
-            <label>
-              样本保留天数
-              <input
-                type="number"
-                min={3}
-                max={14}
-                value={settings.sampleKeepDays}
-                disabled={busy}
-                onChange={(e) =>
-                  setSettings({ ...settings, sampleKeepDays: Number(e.target.value) })
-                }
-              />
-            </label>
-            <p className="muted">超过保留天数的样本行在启动时清理（默认 7 天）。采样间隔固定 15 秒。</p>
-          </section>
-        </>
-      )}
-
-      {tab === "api" && (
-        <>
-          <section>
-            <h3>判定与视觉</h3>
-            <p className="muted">
-              Key 只进钥匙串。主用失败仅在超时、网络错误或 HTTP 5xx 时改走 fallback。
+    <>
+      {header}
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-3xl space-y-4 px-6 py-4">
+          {msg && (
+            <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+              {msg}
             </p>
-            {!(
-              (settings.primaryProvider === "opencode-go" && keyStatus.opencodeGo) ||
-              (settings.primaryProvider === "openai" && keyStatus.openai) ||
-              (settings.primaryProvider === "custom" && keyStatus.custom)
-            ) && (
-              <p className="error">
-                主用提供商还没有 API Key。只填 URL / 模型不够，请在下方密码框粘贴 Key 后点「保存设置」。
-              </p>
-            )}
-            <label>
-              主用
-              <select
-                value={settings.primaryProvider}
-                disabled={busy}
-                onChange={(e) =>
-                  setSettings({ ...settings, primaryProvider: e.target.value })
-                }
-              >
-                <option value="opencode-go">OpenCode Go</option>
-                <option value="openai">OpenAI</option>
-                <option value="custom">自定义</option>
-              </select>
-            </label>
-            <label>
-              回退
-              <select
-                value={settings.fallbackProvider}
-                disabled={busy}
-                onChange={(e) =>
-                  setSettings({ ...settings, fallbackProvider: e.target.value })
-                }
-              >
-                <option value="none">无</option>
-                <option value="opencode-go">OpenCode Go</option>
-                <option value="openai">OpenAI</option>
-                <option value="custom">自定义</option>
-              </select>
-            </label>
-          </section>
-          <ProviderEditor
-            title="OpenCode Go"
-            spec={provider("opencode-go")}
-            keyPresent={keyStatus.opencodeGo}
-            keyValue={keys["opencode-go"] ?? ""}
-            busy={busy}
-            onPatch={(patch) => patchProvider("opencode-go", patch)}
-            onKeyChange={(v) => setKeys({ ...keys, "opencode-go": v })}
-          />
-          <ProviderEditor
-            title="OpenAI / Codex 兼容"
-            spec={provider("openai")}
-            keyPresent={keyStatus.openai}
-            keyValue={keys.openai ?? ""}
-            busy={busy}
-            onPatch={(patch) => patchProvider("openai", patch)}
-            onKeyChange={(v) => setKeys({ ...keys, openai: v })}
-          />
-          <ProviderEditor
-            title="自定义"
-            spec={provider("custom")}
-            keyPresent={keyStatus.custom}
-            keyValue={keys.custom ?? ""}
-            busy={busy}
-            onPatch={(patch) => patchProvider("custom", patch)}
-            onKeyChange={(v) => setKeys({ ...keys, custom: v })}
-          />
-        </>
-      )}
+          )}
 
-      {tab === "lists" && (
-        <>
-          <p className="muted">
-            Chrome / Safari / Arc 的当前标签 URL 需要「自动化」权限；拒绝则 URL
-            为空，不影响采样与截图。
-          </p>
-          <ListEditor
-            label="主线应用"
-            items={settings.trustedApps}
-            disabled={busy}
-            onChange={(trustedApps) => setSettings({ ...settings, trustedApps })}
-          />
-          <ListEditor
-            label="支线应用"
-            items={settings.sideProjectRules}
-            disabled={busy}
-            onChange={(sideProjectRules) =>
-              setSettings({ ...settings, sideProjectRules })
-            }
-          />
-          <ListEditor
-            label="杂项应用"
-            items={settings.adminApps}
-            disabled={busy}
-            onChange={(adminApps) => setSettings({ ...settings, adminApps })}
-          />
-          <ListEditor
-            label="娱乐应用 / 网站"
-            items={settings.distractionRules}
-            disabled={busy}
-            onChange={(distractionRules) =>
-              setSettings({ ...settings, distractionRules })
-            }
-          />
-          <ListEditor
-            label="阅读"
-            items={settings.readingApps}
-            disabled={busy}
-            onChange={(readingApps) => setSettings({ ...settings, readingApps })}
-          />
-          <section>
-            <h3>永不截屏（内置只读）</h3>
-            <ul>
-              {BUILTIN_NEVER_CAPTURE.map((n) => (
-                <li key={n}>{n}</li>
-              ))}
-            </ul>
-            <p className="muted">内置项不可删除。GameLife 自身也不发币。</p>
-          </section>
-          <ListEditor
-            label="额外永不截屏"
-            items={userNeverCapture}
-            disabled={busy}
-            onChange={(extra) =>
-              setSettings({
-                ...settings,
-                neverCaptureApps: [...BUILTIN_NEVER_CAPTURE, ...extra],
-              })
-            }
-          />
-          <section>
-            <h3>类别说明</h3>
-            <p className="muted">灰字为样稿，空着保存不会写进判定规则。</p>
-            {(
-              [
-                ["mainline", "主线"],
-                ["side", "支线"],
-                ["admin", "杂项"],
-                ["entertainment", "娱乐"],
-              ] as const
-            ).map(([key, label]) => (
-              <label key={key}>
-                {label}
-                <textarea
-                  className="guide-textarea"
-                  maxLength={500}
-                  disabled={busy}
-                  placeholder={GUIDE_PLACEHOLDERS[key]}
-                  value={settings.categoryGuides[key]}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      categoryGuides: {
-                        ...settings.categoryGuides,
-                        [key]: e.target.value,
-                      },
-                    })
+          {tab === "basic" && (
+            <div className="space-y-4">
+              <Section title="外观">
+                <div className="flex items-center gap-6">
+                  <Label className="w-12 shrink-0">主题</Label>
+                  <Segmented
+                    aria-label="主题"
+                    size="sm"
+                    value={
+                      settings.theme === "light" || settings.theme === "dark"
+                        ? settings.theme
+                        : "system"
+                    }
+                    onChange={(theme) => void persistBasic({ ...settings, theme })}
+                    options={[
+                      { value: "system", label: "跟随系统" },
+                      { value: "light", label: "亮色" },
+                      { value: "dark", label: "暗色" },
+                    ]}
+                  />
+                </div>
+              </Section>
+
+              <Section title="启动与导航">
+                <ToggleRow
+                  title="登录时启动"
+                  description="默认开启。"
+                  checked={settings.loginAtStartup}
+                  disabled={formLocked}
+                  onChange={(v) =>
+                    void persistBasic({ ...settings, loginAtStartup: v })
                   }
                 />
-              </label>
-            ))}
-          </section>
-        </>
-      )}
+                <ToggleRow
+                  title="静默启动"
+                  description="启动时不显示窗口，只挂菜单栏。"
+                  checked={settings.silentStart !== false}
+                  disabled={formLocked}
+                  onChange={(v) => void persistBasic({ ...settings, silentStart: v })}
+                />
+                <ToggleRow
+                  title="导航显示文字"
+                  description="关闭后侧栏只留图标。"
+                  checked={settings.showRailLabels}
+                  disabled={formLocked}
+                  onChange={(v) =>
+                    void persistBasic({ ...settings, showRailLabels: v })
+                  }
+                />
+              </Section>
 
-      {tab === "ticktick" && (
-        <>
-          <section>
-            <h3>连接</h3>
-            <p className="muted">
-              到 TickTick 开发者中心建应用，Redirect URI 填
-              {" "}
-              <code>http://127.0.0.1:18789/callback</code>
-              。Client Secret 只进钥匙串。
-            </p>
-            {!ttStatus.connected && (
-              <p className="error">尚未连接 TickTick。</p>
-            )}
-            {ttStatus.lastError && (
-              <p className="error">{ttStatus.lastError}</p>
-            )}
-            <label>
-              Client ID
-              <input
-                value={settings.ticktickClientId}
-                disabled={busy}
-                onChange={(e) =>
-                  setSettings({ ...settings, ticktickClientId: e.target.value })
+              <Section title="保留与清理">
+                <Field label="截图保留" hint="过期截图由采样器按此策略自动清理。">
+                  <Select
+                    value={settings.screenshotRetention}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({ ...settings, screenshotRetention: e.target.value })
+                    }
+                  >
+                    <option value="none">不保留</option>
+                    <option value="24h">24 小时</option>
+                    <option value="3d">3 天</option>
+                    <option value="14d">14 天</option>
+                  </Select>
+                </Field>
+                <Field
+                  label="样本保留天数"
+                  hint="超过保留天数的样本行在启动时清理（默认 7 天）。采样间隔固定 15 秒。"
+                >
+                  <Input
+                    type="number"
+                    min={3}
+                    max={14}
+                    className="w-32"
+                    value={settings.sampleKeepDays}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({ ...settings, sampleKeepDays: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+              </Section>
+            </div>
+          )}
+
+          {tab === "api" && (
+            <div className="space-y-4">
+              <Section
+                title="判定与视觉"
+                caption="Key 只保存在本机 secrets.json（权限 600），不进 config.json。主用失败仅在超时、网络错误或 HTTP 5xx 时改走 fallback。"
+              >
+                {!primaryProviderHasKey(settings.primaryProvider, keyStatus) && (
+                  <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    主用提供商还没有 API Key。只填 URL / 模型不够，请在下方密码框粘贴 Key 后点「保存设置」。
+                  </p>
+                )}
+                <Field label="主用">
+                  <Select
+                    value={settings.primaryProvider}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({ ...settings, primaryProvider: e.target.value })
+                    }
+                  >
+                    <option value="opencode-go">OpenCode Go</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="custom">自定义</option>
+                  </Select>
+                </Field>
+                <Field label="回退">
+                  <Select
+                    value={settings.fallbackProvider}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({ ...settings, fallbackProvider: e.target.value })
+                    }
+                  >
+                    <option value="none">无</option>
+                    <option value="opencode-go">OpenCode Go</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="custom">自定义</option>
+                  </Select>
+                </Field>
+              </Section>
+
+              <ProviderEditor
+                title="OpenCode Go"
+                spec={provider("opencode-go")}
+                keyPresent={keyStatus.opencodeGo}
+                keyValue={keys["opencode-go"] ?? ""}
+                busy={formLocked || testing}
+                onPatch={(patch) => patchProvider("opencode-go", patch)}
+                onKeyChange={(v) => setKeys({ ...keys, "opencode-go": v })}
+                onTest={() => void handleTestProvider("opencode-go")}
+              />
+              <ProviderEditor
+                title="OpenAI / Codex 兼容"
+                spec={provider("openai")}
+                keyPresent={keyStatus.openai}
+                keyValue={keys.openai ?? ""}
+                busy={formLocked || testing}
+                onPatch={(patch) => patchProvider("openai", patch)}
+                onKeyChange={(v) => setKeys({ ...keys, openai: v })}
+                onTest={() => void handleTestProvider("openai")}
+              />
+              <ProviderEditor
+                title="自定义"
+                spec={provider("custom")}
+                keyPresent={keyStatus.custom}
+                keyValue={keys.custom ?? ""}
+                busy={formLocked || testing}
+                onPatch={(patch) => patchProvider("custom", patch)}
+                onKeyChange={(v) => setKeys({ ...keys, custom: v })}
+                onTest={() => void handleTestProvider("custom")}
+              />
+            </div>
+          )}
+
+          {tab === "lists" && (
+            <div className="space-y-4">
+              <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+                Chrome / Safari / Arc 的当前标签 URL 需要「自动化」权限；拒绝则 URL 为空，不影响采样与截图。
+              </p>
+              <ListEditor
+                label="主线应用"
+                items={settings.trustedApps}
+                disabled={formLocked}
+                onChange={(trustedApps) => setSettings({ ...settings, trustedApps })}
+              />
+              <ListEditor
+                label="支线应用"
+                items={settings.sideProjectRules}
+                disabled={formLocked}
+                onChange={(sideProjectRules) =>
+                  setSettings({ ...settings, sideProjectRules })
                 }
               />
-            </label>
-            <label>
-              Client Secret
-              <input
-                type="password"
-                value={ticktickSecret}
-                disabled={busy}
-                placeholder="保存或连接时写入钥匙串"
-                onChange={(e) => setTicktickSecret(e.target.value)}
+              <ListEditor
+                label="杂项应用"
+                items={settings.adminApps}
+                disabled={formLocked}
+                onChange={(adminApps) => setSettings({ ...settings, adminApps })}
               />
-            </label>
-            <div className="slot-actions">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void handleConnect()}
+              <ListEditor
+                label="娱乐应用 / 网站"
+                items={settings.distractionRules}
+                disabled={formLocked}
+                onChange={(distractionRules) =>
+                  setSettings({ ...settings, distractionRules })
+                }
+              />
+              <ListEditor
+                label="阅读"
+                items={settings.readingApps}
+                disabled={formLocked}
+                onChange={(readingApps) => setSettings({ ...settings, readingApps })}
+              />
+
+              <Section
+                title="永不截屏（内置只读）"
+                caption="内置项不可删除。GameLife 自身也不发币。"
               >
-                连接
-              </button>
-              {ttStatus.connected && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void handleDisconnect()}
+                <div className="flex flex-wrap gap-1.5">
+                  {BUILTIN_NEVER_CAPTURE.map((n) => (
+                    <span
+                      key={n}
+                      className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground"
+                    >
+                      {n}
+                    </span>
+                  ))}
+                </div>
+              </Section>
+
+              <ListEditor
+                label="额外永不截屏"
+                items={userNeverCapture}
+                disabled={formLocked}
+                onChange={(extra) =>
+                  setSettings({
+                    ...settings,
+                    neverCaptureApps: [...BUILTIN_NEVER_CAPTURE, ...extra],
+                  })
+                }
+              />
+
+              <Section title="类别说明" caption="灰字为样稿，空着保存不会写进判定规则。">
+                {(
+                  [
+                    ["mainline", "主线"],
+                    ["side", "支线"],
+                    ["admin", "杂项"],
+                    ["entertainment", "娱乐"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <Field key={key} label={label}>
+                    <Textarea
+                      maxLength={500}
+                      disabled={formLocked}
+                      placeholder={GUIDE_PLACEHOLDERS[key]}
+                      value={settings.categoryGuides[key]}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          categoryGuides: {
+                            ...settings.categoryGuides,
+                            [key]: e.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                ))}
+              </Section>
+            </div>
+          )}
+
+          {tab === "ticktick" && (
+            <div className="space-y-4">
+              <Section
+                title="连接"
+                caption={
+                  <>
+                    到 TickTick 开发者中心建应用，Redirect URI 必须填{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                      http://127.0.0.1:18789/callback
+                    </code>
+                    。不要用 localhost:3000。Client Secret 只保存在本机，不进 config.json。
+                  </>
+                }
+              >
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={formLocked}
+                  onClick={() => void copyRedirectUri()}
                 >
-                  断开
-                </button>
+                  复制 Redirect URI（仅开发者中心）
+                </Button>
+
+                {!ttStatus.connected && (
+                  <p className="text-xs text-muted-foreground">尚未连接 TickTick。</p>
+                )}
+                {ttStatus.lastError && (
+                  <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {oauthErrorMessage(ttStatus.lastError)}
+                  </p>
+                )}
+
+                <Field label="Client ID">
+                  <Input
+                    value={settings.ticktickClientId}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({ ...settings, ticktickClientId: e.target.value })
+                    }
+                  />
+                </Field>
+                <SecretField
+                  label="Client Secret"
+                  present={ttStatus.secretPresent}
+                  draft={ticktickSecret}
+                  busy={formLocked}
+                  placeholder="保存或连接时写入本机"
+                  onDraftChange={setTicktickSecret}
+                />
+
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    disabled={formLocked || connecting}
+                    onClick={() => void handleConnect()}
+                  >
+                    {connecting ? "等待授权…" : "连接"}
+                  </Button>
+                  {ttStatus.connected && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={formLocked || connecting}
+                      onClick={() => void handleDisconnect()}
+                    >
+                      断开
+                    </Button>
+                  )}
+                </div>
+
+                {authorizeUrl && !ttStatus.connected && (
+                  <Field label="授权链接" hint={oauthWaitingHint()}>
+                    <Textarea
+                      readOnly
+                      rows={4}
+                      className="font-mono text-[11px]"
+                      value={authorizeUrl}
+                      onFocus={(e) => e.currentTarget.select()}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void copyAuthorizeUrl()}
+                    >
+                      复制授权链接
+                    </Button>
+                  </Field>
+                )}
+
+                {!ttStatus.connected && (
+                  <>
+                    <Field label="回调地址">
+                      <Input
+                        value={callbackDraft}
+                        disabled={saving}
+                        placeholder="授权后浏览器地址栏整段，须含 code="
+                        onChange={(e) => setCallbackDraft(e.target.value)}
+                      />
+                    </Field>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={saving || connecting || !callbackDraft.trim()}
+                      onClick={() => void handlePasteCallback()}
+                    >
+                      粘贴回调完成连接
+                    </Button>
+                  </>
+                )}
+              </Section>
+
+              {ttStatus.connected && (
+                <Section
+                  title="任务类别"
+                  caption="把整个清单，或清单里的某个分组，拖到下面任一栏；也可以先点一行选中，再点那一栏。归到「忽略」的清单不参与判定。"
+                >
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                    {TICKTICK_ROLE_COLUMNS.map(([role, label]) => (
+                      <button
+                        key={role}
+                        type="button"
+                        disabled={formLocked || !picked}
+                        onClick={() => picked && void assignRole(picked, role)}
+                        onDragOver={(e) => {
+                          if (!dragPayload) return;
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                        }}
+                        onDragEnter={() => dragPayload && setDragOverRole(role)}
+                        onDragLeave={() =>
+                          setDragOverRole((r) => (r === role ? null : r))
+                        }
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (dragPayload) void assignRole(dragPayload, role);
+                          setDragPayload(null);
+                          setDragOverRole(null);
+                        }}
+                        className={cn(
+                          "rounded-lg border border-dashed px-3 py-3 text-xs font-medium transition-colors",
+                          dragOverRole === role
+                            ? "border-primary bg-primary/15 text-primary"
+                            : picked
+                              ? "border-primary/50 text-primary hover:bg-primary/10"
+                              : "text-muted-foreground",
+                        )}
+                      >
+                        <span className="block text-center">{label}</span>
+                        <span className="mt-1 block text-center text-[10px] tabular-nums opacity-70">
+                          {roleCounts[role] ?? 0} 项
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {(picked || dragPayload) && (
+                    <p className="text-[11px] text-muted-foreground">
+                      正在移动「{(picked ?? dragPayload)?.label}」——
+                      拖到上面任一栏，或点那一栏。
+                    </p>
+                  )}
+
+                  {treeLoading && (
+                    <p className="text-xs text-muted-foreground">正在载入清单…</p>
+                  )}
+                  {treeError && (
+                    <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                      拉取清单失败：{treeError}
+                    </p>
+                  )}
+                  {!treeLoading && !treeError && (tree?.projects.length ?? 0) === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      还没有清单结构。点下面的「同步任务」拉取全部清单与分组。
+                    </p>
+                  )}
+
+                  <ul className="space-y-1">
+                    {tree?.projects.map((project) => {
+                      const projectRole =
+                        settings.ticktickProjectRoles[project.id] ?? "ignore";
+                      const open = expanded[project.id] === true;
+                      const target: AssignTarget = {
+                        kind: "project",
+                        projectId: project.id,
+                        label: project.name || project.id,
+                      };
+                      const selected =
+                        picked?.kind === "project" && picked.projectId === project.id;
+                      return (
+                        <li key={project.id} className="rounded-lg border">
+                          <div
+                            draggable={!formLocked}
+                            onDragStart={() => setDragPayload(target)}
+                            onDragEnd={() => {
+                              setDragPayload(null);
+                              setDragOverRole(null);
+                            }}
+                            className={cn(
+                              "flex cursor-grab items-center gap-2 px-3 py-2 text-sm transition-colors active:cursor-grabbing",
+                              selected && "bg-primary/10",
+                            )}
+                          >
+                            <button
+                              type="button"
+                              disabled={project.columns.length === 0}
+                              aria-expanded={open}
+                              aria-label={open ? "折叠分组" : "展开分组"}
+                              onClick={() =>
+                                setExpanded((prev) => ({
+                                  ...prev,
+                                  [project.id]: !open,
+                                }))
+                              }
+                              className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-30"
+                            >
+                              <ChevronRight
+                                className={cn(
+                                  "size-3.5 transition-transform",
+                                  open && "rotate-90",
+                                )}
+                                aria-hidden
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={formLocked}
+                              onClick={() => setPicked(target)}
+                              className="min-w-0 flex-1 truncate text-left"
+                            >
+                              {project.name || project.id}
+                            </button>
+                            {project.columns.length > 0 && (
+                              <span className="shrink-0 text-[10px] text-muted-foreground">
+                                {project.columns.length} 个分组
+                              </span>
+                            )}
+                            <Badge
+                              tone={projectRole === "ignore" ? "neutral" : "primary"}
+                            >
+                              {ticktickRoleLabel(projectRole)}
+                            </Badge>
+                          </div>
+
+                          {open && project.columns.length > 0 && (
+                            <ul className="space-y-0.5 border-t px-3 py-2">
+                              {project.columns.map((column) => {
+                                const columnRole =
+                                  settings.ticktickColumnRoles[
+                                    columnRoleKey(project.id, column.id)
+                                  ] ?? "ignore";
+                                const columnTarget: AssignTarget = {
+                                  kind: "column",
+                                  projectId: project.id,
+                                  columnId: column.id,
+                                  label: column.name || column.id,
+                                };
+                                const columnSelected =
+                                  picked?.kind === "column" &&
+                                  picked.columnId === column.id &&
+                                  picked.projectId === project.id;
+                                return (
+                                  <li
+                                    key={column.id}
+                                    draggable={!formLocked}
+                                    onDragStart={() => setDragPayload(columnTarget)}
+                                    onDragEnd={() => {
+                                      setDragPayload(null);
+                                      setDragOverRole(null);
+                                    }}
+                                    className={cn(
+                                      "flex cursor-grab items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors active:cursor-grabbing",
+                                      columnSelected
+                                        ? "bg-primary/10"
+                                        : "hover:bg-accent",
+                                    )}
+                                  >
+                                    <span
+                                      className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
+                                      aria-hidden
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={formLocked}
+                                      onClick={() => setPicked(columnTarget)}
+                                      className="min-w-0 flex-1 truncate text-left"
+                                    >
+                                      {column.name || column.id}
+                                    </button>
+                                    <Badge
+                                      tone={
+                                        columnRole === "ignore" ? "neutral" : "primary"
+                                      }
+                                    >
+                                      {ticktickRoleLabel(columnRole)}
+                                    </Badge>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={formLocked || syncing}
+                      onClick={() => void handleSync()}
+                    >
+                      {ticktickSyncButtonLabel(syncing)}
+                    </Button>
+                    {syncNote && (
+                      <p className="text-[11px] text-muted-foreground">{syncNote}</p>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {formatTicktickLastSync(ttStatus.lastSync, Math.floor(Date.now() / 1000))}
+                    。同步会拉取全部清单与分组，并自动最多每 30 分钟一次。
+                  </p>
+                  {truncated && (
+                    <p className="text-[11px] text-warning">
+                      当天有时段任务超过 20，请在 TickTick 勾完或改期。
+                    </p>
+                  )}
+                </Section>
               )}
             </div>
-            {!ttStatus.connected && (
-              <label>
-                回调地址
-                <input
-                  value={callbackDraft}
-                  disabled={busy}
-                  placeholder="http://127.0.0.1:18789/callback?code=…"
-                  onChange={(e) => setCallbackDraft(e.target.value)}
-                />
-              </label>
-            )}
-            {!ttStatus.connected && (
-              <div className="slot-actions">
-                <button
-                  type="button"
-                  disabled={busy || !callbackDraft.trim()}
-                  onClick={() => void handlePasteCallback()}
-                >
-                  粘贴回调完成连接
-                </button>
-              </div>
-            )}
-          </section>
-          {ttStatus.connected && (
-            <section>
-              <h3>清单角色</h3>
-              {projects.length === 0 ? (
-                <p className="muted">没有清单。</p>
-              ) : (
-                <ul>
-                  {projects.map((project) => (
-                    <li key={project.id} className="slot-actions">
-                      <span>{project.name}</span>
-                      <select
-                        value={project.role || "ignore"}
-                        disabled={busy}
-                        onChange={(e) =>
-                          void handleProjectRole(project.id, e.target.value)
-                        }
-                      >
-                        {TICKTICK_ROLES.map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="slot-actions">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void handleSync()}
-                >
-                  同步任务
-                </button>
-              </div>
-              {truncated && (
-                <p className="muted">
-                  当天有时段任务超过 20，请在 TickTick 勾完或改期。
-                </p>
-              )}
-            </section>
           )}
-        </>
-      )}
 
-      <button type="button" disabled={busy} onClick={() => void handleSave()}>
-        {busy ? "保存中…" : "保存设置"}
-      </button>
-      {msg && <p className="muted">{msg}</p>}
-    </div>
+          {tab === "permissions" && (
+            <div className="space-y-4">
+              <PermissionPanel />
+            </div>
+          )}
+
+          {tab === "about" && (
+            <div className="space-y-4">
+              <Section title="关于">
+                <div className="flex items-center gap-4">
+                  <img src={appIcon} alt="" className="size-12 shrink-0" />
+                  <div className="space-y-0.5">
+                    <p className="text-base font-semibold tracking-tight">GameLife</p>
+                    <p className="font-mono text-xs text-muted-foreground">
+                      版本 {__APP_VERSION__}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  每 15 秒采样一次前台窗口，按 15 分钟槽判定主线 / 支线 / 杂项 / 娱乐，
+                  再给有效主线时间发硬币与能量。排期留在 TickTick，本机只负责观测、判定、发币与统计。
+                </p>
+              </Section>
+
+              <Section title="判定顺序" caption="改动设置后，只影响还没开始的槽。">
+                <ol className="space-y-2 text-xs leading-relaxed text-muted-foreground">
+                  <li className="flex gap-2">
+                    <span className="font-medium text-foreground">1</span>
+                    硬规则，按顺序：锁屏或暂停 →离开；娱乐名单 →娱乐；杂项名单 →杂项；
+                    支线名单 →支线；阅读应用 →阅读桥接；主线应用 →主线候选；都不命中 →待定。
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="font-medium text-foreground">2</span>
+                    元数据够确定就直接结算，不调 AI：落地活跃主线满 13 分钟自动记主线，
+                    支线 / 杂项 / 娱乐合计满 5 分钟且压过主线就自动归到其中之一。
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="font-medium text-foreground">3</span>
+                    剩下的是灰区，交给文本 AI：当天有带时段的 TickTick 任务就匹配任务，
+                    没有就按「名单」里那四段类别说明归类。
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="font-medium text-foreground">4</span>
+                    文本 AI 没给出高置信结论，才用那一槽的截图走视觉判断。
+                    视觉失败或返回非法结果 → 记待复核，绝不猜成已确认。
+                  </li>
+                </ol>
+              </Section>
+
+              <Section title="本机数据">
+                <div className="space-y-2 text-xs">
+                  {[
+                    ["数据目录", "~/Library/Application Support/GameLife/"],
+                    ["数据库", "gamelife.db"],
+                    ["设置", "config.json"],
+                    ["密钥", "secrets.json（权限 600，不进 config.json）"],
+                    ["截图", "screenshots/（按保留策略自动清理）"],
+                    ["应用标识", "ma.haofei.gamelife"],
+                  ].map(([label, value]) => (
+                    <div key={label} className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
+                      <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                        {value}
+                      </code>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  采样间隔固定 15 秒。样本保留天数与截图保留都在「基础」里调。
+                </p>
+              </Section>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 
-function ProviderEditor({
-  title,
-  spec,
-  keyPresent,
-  keyValue,
-  busy,
-  onPatch,
-  onKeyChange,
-}: {
-  title: string;
-  spec: VisionProviderSettings;
-  keyPresent: boolean;
-  keyValue: string;
-  busy: boolean;
-  onPatch: (patch: Partial<VisionProviderSettings>) => void;
-  onKeyChange: (value: string) => void;
-}) {
-  return (
-    <section>
-      <h3>{title}</h3>
-      <p className="muted">{keyPresent ? "已配置钥匙串条目" : "未配置"}</p>
-      <label>
-        Base URL
-        <input
-          value={spec.baseUrl}
-          disabled={busy}
-          placeholder="https://…"
-          onChange={(e) => onPatch({ baseUrl: e.target.value })}
-        />
-      </label>
-      <label>
-        模型
-        <input
-          value={spec.model}
-          disabled={busy}
-          placeholder="模型 ID"
-          onChange={(e) => onPatch({ model: e.target.value })}
-        />
-      </label>
-      <label>
-        API Key
-        <input
-          type="password"
-          value={keyValue}
-          disabled={busy}
-          placeholder="新 Key（保存时写入钥匙串）"
-          onChange={(e) => onKeyChange(e.target.value)}
-        />
-      </label>
-    </section>
-  );
-}
