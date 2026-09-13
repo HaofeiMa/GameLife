@@ -16,7 +16,7 @@ use gamelife_core::{
     new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
     recompute_streak, schedule_capture, slot_end_exclusive, slot_start,
     spans_for_slot, ticktick_judgment_set, vision_quest_label, apply_category_match,
-    apply_task_match, parse_category_match_json, parse_task_match_json,
+    apply_task_match, parse_category_match_json, parse_task_match_json, deltas_from_slot,
     CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest,
     QuestDraft, QuestListError,
     Sample, TASK_MATCH_MIN, TaskSnapshot, VisionContext, CHEST_SECS,
@@ -1436,7 +1436,16 @@ pub fn finalize_slot_end(
     )
     .unwrap_or(0);
 
-    resolve_slot(conn, day, slot_start, &output, credited_before, early_coins)?;
+    let deltas = deltas_from_slot(&samples, &evidence.hints, &never);
+    resolve_slot(
+        conn,
+        day,
+        slot_start,
+        &output,
+        credited_before,
+        early_coins,
+        &deltas,
+    )?;
 
     let status = slot_status(conn, day, slot_start)?.unwrap_or_default();
     apply_capture_retention(conn, day, slot_start, retention, &status)?;
@@ -1945,7 +1954,7 @@ pub fn review_pending_slot(
         output.used_vision,
     )
     .unwrap_or(0);
-    resolve_slot(conn, day, slot_start, &output, credited_before, early_coins)?;
+    resolve_slot(conn, day, slot_start, &output, credited_before, early_coins, &[])?;
     let status = slot_status(conn, day, slot_start)?.unwrap_or_default();
     apply_capture_retention(conn, day, slot_start, retention, &status)?;
     Ok(())
@@ -2528,6 +2537,48 @@ mod tests {
             params![mainline_snapshot_json(), day, slot_start],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn finalize_writes_hint_seconds_into_app_day_stats() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-13";
+        let ss = 0i64;
+        conn.execute(
+            "INSERT INTO policy_versions (json, created_at)
+             VALUES ('{\"trusted_apps\":[\"Cursor\"],\"distraction_rules\":[],\"side_project_rules\":[],\"reading_apps\":[],\"never_capture_apps\":[]}', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO quest_versions (day, json, created_at)
+             VALUES (?1, '[{\"text\":\"paper\",\"keywords\":[\"main.tex\"]}]', 1)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, quest_version_id, policy_version_id)
+             VALUES (?1, ?2, 50, 'Missed', 1, 1)",
+            params![day, ss],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO samples (ts, day, app, title, document_path, idle_seconds, locked, paused)
+             VALUES (0, ?1, 'Cursor', 'main.tex', '/paper/main.tex', 2, 0, 0)",
+            params![day],
+        )
+        .unwrap();
+        pin_mainline_snapshot(&conn, day, ss);
+        finalize_slot_end(&mut conn, day, ss, 15, ScreenshotRetention::None, 0).unwrap();
+        let core: i64 = conn
+            .query_row(
+                "SELECT core FROM app_day_stats WHERE day=?1 AND app='Cursor' AND bundle_id=''",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(core, 15);
     }
 
     #[test]

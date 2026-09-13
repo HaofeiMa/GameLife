@@ -1,3 +1,4 @@
+pub mod app_stats;
 pub mod capture;
 pub mod document;
 pub mod early_start;
@@ -22,6 +23,7 @@ pub mod url;
 pub mod vision_ctx;
 pub mod weekly;
 
+pub use app_stats::{accumulate_sample, deltas_from_slot, hint_bucket, AppHintSecs, DayStatDelta};
 pub use capture::{CaptureStatus, capture_on_resume, schedule_capture};
 pub use early_start::{early_start_anchor, early_start_coins_for_local_secs};
 pub use feel::{FeelNotice, LedgerSlice, coalesce_feel_events};

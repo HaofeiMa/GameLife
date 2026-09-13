@@ -1,10 +1,13 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use gamelife_core::judge::{Dominant, JudgeOutput};
-use gamelife_core::ledger::{admin_xp_key, support_xp_key, tick_keys_for_credited, tick_keys_for_discount};
+use gamelife_core::ledger::{
+    admin_xp_key, support_xp_key, tick_keys_for_credited, tick_keys_for_discount,
+};
 use gamelife_core::task::ListRole;
-use gamelife_core::GOLD_DAY_SECS;
 use gamelife_core::types::ActivitySeconds;
+use gamelife_core::DayStatDelta;
+use gamelife_core::GOLD_DAY_SECS;
 
 use crate::db::insert_ledger;
 use crate::db_error::{map_rusqlite, DbOpError};
@@ -16,16 +19,22 @@ pub fn resolve_slot(
     output: &JudgeOutput,
     credited_before: i64,
     early_coins: i64,
+    deltas: &[DayStatDelta],
 ) -> Result<(), DbOpError> {
     let tx = conn.transaction().map_err(map_rusqlite)?;
 
-    if slot_is_immutable(&tx, day, slot_start)? {
+    let prior = slot_status(&tx, day, slot_start)?;
+    if matches!(prior.as_deref(), Some("final" | "unknown")) {
         tx.commit().map_err(map_rusqlite)?;
         return Ok(());
     }
+    let stats_already_written = prior.as_deref() == Some("pending_review");
 
     if output.pending {
         upsert_slot(&tx, day, slot_start, output, "pending_review", 0)?;
+        if !stats_already_written {
+            write_day_stats(&tx, day, deltas)?;
+        }
         tx.commit().map_err(map_rusqlite)?;
         return Ok(());
     }
@@ -34,6 +43,10 @@ pub fn resolve_slot(
     if !upsert_slot(&tx, day, slot_start, output, "final", credited)? {
         tx.commit().map_err(map_rusqlite)?;
         return Ok(());
+    }
+
+    if !stats_already_written {
+        write_day_stats(&tx, day, deltas)?;
     }
 
     let after = credited_before + credited;
@@ -57,7 +70,8 @@ pub fn resolve_slot(
     let gold_day = i64::try_from(GOLD_DAY_SECS).unwrap_or(28800);
     if credited_before < gold_day {
         let side_before = discounted_seconds_before(&tx, day, slot_start, "credited_side_seconds")?;
-        let chore_before = discounted_seconds_before(&tx, day, slot_start, "credited_chore_seconds")?;
+        let chore_before =
+            discounted_seconds_before(&tx, day, slot_start, "credited_chore_seconds")?;
         for ev in tick_keys_for_discount(
             day,
             ListRole::Side,
@@ -107,8 +121,8 @@ pub fn resolve_slot(
     Ok(())
 }
 
-fn slot_is_immutable(conn: &Connection, day: &str, slot_start: i64) -> Result<bool, DbOpError> {
-    let status: Option<String> = conn
+fn slot_status(conn: &Connection, day: &str, slot_start: i64) -> Result<Option<String>, DbOpError> {
+    Ok(conn
         .query_row(
             "SELECT status FROM slots WHERE day=?1 AND slot_start=?2",
             params![day, slot_start],
@@ -116,8 +130,72 @@ fn slot_is_immutable(conn: &Connection, day: &str, slot_start: i64) -> Result<bo
         )
         .optional()
         .map_err(map_rusqlite)?
-        .flatten();
-    Ok(matches!(status.as_deref(), Some("final" | "unknown")))
+        .flatten())
+}
+
+fn write_day_stats(conn: &Connection, day: &str, deltas: &[DayStatDelta]) -> Result<(), DbOpError> {
+    for delta in deltas {
+        conn.execute(
+            "INSERT INTO app_day_stats (
+               day, app, bundle_id, samples, idle_seconds, core, support, admin, side,
+               distraction, away, unobserved, protected
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+             ON CONFLICT(day, app, bundle_id) DO UPDATE SET
+               samples = samples + excluded.samples,
+               idle_seconds = idle_seconds + excluded.idle_seconds,
+               core = core + excluded.core,
+               support = support + excluded.support,
+               admin = admin + excluded.admin,
+               side = side + excluded.side,
+               distraction = distraction + excluded.distraction,
+               away = away + excluded.away,
+               unobserved = unobserved + excluded.unobserved,
+               protected = protected + excluded.protected",
+            params![
+                day,
+                delta.app,
+                delta.bundle_id,
+                delta.samples,
+                delta.idle_seconds,
+                delta.core,
+                delta.support,
+                delta.admin,
+                delta.side,
+                delta.distraction,
+                delta.away,
+                delta.unobserved,
+                delta.protected,
+            ],
+        )
+        .map_err(map_rusqlite)?;
+
+        if let Some(host) = delta.host.as_deref().filter(|h| !h.is_empty()) {
+            conn.execute(
+                "INSERT INTO host_day_stats (
+                   day, host, samples, core, support, admin, side, distraction
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+                 ON CONFLICT(day, host) DO UPDATE SET
+                   samples = samples + excluded.samples,
+                   core = core + excluded.core,
+                   support = support + excluded.support,
+                   admin = admin + excluded.admin,
+                   side = side + excluded.side,
+                   distraction = distraction + excluded.distraction",
+                params![
+                    day,
+                    host,
+                    delta.samples,
+                    delta.core,
+                    delta.support,
+                    delta.admin,
+                    delta.side,
+                    delta.distraction,
+                ],
+            )
+            .map_err(map_rusqlite)?;
+        }
+    }
+    Ok(())
 }
 
 fn upsert_slot(
@@ -167,7 +245,9 @@ fn discounted_seconds_before(
 ) -> Result<i64, DbOpError> {
     let sql = match column {
         "credited_side_seconds" | "credited_chore_seconds" => {
-            format!("SELECT COALESCE(SUM({column}), 0) FROM slots WHERE day = ?1 AND slot_start != ?2")
+            format!(
+                "SELECT COALESCE(SUM({column}), 0) FROM slots WHERE day = ?1 AND slot_start != ?2"
+            )
         }
         _ => return Ok(0),
     };
@@ -202,13 +282,7 @@ fn admin_xp_slots_today(conn: &Connection, day: &str) -> Result<i64, DbOpError> 
 fn activity_json(a: &ActivitySeconds) -> String {
     format!(
         r#"{{"core":{},"support":{},"admin":{},"side":{},"distraction":{},"away":{},"unobserved":{}}}"#,
-        a.core,
-        a.support,
-        a.admin,
-        a.side,
-        a.distraction,
-        a.away,
-        a.unobserved
+        a.core, a.support, a.admin, a.side, a.distraction, a.away, a.unobserved
     )
 }
 
@@ -249,9 +323,9 @@ mod tests {
         migrate(&conn).unwrap();
         let day = "2026-09-10";
         let output = core_output(900);
-        resolve_slot(&mut conn, day, 0, &output, 0, 0).unwrap();
+        resolve_slot(&mut conn, day, 0, &output, 0, 0, &[]).unwrap();
         let count1 = validated_coin_count(&conn);
-        resolve_slot(&mut conn, day, 0, &output, 0, 0).unwrap();
+        resolve_slot(&mut conn, day, 0, &output, 0, 0, &[]).unwrap();
         let count2 = validated_coin_count(&conn);
         assert_eq!(count1, count2);
         assert_eq!(count1, 1);
@@ -271,7 +345,7 @@ mod tests {
         )
         .unwrap();
         let output = core_output(900);
-        resolve_slot(&mut conn, day, slot_start, &output, 0, 0).unwrap();
+        resolve_slot(&mut conn, day, slot_start, &output, 0, 0, &[]).unwrap();
         let credited: i64 = conn
             .query_row(
                 "SELECT credited_core_seconds FROM slots WHERE day=?1 AND slot_start=?2",
@@ -297,7 +371,7 @@ mod tests {
             used_vision: true,
             pending: true,
         };
-        resolve_slot(&mut conn, day, 0, &output, 0, 0).unwrap();
+        resolve_slot(&mut conn, day, 0, &output, 0, 0, &[]).unwrap();
         let (status, credited): (String, i64) = conn
             .query_row(
                 "SELECT status, credited_core_seconds FROM slots WHERE day=?1 AND slot_start=?2",
@@ -316,7 +390,7 @@ mod tests {
         migrate(&conn).unwrap();
         let day = "2026-09-10";
         let output = core_output(300);
-        resolve_slot(&mut conn, day, 0, &output, 600, 8).unwrap();
+        resolve_slot(&mut conn, day, 0, &output, 600, 8, &[]).unwrap();
         let coin: i64 = conn
             .query_row(
                 "SELECT coin_delta FROM ledger WHERE reward_event_key=?1",
@@ -335,7 +409,7 @@ mod tests {
         output.dominant = Dominant::SideProject;
         output.credited_side_seconds = 1500;
         output.observed_seconds = 1500;
-        resolve_slot(&mut conn, "2026-09-11", 0, &output, 0, 0).unwrap();
+        resolve_slot(&mut conn, "2026-09-11", 0, &output, 0, 0, &[]).unwrap();
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM ledger WHERE reward_event_key='validated_side_coin:2026-09-11:1'",
@@ -344,5 +418,139 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    fn core_app_delta(host: Option<&str>) -> DayStatDelta {
+        DayStatDelta {
+            app: "Cursor".into(),
+            bundle_id: String::new(),
+            host: host.map(str::to_string),
+            samples: 1,
+            idle_seconds: 0,
+            core: 15,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_writes_app_and_host_day_stats() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-13";
+        let output = core_output(15);
+        let deltas = [core_app_delta(Some("arxiv.org"))];
+        resolve_slot(&mut conn, day, 0, &output, 0, 0, &deltas).unwrap();
+        let core: i64 = conn
+            .query_row(
+                "SELECT core FROM app_day_stats WHERE day=?1 AND app=?2 AND bundle_id=?3",
+                params![day, "Cursor", ""],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(core, 15);
+        let host_core: i64 = conn
+            .query_row(
+                "SELECT core FROM host_day_stats WHERE day=?1 AND host=?2",
+                params![day, "arxiv.org"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(host_core, 15);
+        let n_app: i64 = conn
+            .query_row("SELECT COUNT(*) FROM app_day_stats", [], |r| r.get(0))
+            .unwrap();
+        let n_host: i64 = conn
+            .query_row("SELECT COUNT(*) FROM host_day_stats", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_app, 1);
+        assert_eq!(n_host, 1);
+    }
+
+    #[test]
+    fn pending_also_writes_app_day_stats() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-13";
+        let output = JudgeOutput {
+            dominant: Dominant::PendingReview,
+            activity: ActivitySeconds::default(),
+            credited_core_seconds: 0,
+            credited_side_seconds: 0,
+            credited_chore_seconds: 0,
+            observed_seconds: 600,
+            used_vision: true,
+            pending: true,
+        };
+        let deltas = [core_app_delta(None)];
+        resolve_slot(&mut conn, day, 0, &output, 0, 0, &deltas).unwrap();
+        let core: i64 = conn
+            .query_row(
+                "SELECT core FROM app_day_stats WHERE day=?1 AND app=?2",
+                params![day, "Cursor"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(core, 15);
+        let n_host: i64 = conn
+            .query_row("SELECT COUNT(*) FROM host_day_stats", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_host, 0);
+    }
+
+    #[test]
+    fn pending_then_final_does_not_double_app_stats() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-13";
+        let pending = JudgeOutput {
+            dominant: Dominant::PendingReview,
+            activity: ActivitySeconds::default(),
+            credited_core_seconds: 0,
+            credited_side_seconds: 0,
+            credited_chore_seconds: 0,
+            observed_seconds: 600,
+            used_vision: true,
+            pending: true,
+        };
+        let deltas = [core_app_delta(None)];
+        resolve_slot(&mut conn, day, 0, &pending, 0, 0, &deltas).unwrap();
+        let output = core_output(15);
+        resolve_slot(&mut conn, day, 0, &output, 0, 0, &deltas).unwrap();
+        let core: i64 = conn
+            .query_row(
+                "SELECT core FROM app_day_stats WHERE day=?1 AND app=?2",
+                params![day, "Cursor"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(core, 15);
+        let samples: i64 = conn
+            .query_row(
+                "SELECT samples FROM app_day_stats WHERE day=?1 AND app=?2",
+                params![day, "Cursor"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(samples, 1);
+    }
+
+    #[test]
+    fn two_slots_accumulate_same_app_row() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-13";
+        let output = core_output(15);
+        let deltas = [core_app_delta(None)];
+        resolve_slot(&mut conn, day, 0, &output, 0, 0, &deltas).unwrap();
+        resolve_slot(&mut conn, day, 900, &output, 15, 0, &deltas).unwrap();
+        let (samples, core): (i64, i64) = conn
+            .query_row(
+                "SELECT samples, core FROM app_day_stats WHERE day=?1 AND app=?2",
+                params![day, "Cursor"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(samples, 2);
+        assert_eq!(core, 30);
     }
 }
