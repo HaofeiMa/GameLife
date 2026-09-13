@@ -4,7 +4,11 @@ import { cn } from "../../lib/utils";
 export function Card({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
-      className={cn("rounded-xl border bg-card text-card-foreground", className)}
+      className={cn(
+        // The mockup's .card: no border, 18px, one very soft warm shadow.
+        "rounded-xl bg-card text-card-foreground shadow-[0_10px_26px_-22px_rgba(120,95,60,0.7)]",
+        className,
+      )}
       {...props}
     />
   );

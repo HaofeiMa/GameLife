@@ -87,15 +87,17 @@ function Section({
 }) {
   return (
     <Card className={cn("overflow-hidden", className)}>
-      <div className="border-b px-5 py-3">
-        <h2 className="text-sm font-medium">{title}</h2>
+      <div className="px-[18px] pt-[11px] pb-2">
+        <h2 className="text-[13.5px] font-semibold tracking-[-0.005em]">
+          {title}
+        </h2>
         {caption && (
-          <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+          <div className="mt-[3px] text-[11px] leading-[1.5] text-muted-foreground">
             {caption}
           </div>
         )}
       </div>
-      <div className="space-y-4 px-5 py-4">{children}</div>
+      <div className="flex flex-col gap-2 px-[18px] pb-3.5">{children}</div>
     </Card>
   );
 }
@@ -132,11 +134,14 @@ function ToggleRow({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 rounded-xl border bg-card/50 p-4">
-      <div className="space-y-0.5">
-        <p className="text-sm font-medium leading-none">{title}</p>
+    /* The mockup's .frow — an inset card per setting, one per line. */
+    <div className="flex items-center gap-[14px] rounded-[14px] bg-loot px-[13px] py-2.5">
+      <div className="min-w-0 flex-1">
+        <p className="text-[12.5px] font-semibold">{title}</p>
         {description && (
-          <p className="text-xs leading-relaxed text-muted-foreground">{description}</p>
+          <p className="mt-0.5 text-[11px] leading-[1.5] text-muted-foreground">
+            {description}
+          </p>
         )}
       </div>
       <Switch
@@ -454,7 +459,7 @@ export function Settings() {
       <>
         {header}
         <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl px-6 py-5">
+          <div className="mx-auto flex w-[728px] max-w-full flex-col gap-3 px-4 pt-3 pb-4">
             <Card className="flex flex-col items-center gap-3 p-8 text-center">
               <p className="text-sm text-destructive">{loadError}</p>
               <Button
@@ -481,7 +486,7 @@ export function Settings() {
       <>
         {header}
         <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl space-y-4 px-6 py-5">
+          <div className="mx-auto flex w-[728px] max-w-full flex-col gap-3 px-4 pt-3 pb-4">
             {[0, 1, 2].map((i) => (
               <div key={i} className="h-32 animate-shimmer rounded-xl bg-muted" />
             ))}
@@ -789,7 +794,7 @@ export function Settings() {
     <>
       {header}
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl space-y-4 px-6 py-4">
+        <div className="mx-auto flex w-[728px] max-w-full flex-col gap-3 px-4 pt-3 pb-4">
           {msg && (
             <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
               {msg}

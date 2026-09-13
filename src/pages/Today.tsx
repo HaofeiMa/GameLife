@@ -13,7 +13,6 @@ import { ConfirmEndDay } from "../components/ConfirmEndDay";
 import { EntertainmentBanner } from "../components/EntertainmentBanner";
 import { PageHeader } from "../components/PageHeader";
 import { PermissionBanner } from "../components/PermissionBanner";
-import { StreakRing } from "../components/StreakRing";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -81,7 +80,8 @@ const HOURS = Array.from({ length: 24 }, (_, h) => h);
 const SLOT_H = 18;
 const HOUR_H = SLOT_H * 4;
 const SLOT_COUNT = 96;
-const GOAL_MINUTES = 480;
+/** Chest pips are one per credited hour; 宝箱 needs 6. */
+const CHEST_HOURS = 6;
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
@@ -293,8 +293,8 @@ function Timeline({
   }, [calDay, showNow, now, dayStart, scrollRef]);
 
   return (
-    <Card className="flex min-w-0 flex-col">
-      <div className="flex items-center justify-between gap-2 border-b px-5 py-3">
+    <Card className="flex h-full min-w-0 flex-col overflow-hidden">
+      <div className="flex shrink-0 items-center justify-between gap-2 px-[18px] pt-3 pb-[9px]">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -326,7 +326,7 @@ function Timeline({
       </div>
       <div
         ref={scrollRef}
-        className="max-h-[540px] overflow-y-auto overscroll-contain"
+        className="h-full overflow-y-auto overscroll-contain"
       >
         <div className="relative" style={{ height: totalHeight }}>
           {HOURS.map((h) => (
@@ -437,10 +437,11 @@ function Timeline({
 /* 「计划 vs 实际」                                                     */
 /* ------------------------------------------------------------------ */
 
+/** The mockup's .tag ok / mid / idle. */
 const COMPARE_TAG: Record<string, string> = {
-  idle: "bg-muted text-muted-foreground",
-  doing: "bg-warning/15 text-warning",
-  done: "bg-success/15 text-success",
+  idle: "bg-[hsl(34_32%_92%)] text-[hsl(34_16%_60%)]",
+  doing: "bg-[hsl(33_100%_94%)] text-[hsl(20_37%_54%)]",
+  done: "bg-[hsl(147_41%_93%)] text-[hsl(151_42%_37%)]",
 };
 
 /**
@@ -466,15 +467,11 @@ function TaskCompareCard({
 
   return (
     <Card className="flex flex-col">
-      <div className="flex items-baseline gap-3 border-b px-5 py-3">
-        <h2 className="text-sm font-medium">今天的主线</h2>
-        {rows.length > 0 && (
-          <span className="ml-auto text-xs text-muted-foreground">
-            {moved} / {rows.length} 条有推进
-          </span>
-        )}
-      </div>
-      <div className="space-y-3 px-5 py-4">
+      <CardCh
+        title="今天的主线"
+        meta={rows.length > 0 ? `${moved} / ${rows.length} 条有推进` : undefined}
+      />
+      <div className="flex flex-col gap-[9px] px-[18px] pt-0.5 pb-3">
         {emptyDay && <EmptyLine>这一天没有监测记录</EmptyLine>}
 
         {!emptyDay && rows.length === 0 && (
@@ -508,11 +505,11 @@ function TaskCompareCard({
           return (
             <div key={r.id} className="flex items-center gap-3">
               <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-3">
+                <div className="flex items-baseline gap-[9px]">
                   <span
                     className={cn(
-                      "truncate text-sm font-medium",
-                      idle && "text-muted-foreground",
+                      "truncate text-[13px] font-semibold",
+                      idle && "text-[hsl(34_14%_54%)]",
                     )}
                   >
                     {r.title}
@@ -522,8 +519,8 @@ function TaskCompareCard({
                   </span>
                   <span
                     className={cn(
-                      "ml-auto shrink-0 text-sm font-semibold tabular-nums",
-                      idle && "font-normal text-muted-foreground",
+                      "ml-auto shrink-0 text-[12.5px] font-bold tabular-nums",
+                      idle && "font-semibold text-dim2",
                     )}
                   >
                     {minutesLabel(r.actualMinutes)}
@@ -531,14 +528,14 @@ function TaskCompareCard({
                 </div>
                 <Progress
                   value={pct}
-                  className="mt-1.5 h-1.5"
+                  className="mt-[5px] h-1.5 rounded"
                   aria-label={`${r.title} 推进进度`}
-                  barClassName={idle ? "bg-transparent" : undefined}
+                  barClassName={cn("rounded", idle && "bg-transparent")}
                 />
               </div>
               <span
                 className={cn(
-                  "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                  "shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-medium whitespace-nowrap",
                   COMPARE_TAG[r.state],
                 )}
               >
@@ -549,8 +546,8 @@ function TaskCompareCard({
         })}
 
         {rows.length > 0 && compare.unplannedMinutes > 0 && (
-          <p className="border-t border-dashed pt-3 text-xs text-muted-foreground">
-            计划之外还推进了{" "}
+          <p className="mt-2 flex items-center gap-2 border-t border-dashed border-hairline pt-[9px] text-[11.5px] text-muted-foreground">
+            计划之外还推进了
             <strong className="font-semibold text-mainline">
               {minutesLabel(compare.unplannedMinutes)}
             </strong>
@@ -594,6 +591,22 @@ function DayRibbon({
   );
 }
 
+/** The mockup's .ch — card header: title, then a right-aligned meta note. */
+function CardCh({ title, meta }: { title: string; meta?: ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-[9px] px-[18px] pt-3 pb-[9px]">
+      <h2 className="text-[13.5px] font-semibold tracking-[-0.005em]">
+        {title}
+      </h2>
+      {meta != null && (
+        <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
+          {meta}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function LootTile({
   label,
   value,
@@ -606,15 +619,15 @@ function LootTile({
   icon?: ReactNode;
 }) {
   return (
-    <div className="rounded-lg bg-muted/60 px-2.5 py-2">
-      <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+    <div className="flex flex-col gap-1.5 rounded-[13px] bg-loot px-2.5 py-2">
+      <p className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
         {icon}
         {label}
       </p>
-      <p className="mt-1 text-lg font-semibold leading-none tabular-nums tracking-tight">
+      <p className="text-[18px] font-bold leading-none tracking-[-0.035em] tabular-nums">
         {value}
         {sub && (
-          <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+          <span className="ml-[3px] text-[11px] font-medium tracking-normal text-muted-foreground">
             {sub}
           </span>
         )}
@@ -739,7 +752,7 @@ export function Today() {
       <>
         {header}
         <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-5xl space-y-4 px-6 py-4">
+          <div className="flex flex-col gap-3 px-[22px] pt-3 pb-4">
             <Card className="flex flex-col items-center gap-3 p-8 text-center">
               <p className="text-sm text-destructive">{error}</p>
               <Button variant="outline" size="sm" onClick={() => void refresh()}>
@@ -757,7 +770,7 @@ export function Today() {
       <>
         {header}
         <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-5xl space-y-4 px-6 py-4">
+          <div className="flex flex-col gap-3 px-[22px] pt-3 pb-4">
             <div className="grid grid-cols-3 gap-3">
               {[0, 1, 2].map((i) => (
                 <div key={i} className="h-[76px] animate-shimmer rounded-xl bg-muted" />
@@ -777,11 +790,6 @@ export function Today() {
   const appTop: AppTopRow[] = isTodayCal ? data.appTop : dayView.appTop;
   const pendingCount = isTodayCal ? data.pendingCount : dayView.pendingCount;
   const pendingMinutes = pendingActivityMinutes(dayView.slots);
-  const catMax = Math.max(1, ...CAT_ROWS.map((c) => activity[c.key]), pendingMinutes);
-  const creditedMin = Math.floor(data.creditedSeconds / 60);
-  const fillPct = data.goldDay
-    ? 100
-    : Math.min(100, (creditedMin / GOAL_MINUTES) * 100);
   const emptyDay = dayView.slots.length === 0;
   const ticktickTasks = dayView.ticktickTasks ?? [];
   const compare = compareDayTasks(ticktickTasks, dayView.slots);
@@ -798,7 +806,7 @@ export function Today() {
     <>
       {header}
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-5xl space-y-4 px-6 py-4">
+        <div className="flex flex-col gap-3 px-[22px] pt-3 pb-4">
           <PermissionBanner />
           <EntertainmentBanner
             active={data.activeEntertainment}
@@ -812,195 +820,8 @@ export function Today() {
 
           <TaskCompareCard compare={compare} appTop={appTop} emptyDay={emptyDay} />
 
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
-            <Card className="flex flex-col">
-              <div className="flex items-baseline gap-3 border-b px-5 py-3">
-                <h2 className="text-sm font-medium">时间去哪了</h2>
-                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-                  观测 {minutesLabel(observedMinutes)}
-                </span>
-              </div>
-              <div className="flex flex-1 flex-col justify-center gap-3 px-5 py-4">
-                {emptyDay ? (
-                  <EmptyLine>这一天没有监测记录</EmptyLine>
-                ) : (
-                  <>
-                    <DayRibbon dayStart={dayView.dayStart} slotsByStart={slotsByStart} />
-                    <div className="flex justify-between text-[10px] tabular-nums text-muted-foreground">
-                      {[0, 4, 8, 12, 16, 20, 24].map((h) => (
-                        <span key={h}>{pad2(h)}</span>
-                      ))}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      推进主线{" "}
-                      <strong className="font-semibold text-mainline">
-                        {minutesLabel(activity.core)}
-                      </strong>
-                      {observedMinutes > 0 && (
-                        <span className="ml-1.5">占观测 {corePct}%</span>
-                      )}
-                    </p>
-                    <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-                      {CAT_ROWS.slice(0, 6).map((row) => (
-                        <div
-                          key={row.key}
-                          className="flex items-center gap-2 text-[11px]"
-                        >
-                          <i
-                            className="size-2 shrink-0 rounded-full"
-                            style={{ background: categoryColor(row.cat) }}
-                          />
-                          <dt className="text-muted-foreground">{row.label}</dt>
-                          <dd className="ml-auto tabular-nums text-muted-foreground">
-                            {minutesLabel(activity[row.key])}
-                          </dd>
-                        </div>
-                      ))}
-                    </dl>
-                  </>
-                )}
-              </div>
-            </Card>
-
-            <Card className="flex flex-col">
-              <div className="flex items-baseline gap-3 border-b px-5 py-3">
-                <h2 className="text-sm font-medium">攒到了</h2>
-                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-                  {calDay}
-                </span>
-              </div>
-              <div className="flex flex-1 flex-col gap-3 px-5 py-4">
-                <div className="grid grid-cols-3 gap-2.5">
-                  <LootTile
-                    label="硬币"
-                    icon={<Coins className="size-3" aria-hidden />}
-                    value={`+${data.coinsToday}`}
-                    sub={`共 ${data.coinBalance}`}
-                  />
-                  <LootTile
-                    label="能量"
-                    icon={<Zap className="size-3" aria-hidden />}
-                    value={data.xpToday}
-                    sub={data.xpShopUnlocked ? "商店已解锁" : "未解锁"}
-                  />
-                  <LootTile
-                    label="连胜"
-                    icon={<Target className="size-3" aria-hidden />}
-                    value={data.streak}
-                    sub="天"
-                  />
-                </div>
-
-                <div className="flex items-baseline justify-between gap-3 text-xs text-muted-foreground">
-                  <span className="tabular-nums">
-                    宝箱 {data.chest.have}/{data.chest.need}
-                  </span>
-                  <span className="tabular-nums">
-                    黄金日 {data.gold.have}/{data.gold.need}
-                  </span>
-                  <span className="tabular-nums">
-                    主线 {data.creditedLabel} / 8h
-                  </span>
-                </div>
-                <Progress
-                  value={fillPct}
-                  aria-label="今日主线进度"
-                  className="h-2"
-                  barClassName="bg-gradient-to-r from-primary/70 via-primary to-primary/80 shadow-sm shadow-primary/40"
-                />
-
-                <div className="mt-auto flex items-center gap-3">
-                  <StreakRing streak={data.streak} atRisk={data.atRisk} size={40} />
-                  <div className="min-w-0 space-y-0.5">
-                    <p className="text-xs text-muted-foreground">
-                      {data.atRisk ? "未达宝箱有断连风险" : "已连续达成宝箱"}
-                    </p>
-                    {data.goldDay && (
-                      <p className="text-xs text-warning" title={GOLD_DAY_MSG}>
-                        已达成黄金日
-                      </p>
-                    )}
-                    {!data.goldDay && data.firstCoreLabel && (
-                      <p className="truncate text-xs text-muted-foreground">
-                        {data.firstCoreLabel}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </Card>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
-            <Card className="flex flex-col">
-              <div className="border-b px-5 py-3">
-                <h2 className="text-sm font-medium">类别</h2>
-                <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-                  跨槽求和各类分钟；待复核单独计，不含进其他类别。
-                </p>
-              </div>
-              <div className="space-y-3 px-5 py-4">
-                {emptyDay && <EmptyLine>这一天没有监测记录</EmptyLine>}
-                {CAT_ROWS.map((row) => {
-                  const mins = activity[row.key];
-                  return (
-                    <div key={row.key} className="space-y-1.5">
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="flex items-center gap-2">
-                          <i
-                            className="size-2.5 shrink-0 rounded-full"
-                            style={{ background: categoryColor(row.cat) }}
-                          />
-                          {row.label}
-                        </span>
-                        <span className="tabular-nums text-muted-foreground">
-                          {mins} 分钟
-                        </span>
-                      </div>
-                      <Progress
-                        value={(mins / catMax) * 100}
-                        color={`linear-gradient(90deg, ${categoryColor(
-                          row.cat,
-                        )}, ${categoryColorAt(row.cat, 55)})`}
-                        aria-label={row.label}
-                      />
-                    </div>
-                  );
-                })}
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="flex items-center gap-2">
-                      <i
-                        className="size-2.5 shrink-0 rounded-full"
-                        style={{ background: categoryColor("pending") }}
-                      />
-                      待复核
-                    </span>
-                    <span className="tabular-nums text-muted-foreground">
-                      {pendingMinutes} 分钟
-                    </span>
-                  </div>
-                  <Progress
-                    value={(pendingMinutes / catMax) * 100}
-                    color={`linear-gradient(90deg, ${categoryColor(
-                      "pending",
-                    )}, ${categoryColorAt("pending", 55)})`}
-                    aria-label="待复核"
-                  />
-                </div>
-                {pendingCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={scrollToFirstPending}
-                    className="text-xs text-primary hover:underline"
-                  >
-                    {pendingCount} 条待复核，点按滚到时间轴
-                  </button>
-                )}
-              </div>
-            </Card>
-
-            <Timeline
+          <div className="flex flex-col gap-3 lg:h-[560px] lg:flex-row">
+            <div className="flex min-w-0 flex-1 flex-col">            <Timeline
               dayView={dayView}
               slotsByStart={slotsByStart}
               planMarks={marks}
@@ -1014,14 +835,146 @@ export function Today() {
               onBackToToday={() => setCalDay(data.day)}
               scrollRef={timelineRef}
             />
+            </div>
+
+            <div className="flex w-full shrink-0 flex-col gap-3 lg:w-[330px]">
+              {/* 时间去哪了 — the mockup folds the old 类别 card in here:
+                  one composition bar, a summary line, then a legend chip
+                  per category. It deliberately is not its own card. */}
+              <Card className="flex flex-col">
+                <CardCh title="时间去哪了" meta={`观测 ${minutesLabel(observedMinutes)}`} />
+                <div className="flex flex-1 flex-col gap-3 px-[18px] pt-0.5 pb-3.5">
+                  {emptyDay ? (
+                    <EmptyLine>这一天没有监测记录</EmptyLine>
+                  ) : (
+                    <>
+                      <DayRibbon
+                        dayStart={dayView.dayStart}
+                        slotsByStart={slotsByStart}
+                      />
+                      <div className="-mt-1 flex justify-between px-px text-[10px] tabular-nums text-dim2">
+                        {[0, 4, 8, 12, 16, 20, 24].map((h) => (
+                          <span key={h}>{pad2(h)}</span>
+                        ))}
+                      </div>
+                      <p className="flex flex-wrap items-baseline gap-x-[7px] text-[12.5px]">
+                        推进主线
+                        <strong className="font-bold tabular-nums text-mainline">
+                          {minutesLabel(activity.core)}
+                        </strong>
+                        {observedMinutes > 0 && (
+                          <>
+                            <span className="text-input">·</span>
+                            <span className="text-muted-foreground">
+                              占观测 {corePct}%
+                            </span>
+                          </>
+                        )}
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {CAT_ROWS.map((row) => (
+                          <span
+                            key={row.key}
+                            className="flex items-center gap-1.5 rounded-lg bg-legend px-2 py-[3px] text-[11px]"
+                          >
+                            <i
+                              className="size-2.5 shrink-0 rounded-[3px]"
+                              style={{ background: categoryColor(row.cat) }}
+                            />
+                            <span className="text-muted-foreground">
+                              {row.label}
+                            </span>
+                            <b className="font-semibold tabular-nums">
+                              {activity[row.key]}
+                            </b>
+                          </span>
+                        ))}
+                        <span className="flex items-center gap-1.5 rounded-lg bg-legend px-2 py-[3px] text-[11px]">
+                          <i
+                            className="size-2.5 shrink-0 rounded-[3px]"
+                            style={{ background: categoryColor("pending") }}
+                          />
+                          <span className="text-muted-foreground">待复核</span>
+                          <b className="font-semibold tabular-nums">
+                            {pendingMinutes}
+                          </b>
+                        </span>
+                      </div>
+                      {pendingCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={scrollToFirstPending}
+                          className="self-start text-[11.5px] text-primary hover:underline"
+                        >
+                          {pendingCount} 条待复核，点按滚到时间轴
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </Card>
+
+              {/* 攒到了 */}
+              <Card className="flex flex-1 flex-col">
+                <CardCh title="攒到了" meta={calDay} />
+                <div className="flex flex-1 flex-col gap-3 px-[18px] pt-0.5 pb-3.5">
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <LootTile
+                      label="硬币"
+                      icon={<Coins className="size-3" aria-hidden />}
+                      value={`+${data.coinsToday}`}
+                    />
+                    <LootTile
+                      label="能量"
+                      icon={<Zap className="size-3" aria-hidden />}
+                      value={data.xpToday}
+                    />
+                    <LootTile
+                      label="连胜"
+                      icon={<Target className="size-3" aria-hidden />}
+                      value={data.streak}
+                      sub="天"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] text-muted-foreground">
+                      宝箱 {data.chest.have} / {data.chest.need} · 黄金日{" "}
+                      {data.gold.have} / {data.gold.need}
+                      {data.atRisk && (
+                        <span className="text-warning"> · 今天还没到 6 小时</span>
+                      )}
+                      {data.goldDay && (
+                        <span className="text-gold" title={GOLD_DAY_MSG}>
+                          {" "}· 已达成
+                        </span>
+                      )}
+                    </p>
+                    <div className="flex gap-[3px]">
+                      {Array.from({ length: CHEST_HOURS }, (_, i) => {
+                        const on = data.chest.have >= (i + 1) * 60;
+                        return (
+                          <i
+                            key={i}
+                            className={cn(
+                              "h-[5px] flex-1 rounded-[2px]",
+                              on ? "bg-primary" : "bg-pip",
+                            )}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            </div>
           </div>
+
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card className="flex flex-col">
-              <div className="border-b px-5 py-3">
-                <h2 className="text-sm font-medium">当天 TickTick</h2>
-              </div>
-              <div className="px-5 py-4">
+              <CardCh title="当天 TickTick" />
+              <div className="px-[18px] pt-0.5 pb-3.5">
                 {ticktickTasks.length === 0 ? (
                   <EmptyLine>
                     当天没有带时段的 TickTick 任务。可在设置里点同步任务。
@@ -1048,10 +1001,8 @@ export function Today() {
             </Card>
 
             <Card className="flex flex-col">
-              <div className="border-b px-5 py-3">
-                <h2 className="text-sm font-medium">当日应用</h2>
-              </div>
-              <div className="px-5 py-4">
+              <CardCh title="当日应用" />
+              <div className="px-[18px] pt-0.5 pb-3.5">
                 {appTop.length === 0 ? (
                   <EmptyLine>今天还没有应用明细</EmptyLine>
                 ) : (

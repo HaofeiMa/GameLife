@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 /** macOS paints the traffic lights over us (`titleBarStyle: "Overlay"`). */
 export const TRAFFIC_LIGHT_STRIP = 28;
 /** Height of the sidebar brand row under the traffic lights. */
-export const TOOLBAR_ROW = 28;
+export const TOOLBAR_ROW = 30;
 /** Breathing room under the brand row, above the shared border. */
 export const TOOLBAR_PAD_BOTTOM = 0;
 /**
@@ -46,15 +46,18 @@ export function PageHeader({
   return (
     <header
       data-tauri-drag-region
-      className="relative flex shrink-0 items-center border-b bg-background px-6"
+      className="relative flex shrink-0 items-center border-b bg-background px-[22px]"
       style={{ height: TOOLBAR_HEIGHT }}
     >
-      <div className="no-drag relative z-10 flex min-w-0 shrink-0 items-center gap-3">
+      <div className="no-drag relative z-10 flex min-w-0 shrink-0 items-center">
         {title}
         {subtitle && (
           <>
-            <i className="h-[17px] w-px shrink-0 bg-border" aria-hidden />
-            <span className="truncate text-xs text-muted-foreground">
+            <i
+              className="mx-3 h-[17px] w-px shrink-0 bg-input"
+              aria-hidden
+            />
+            <span className="truncate text-[12.5px] text-muted-foreground">
               {subtitle}
             </span>
           </>

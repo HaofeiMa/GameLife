@@ -28,16 +28,17 @@ export function Switch({
       disabled={disabled}
       onClick={() => onCheckedChange(!checked)}
       className={cn(
-        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent shadow-xs transition-colors",
+        // The mockup's .sw: 44x26 with a 20px thumb inset 3px.
+        "relative inline-flex h-[26px] w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors",
         "disabled:cursor-not-allowed disabled:opacity-50",
-        checked ? "bg-success" : "bg-muted-foreground/30",
+        checked ? "bg-success" : "bg-switch-off",
         className,
       )}
     >
       <span
         className={cn(
-          "pointer-events-none block size-5 rounded-full bg-white shadow-sm transition-transform",
-          checked ? "translate-x-5" : "translate-x-0",
+          "pointer-events-none absolute left-[3px] block size-5 rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.2)] transition-[left] duration-200",
+          checked ? "left-[21px]" : "left-[3px]",
         )}
       />
     </button>

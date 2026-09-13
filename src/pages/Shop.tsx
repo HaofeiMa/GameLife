@@ -338,9 +338,12 @@ function GiftCard({
   return (
     <article
       className={cn(
-        "group relative flex flex-col rounded-xl border bg-card p-4 transition-all duration-200",
-        "hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5",
-        justRedeemed && "animate-pop border-success/60 bg-success/5",
+        "group relative flex flex-col gap-1.5 rounded-2xl p-2.5 transition-all duration-200",
+        "hover:-translate-y-0.5 hover:shadow-[0_10px_22px_-14px_rgba(120,95,60,0.55)]",
+        locked
+          ? "bg-loot shadow-none"
+          : "bg-card shadow-[0_4px_14px_-10px_rgba(120,95,60,0.6)]",
+        justRedeemed && "animate-pop bg-success/5",
       )}
     >
       <button
@@ -359,38 +362,43 @@ function GiftCard({
 
       <div
         className={cn(
-          "mx-auto flex size-12 items-center justify-center rounded-xl bg-gradient-to-br ring-1 ring-inset ring-current/10",
-          isEnergy
-            ? "from-primary/25 to-primary/5 text-primary"
-            : "from-warning/30 to-warning/5 text-warning",
+          "flex size-8 items-center justify-center rounded-[10px] text-[16px]",
+          isEnergy ? "bg-primary/12 text-primary" : "bg-gold-soft text-gold",
         )}
       >
         <WishGlyph name={wish.name} />
       </div>
-      <p className="mt-3 line-clamp-2 text-center text-sm font-medium leading-snug">
+      <p className="line-clamp-2 text-[13px] font-semibold leading-[1.35]">
         {wish.name}
       </p>
-      <p className="mt-0.5 text-center text-xs text-muted-foreground">
-        {wish.price} {isEnergy ? "能量" : "硬币"}
+      <p className="flex items-center gap-1 text-[11.5px] tabular-nums text-muted-foreground">
+        <i className="not-italic" aria-hidden>
+          {isEnergy ? "⚡" : "◉"}
+        </i>
+        {wish.price}
+        {wish.durationMinutes != null && (
+          <>
+            <span className="text-input">·</span>
+            <Timer className="size-3" aria-hidden />
+            {wish.durationMinutes} 分钟
+          </>
+        )}
       </p>
-      {wish.durationMinutes != null && (
-        <p className="mt-0.5 flex items-center justify-center gap-1 text-[11px] text-muted-foreground">
-          <Timer className="size-3" aria-hidden />
-          {wish.durationMinutes} 分钟
-        </p>
-      )}
-      <div className="h-3" />
       {err && <p className="mt-2 text-[11px] text-destructive">{err}</p>}
 
-      <Button
-        size="sm"
-        className="mt-auto w-full"
-        variant={justRedeemed ? "outline" : "primary"}
+      <button
+        type="button"
         disabled={busy || locked || entertainmentBlocked || justRedeemed}
         onClick={() => void handleRedeem()}
+        className={cn(
+          "mt-auto w-full rounded-[10px] py-[5px] text-center text-xs font-semibold transition-colors",
+          locked || entertainmentBlocked || justRedeemed
+            ? "bg-pip font-medium text-[hsl(34_17%_62%)]"
+            : "bg-primary text-primary-foreground hover:brightness-[1.04]",
+        )}
       >
         {redeemLabel}
-      </Button>
+      </button>
     </article>
   );
 }
@@ -506,11 +514,14 @@ function GiftSection({
 }) {
   return (
     <section className="space-y-3">
-      <div>
-        <h2 className="text-sm font-medium">{title}</h2>
-        <p className="text-[11px] text-muted-foreground">{hint}</p>
+      <div className="flex items-baseline gap-[9px] px-0.5 pb-[9px]">
+        <h2 className="text-[13.5px] font-semibold">{title}</h2>
+        <span className="text-[11px] text-muted-foreground">{hint}</span>
+        <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+          共 {kind === "coin" ? week.coinBalance : week.xpToday}
+        </span>
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-3">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(148px,1fr))] gap-3">
         {wishes.map((w) => (
           <GiftCard
             key={w.id}
@@ -684,18 +695,24 @@ export function Shop() {
     <>
       {header}
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-5xl space-y-5 px-6 py-4">
+        <div className="flex flex-1 flex-col gap-3 px-[22px] pt-3 pb-4">
+          {/* The mockup's .session — the one saturated block in the app. */}
           {session && (
-            <Card className="shine relative overflow-hidden border-transparent bg-gradient-to-br from-primary to-primary/70 p-6 text-primary-foreground shadow-xl shadow-primary/25">
-              <p className="text-[11px] font-medium uppercase tracking-wide opacity-80">
-                进行中
-              </p>
-              <h3 className="mt-1 text-base font-semibold">{session.name}</h3>
-              <p className="animate-pulse-soft mt-2 text-4xl font-semibold tabular-nums tracking-tight">
+            <Card className="flex items-center gap-5 rounded-[18px] border-transparent bg-[linear-gradient(120deg,#5FBE8C,#43A97A_55%,#3E9A70)] px-[18px] py-3 text-white shadow-[0_16px_34px_-22px_rgba(67,169,122,0.95)]">
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-semibold tracking-[0.08em] opacity-85">
+                  进行中 · 剩余
+                </div>
+                <div className="mt-0.5 text-base font-semibold">
+                  {session.name}
+                  <span className="ml-2.5 text-[11.5px] font-normal opacity-85">
+                    到期 {formatClock(session.endsAt)} · 结束后仍按规则判定娱乐
+                  </span>
+                </div>
+              </div>
+              <div className="animate-pulse-soft shrink-0 text-[26px] font-bold leading-[1.1] tracking-[-0.04em] tabular-nums">
                 {formatMmSs(remainSecs)}
-              </p>
-              <p className="mt-1 text-xs opacity-80">到期 {formatClock(session.endsAt)}</p>
-              <p className="mt-3 text-[11px] opacity-70">结束后仍按规则判定娱乐</p>
+              </div>
             </Card>
           )}
 

@@ -123,7 +123,7 @@ export function App() {
   const { width: sidebarWidth, dragging, handleProps } = useSidebarWidth();
 
   return (
-    <div className="app-canvas flex h-screen overflow-hidden bg-background text-foreground">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground">
       <aside
         aria-label="主导航"
         style={{
@@ -133,7 +133,7 @@ export function App() {
         className={cn(
           // pt-7 clears the traffic lights, which the OS overlays on us
           // because titleBarStyle is "Overlay".
-          "relative flex shrink-0 flex-col border-r bg-gradient-to-b from-muted/60 via-muted/35 to-muted/20",
+          "relative flex shrink-0 flex-col border-r border-border bg-rail px-3.5 pb-4",
           !dragging && "transition-[width] duration-200",
         )}
       >
@@ -145,19 +145,29 @@ export function App() {
             paddingBottom: TOOLBAR_PAD_BOTTOM,
           }}
           className={cn(
-            "flex shrink-0 items-center gap-2 border-b",
-            expanded ? "px-4" : "justify-center px-2",
+            "flex shrink-0 items-center gap-2.5 border-b border-border",
+            !expanded && "justify-center",
           )}
         >
-          <img src={appIcon} alt="" className="size-6 shrink-0" draggable={false} />
+          <img
+            src={appIcon}
+            alt=""
+            className="size-7 shrink-0 rounded-[9px] shadow-[0_3px_8px_-2px_rgba(224,144,47,0.55)]"
+            draggable={false}
+          />
           {expanded && (
-            <span className="truncate text-sm font-semibold tracking-tight">
-              GameLife
-            </span>
+            <div className="min-w-0">
+              <div className="truncate text-[14.5px] font-semibold tracking-[-0.01em]">
+                GameLife
+              </div>
+              <div className="mt-px truncate text-[10.5px] text-muted-foreground">
+                今天也在存档
+              </div>
+            </div>
           )}
         </div>
 
-        <nav className="flex flex-col gap-0.5 px-2">
+        <nav className="mt-2.5 flex flex-col gap-[3px]">
           {railTabs().map((item) => {
             const Icon = item.icon;
             const active = item.id === tab;
@@ -170,14 +180,14 @@ export function App() {
                 aria-current={active ? "page" : undefined}
                 title={item.label}
                 className={cn(
-                  "relative flex items-center gap-2.5 rounded-xl py-2.5 text-sm transition-all duration-200",
+                  "relative flex h-9 items-center gap-2.5 rounded-[11px] text-[13.5px] transition-all duration-200",
                   expanded ? "justify-start px-3" : "justify-center px-0",
                   active
                     ? "bg-card font-semibold text-foreground shadow-[0_2px_8px_-3px_rgba(120,95,60,0.28)]"
-                    : "text-muted-foreground hover:bg-card/60 hover:text-foreground",
+                    : "text-[hsl(30_16%_42%)] hover:bg-card/60 hover:text-foreground",
                 )}
               >
-                <Icon className="size-[18px] shrink-0" aria-hidden />
+                <Icon className="size-[17px] shrink-0" aria-hidden />
                 {expanded && <span className="truncate">{item.label}</span>}
               </button>
             );
@@ -205,29 +215,29 @@ export function App() {
         )}
 
         {expanded && today && (
-          <div className="mt-auto px-3 pb-4">
-            <div className="card-glow space-y-2 rounded-xl bg-card p-3 shadow-[0_6px_18px_-12px_rgba(120,95,60,0.5)]">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-xs text-muted-foreground">今日主线</span>
-                <span className="text-xs font-medium tabular-nums">
-                  {today.creditedLabel}
-                </span>
-              </div>
-              <Progress
-                value={(today.creditedSeconds / GOAL_SECONDS) * 100}
-                aria-label="今日主线进度"
-                barClassName="bg-gradient-to-r from-primary/70 to-primary shadow-sm shadow-primary/40"
-              />
-              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                <span className="flex items-center gap-1 tabular-nums">
-                  <Coins className="size-3 text-warning" aria-hidden />
-                  {today.coinBalance}
-                </span>
-                <span className="flex items-center gap-1 tabular-nums">
-                  <Flame className="size-3 text-warning" aria-hidden />
-                  {today.streak}
-                </span>
-              </div>
+          <div className="mt-auto rounded-2xl bg-card px-3.5 py-3 shadow-[0_4px_14px_-10px_rgba(120,95,60,0.6)]">
+            <div className="text-[11px] text-muted-foreground">今日主线</div>
+            <div className="my-1 mb-2 text-[23px] font-bold leading-none tracking-[-0.03em] tabular-nums">
+              {today.creditedLabel}
+              <small className="ml-1.5 text-[11.5px] font-medium text-muted-foreground">
+                / 8h
+              </small>
+            </div>
+            <Progress
+              value={(today.creditedSeconds / GOAL_SECONDS) * 100}
+              aria-label="今日主线进度"
+              className="h-[7px] rounded"
+              barClassName="rounded bg-gradient-to-r from-[#6FCB9A] to-primary"
+            />
+            <div className="mt-2.5 flex justify-between text-[11.5px] text-muted-foreground">
+              <span className="flex items-center gap-1 tabular-nums">
+                <Coins className="size-3 text-gold" aria-hidden />
+                {today.coinBalance}
+              </span>
+              <span className="flex items-center gap-1 tabular-nums">
+                <Flame className="size-3 text-gold" aria-hidden />
+                {today.streak} 天
+              </span>
             </div>
           </div>
         )}

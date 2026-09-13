@@ -241,14 +241,21 @@ function monthAnchor(year: number, month: number): string {
 
 /* ----------------------------静 elements ---------------------------- */
 
+/**
+ * The mockup's .card + .ch. `meta` is the short right-aligned note in the
+ * header; `caption` is the longer explanation, which the design drops to a
+ * dashed footnote at the bottom of the card rather than under the title.
+ */
 function PanelCard({
   title,
+  meta,
   caption,
   children,
   wide,
   className,
 }: {
   title: string;
+  meta?: ReactNode;
   caption?: string;
   children: ReactNode;
   wide?: boolean;
@@ -256,15 +263,24 @@ function PanelCard({
 }) {
   return (
     <Card className={cn("flex flex-col", wide && "lg:col-span-2", className)}>
-      <div className="border-b px-5 py-3">
-        <h2 className="text-sm font-medium">{title}</h2>
+      <div className="flex items-baseline gap-[9px] px-[18px] pt-3 pb-[9px]">
+        <h2 className="text-[13.5px] font-semibold tracking-[-0.005em]">
+          {title}
+        </h2>
+        {meta != null && (
+          <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
+            {meta}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-1 flex-col gap-3 px-[18px] pt-0.5 pb-3.5">
+        {children}
         {caption && (
-          <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+          <p className="mt-auto border-t border-dashed border-hairline pt-2.5 text-[11px] leading-relaxed text-muted-foreground">
             {caption}
           </p>
         )}
       </div>
-      <div className="flex-1 px-5 py-4">{children}</div>
     </Card>
   );
 }
@@ -305,7 +321,8 @@ function CategoryPanel({
   return (
     <PanelCard
       title="按类别"
-      caption="跨槽求和 activity 秒数 / 60 取整。占观测比不含未观测。"
+      meta={`跨槽求和 · 观测 ${Math.round(observed / 60)} 分钟`}
+      caption="跨槽求和 activity 秒数 / 60 取整；占观测比不含未观测。条长按最大值归一，不是按 8 小时——这一段最长的那一类占满。"
     >
       <div className="space-y-3">
         {rows.map((c) => (
@@ -346,7 +363,8 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
   return (
     <PanelCard
       title="按天"
-      caption="主线 / 支线 / 杂项堆叠。无堆叠分钟标 —，不是假 0。周末照常记录，未达标不惩罚。"
+      meta="主线 / 支线 / 杂项堆叠"
+      caption="无堆叠分钟标 —，不是假 0。周末照常记录，未达标不惩罚。"
     >
       <Legend
         items={[
@@ -420,9 +438,9 @@ function HeatPanel({ hours }: { hours: WeekHourRow[] }) {
   const byHour = new Map(hours.map((h) => [h.hour, h]));
   return (
     <PanelCard
-      wide
       title="高效时段"
-      caption="工作日 8–21 点：该小时主线秒 / 观测秒。无观测为灰，不是 0%。"
+      meta="工作日 8–21 点 · 主线分钟"
+      caption="该小时主线秒 / 观测秒。没有观测的小时是米色，不是 0——两者含义不同。"
     >
       <div className="grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1.5">
         {HEAT_HOURS.map((hour) => {
@@ -474,9 +492,9 @@ function WeekNumbers({
   const playShare = observed <= 0 ? "无观测" : pct(data.distractionObservedRatio);
   return (
     <PanelCard
-      wide
       title="本周数字"
-      caption="主线小时来自 credited 秒 / 3600。环比无上周槽则为 —。达标只计工作日。"
+      meta="达标只计工作日"
+      caption="主线小时来自 credited 秒 / 3600。环比无上周槽则为 —。"
     >
       <div className="grid grid-cols-2 gap-x-4 gap-y-5 sm:grid-cols-3 lg:grid-cols-6">
         <MiniStat label="主线" value={`${data.coreHours.toFixed(1)} 小时`} />

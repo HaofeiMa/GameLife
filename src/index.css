@@ -10,93 +10,114 @@
 :root {
   color-scheme: light;
 
-  --background: 36 50% 96%;
-  --foreground: 30 18% 20%;
-  --card: 0 0% 100%;
-  --card-foreground: 30 18% 20%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 30 18% 20%;
+  /* Every value below is the mockup's hex written as a bare HSL triplet.
+     One decimal place is load-bearing: integer triplets do not round-trip
+     (hsl(152 43% 46%) is one 8-bit step off #43A97A), so the whole light
+     palette would drift a channel away from the design. */
 
-  /* Warm green — also the mainline colour. */
-  --primary: 152 43% 46%;
-  --primary-foreground: 0 0% 100%;
+  --background: 36.0 50.0% 96.1%;  /* #FAF6F0 */
+  --foreground: 30.0 18.0% 19.6%;  /* #3B3229 */
+  --card: 0.0 0.0% 100.0%;  /* #FFFFFF */
+  --card-foreground: 30.0 18.0% 19.6%;  /* #3B3229 */
+  --popover: 0.0 0.0% 100.0%;  /* #FFFFFF */
+  --popover-foreground: 30.0 18.0% 19.6%;  /* #3B3229 */
+  --primary: 152.4 43.2% 46.3%;  /* #43A97A */
+  --primary-foreground: 0.0 0.0% 100.0%;  /* #FFFFFF */
+  --secondary: 37.5 44.4% 92.9%;  /* #F5EFE5 */
+  --secondary-foreground: 30.0 18.0% 19.6%;  /* #3B3229 */
+  --muted: 36.7 42.9% 91.8%;  /* #F3ECE1 */
+  --muted-foreground: 33.5 14.4% 53.7%;  /* #9A8B78 */
+  --accent: 36.7 40.9% 91.4%;  /* #F2EBE0 */
+  --accent-foreground: 30.0 18.0% 19.6%;  /* #3B3229 */
+  --destructive: 7.8 69.3% 62.9%;  /* #E2705F */
+  --destructive-foreground: 0.0 0.0% 100.0%;  /* #FFFFFF */
+  --success: 152.4 43.2% 46.3%;  /* #43A97A */
+  --success-foreground: 0.0 0.0% 100.0%;  /* #FFFFFF */
+  --warning: 35.6 78.9% 57.3%;  /* #E8A23C */
+  --warning-foreground: 0.0 0.0% 100.0%;  /* #FFFFFF */
+  --border: 36.5 41.8% 89.2%;  /* #EFE6D8 */
+  --input: 35.2 35.8% 84.1%;  /* #E5D9C8 */
+  --ring: 152.4 43.2% 46.3%;  /* #43A97A */
+  --rail: 37.5 44.4% 92.9%;  /* #F5EFE5 */
+  --seg: 36.7 42.9% 91.8%;  /* #F3ECE1 */
+  --track: 36.7 40.9% 91.4%;  /* #F2EBE0 */
+  --loot: 38.2 57.9% 96.3%;  /* #FBF7F0 */
+  --pip: 37.1 39.6% 89.6%;  /* #EFE7DA */
+  --hairline: 35.3 39.5% 91.6%;  /* #F2EBE1 */
+  --slot-empty: 38.2 40.7% 94.7%;  /* #F7F3EC */
+  --ribbon-gap: 36.9 44.8% 94.3%;  /* #F7F2EA */
+  --legend: 38.6 58.3% 95.3%;  /* #FAF5EC */
+  --gold: 32.9 74.1% 53.1%;  /* #E0902F */
+  --gold-soft: 40.0 100.0% 94.7%;  /* #FFF6E4 */
+  --dim2: 34.3 19.6% 64.9%;  /* #B7A894 */
+  --switch-off: 36.4 34.1% 83.9%;  /* #E4D9C8 */
 
-  --secondary: 37 43% 92%;
-  --secondary-foreground: 30 18% 20%;
-  --muted: 37 43% 93%;
-  --muted-foreground: 34 14% 54%;
-  --accent: 37 43% 90%;
-  --accent-foreground: 30 18% 20%;
+  --cat-mainline: 152.4 43.2% 46.3%;  /* #43A97A */
+  --cat-support: 145.8 39.4% 67.6%;  /* #8CCDA8 */
+  --cat-side: 219.7 82.2% 64.7%;  /* #5B8DEF */
+  --cat-longterm: 257.3 61.0% 68.8%;  /* #9B7FE0 */
+  --cat-admin: 35.6 78.9% 57.3%;  /* #E8A23C */
+  --cat-entertainment: 7.8 69.3% 62.9%;  /* #E2705F */
+  --cat-away: 35.0 25.5% 81.6%;  /* #DCD2C4 */
+  --cat-unobserved: 36.0 20.7% 76.3%;  /* #CFC5B6 */
+  --cat-pending: 43.7 78.2% 60.4%;  /* #E9BE4B */
 
-  --destructive: 8 69% 63%;
-  --destructive-foreground: 0 0% 100%;
-
-  --success: 152 43% 46%;
-  --success-foreground: 0 0% 100%;
-  --warning: 36 79% 57%;
-  --warning-foreground: 0 0% 100%;
-
-  --border: 37 42% 89%;
-  --input: 36 40% 86%;
-  --ring: 152 43% 46%;
-
-  /* Category colours — the single source of truth for the whole app.
-     Mirrored for inline styles by src/lib/theme.ts. */
-  --cat-mainline: 152 43% 46%;
-  --cat-support: 146 39% 68%;
-  --cat-side: 220 82% 65%;
-  --cat-longterm: 257 61% 69%;
-  --cat-admin: 36 79% 57%;
-  --cat-entertainment: 8 69% 63%;
-  --cat-away: 35 26% 82%;
-  --cat-unobserved: 36 21% 76%;
-  --cat-pending: 44 78% 60%;
-
-  --radius: 0.75rem;
+  --radius: 1.125rem;
 }
 
 .dark {
   color-scheme: dark;
 
-  --background: 24 10% 10%;
-  --foreground: 34 32% 91%;
-  --card: 39 22% 13%;
-  --card-foreground: 34 32% 91%;
-  --popover: 39 22% 13%;
-  --popover-foreground: 34 32% 91%;
+  /* Warm charcoal, not cool grey — #1C1917 is the value the mockup names.
+     Category colours are lifted off that ground to keep their contrast
+     without losing the warm cast. */
 
-  --primary: 154 44% 51%;
-  --primary-foreground: 0 0% 100%;
+  --background: 24.0 9.8% 10.0%;  /* #1C1917 */
+  --foreground: 36.5 39.0% 88.4%;  /* #EDE4D6 */
+  --card: 32.3 20.6% 12.4%;  /* #262019 */
+  --card-foreground: 36.5 39.0% 88.4%;  /* #EDE4D6 */
+  --popover: 32.3 20.6% 12.4%;  /* #262019 */
+  --popover-foreground: 36.5 39.0% 88.4%;  /* #EDE4D6 */
+  --primary: 152.4 46.1% 52.7%;  /* #4FBE8B */
+  --primary-foreground: 150.0 35.7% 11.0%;  /* #12261C */
+  --secondary: 33.3 16.4% 10.8%;  /* #201C17 */
+  --secondary-foreground: 36.5 39.0% 88.4%;  /* #EDE4D6 */
+  --muted: 32.3 18.3% 13.9%;  /* #2A241D */
+  --muted-foreground: 36.3 17.0% 56.1%;  /* #A2937C */
+  --accent: 32.3 18.3% 13.9%;  /* #2A241D */
+  --accent-foreground: 36.5 39.0% 88.4%;  /* #EDE4D6 */
+  --destructive: 7.4 71.2% 68.6%;  /* #E88476 */
+  --destructive-foreground: 24.0 9.8% 10.0%;  /* #1C1917 */
+  --success: 152.4 46.1% 52.7%;  /* #4FBE8B */
+  --success-foreground: 150.0 35.7% 11.0%;  /* #12261C */
+  --warning: 34.2 81.4% 62.0%;  /* #EDA94F */
+  --warning-foreground: 24.0 9.8% 10.0%;  /* #1C1917 */
+  --border: 32.0 16.5% 17.8%;  /* #352E26 */
+  --input: 33.3 17.3% 20.4%;  /* #3D352B */
+  --ring: 152.4 46.1% 52.7%;  /* #4FBE8B */
+  --rail: 33.3 16.4% 10.8%;  /* #201C17 */
+  --seg: 32.3 18.3% 13.9%;  /* #2A241D */
+  --track: 32.3 18.3% 13.9%;  /* #2A241D */
+  --loot: 36.0 17.2% 11.4%;  /* #221E18 */
+  --pip: 32.0 17.2% 17.1%;  /* #332C24 */
+  --hairline: 32.0 17.2% 17.1%;  /* #332C24 */
+  --slot-empty: 36.9 20.6% 12.4%;  /* #262119 */
+  --ribbon-gap: 32.3 18.3% 13.9%;  /* #2A241D */
+  --legend: 32.7 18.0% 12.0%;  /* #241F19 */
+  --gold: 35.3 76.9% 61.0%;  /* #E8A94F */
+  --gold-soft: 36.0 34.9% 16.9%;  /* #3A2E1C */
+  --dim2: 34.0 13.8% 42.7%;  /* #7C6F5E */
+  --switch-off: 30.0 16.0% 19.6%;  /* #3A322A */
 
-  --secondary: 36 18% 17%;
-  --secondary-foreground: 34 32% 91%;
-  --muted: 36 18% 17%;
-  --muted-foreground: 34 16% 60%;
-  --accent: 34 14% 21%;
-  --accent-foreground: 34 32% 91%;
-
-  --destructive: 8 74% 68%;
-  --destructive-foreground: 0 0% 100%;
-
-  --success: 154 44% 51%;
-  --success-foreground: 0 0% 100%;
-  --warning: 36 82% 62%;
-  --warning-foreground: 24 10% 12%;
-
-  --border: 34 12% 23%;
-  --input: 34 12% 27%;
-  --ring: 154 44% 51%;
-
-  /* Lifted for contrast against the darker canvas. */
-  --cat-mainline: 154 44% 51%;
-  --cat-support: 146 40% 64%;
-  --cat-side: 220 84% 72%;
-  --cat-longterm: 257 63% 75%;
-  --cat-admin: 36 82% 62%;
-  --cat-entertainment: 8 74% 68%;
-  --cat-away: 34 10% 34%;
-  --cat-unobserved: 34 10% 28%;
-  --cat-pending: 44 80% 62%;
+  --cat-mainline: 152.4 46.1% 52.7%;  /* #4FBE8B */
+  --cat-support: 146.9 38.3% 65.7%;  /* #86C9A4 */
+  --cat-side: 218.5 82.2% 71.4%;  /* #7AA5F2 */
+  --cat-longterm: 257.6 64.1% 74.9%;  /* #AE96E8 */
+  --cat-admin: 34.2 81.4% 62.0%;  /* #EDA94F */
+  --cat-entertainment: 7.4 71.2% 68.6%;  /* #E88476 */
+  --cat-away: 31.6 14.7% 25.3%;  /* #4A4137 */
+  --cat-unobserved: 32.0 14.9% 19.8%;  /* #3A332B */
+  --cat-pending: 43.8 78.7% 66.9%;  /* #EDC968 */
 }
 
 /* `inline` matters: it emits `hsl(var(--background))` rather than
@@ -136,10 +157,29 @@
   --color-unobserved: hsl(var(--cat-unobserved));
   --color-pending: hsl(var(--cat-pending));
 
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
+  /* Surfaces the mockup names explicitly. */
+  --color-rail: hsl(var(--rail));
+  --color-seg: hsl(var(--seg));
+  --color-track: hsl(var(--track));
+  --color-loot: hsl(var(--loot));
+  --color-pip: hsl(var(--pip));
+  --color-hairline: hsl(var(--hairline));
+  --color-slot-empty: hsl(var(--slot-empty));
+  --color-ribbon-gap: hsl(var(--ribbon-gap));
+  --color-legend: hsl(var(--legend));
+  --color-gold: hsl(var(--gold));
+  --color-gold-soft: hsl(var(--gold-soft));
+  --color-dim2: hsl(var(--dim2));
+  --color-switch-off: hsl(var(--switch-off));
+
+  /* The mockup's radii: cards 18, hero 20, tiles 16, rows 14,
+     controls 11, chips 9. */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.6875rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+  --radius-2xl: 1.25rem;
+  --radius-3xl: 1rem;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
@@ -255,37 +295,6 @@
     background-color: hsl(var(--background) / 0.72);
     backdrop-filter: blur(12px) saturate(1.6);
     -webkit-backdrop-filter: blur(12px) saturate(1.6);
-  }
-
-  /* Soft colour wash behind the page content. Cards are opaque, so this
-     only reads in the gutters — enough to stop the window looking flat. */
-  .app-canvas {
-    background-image:
-      radial-gradient(
-        1200px 560px at 10% -15%,
-        hsl(var(--primary) / 0.10),
-        transparent 62%
-      ),
-      radial-gradient(
-        900px 460px at 100% 0%,
-        hsl(var(--cat-mainline) / 0.07),
-        transparent 58%
-      );
-  }
-
-  /* Same wash, at card scale, for hero surfaces. */
-  .card-glow {
-    background-image:
-      radial-gradient(
-        420px 200px at 0% 0%,
-        hsl(var(--primary) / 0.12),
-        transparent 70%
-      ),
-      radial-gradient(
-        320px 180px at 100% 100%,
-        hsl(var(--cat-mainline) / 0.07),
-        transparent 70%
-      );
   }
 
   /* A slow highlight sweeping across a surface — used on the live
