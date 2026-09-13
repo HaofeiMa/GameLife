@@ -1,7 +1,8 @@
-use crate::r#const::READING_BRIDGE_SECS;
+use crate::document::looks_like_work_path;
 use crate::policy::{
-    Policy, all_side_project_rules, matches_any_rule, matches_app_identity, matches_rule_fields,
+    all_side_project_rules, matches_any_rule, matches_app_identity, matches_rule_fields, Policy,
 };
+use crate::r#const::READING_BRIDGE_SECS;
 use crate::types::{Hint, Quest, Sample};
 use crate::url::{host_is_research, strip_url_query_fragment, url_host};
 
@@ -31,8 +32,11 @@ pub fn hint_sample(
         return Hint::Side;
     }
 
-    let is_reading =
-        matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.reading_apps);
+    let is_reading = matches_app_identity(
+        &sample.app,
+        sample.bundle_id.as_deref(),
+        &policy.reading_apps,
+    );
 
     if is_reading {
         if let Some(last) = last_core_interaction_ts {
@@ -46,8 +50,11 @@ pub fn hint_sample(
         }
     }
 
-    if !matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.trusted_apps)
-    {
+    if !matches_app_identity(
+        &sample.app,
+        sample.bundle_id.as_deref(),
+        &policy.trusted_apps,
+    ) {
         return Hint::Unsure;
     }
 
@@ -84,6 +91,13 @@ fn stripped_url(sample: &Sample) -> Option<String> {
 }
 
 pub fn is_grounded_core_sample(sample: &Sample, quests: &[Quest]) -> bool {
+    if sample
+        .document_path
+        .as_deref()
+        .is_some_and(looks_like_work_path)
+    {
+        return true;
+    }
     if sample
         .document_path
         .as_deref()
@@ -235,7 +249,10 @@ mod tests {
     fn gamelife_document_path_is_side() {
         let mut s = sample("Cursor", "App.tsx", 5);
         s.document_path = Some("/Users/me/Projects/GameLife/src/App.tsx".into());
-        assert_eq!(hint_sample(&s, &hdp_policy(), &hdp_quest(), None), Hint::Side);
+        assert_eq!(
+            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            Hint::Side
+        );
     }
 
     #[test]
@@ -279,6 +296,24 @@ mod tests {
             Hint::CoreCandidate
         );
         assert!(is_grounded_core_sample(&s, &hdp_quest()));
+    }
+
+    #[test]
+    fn work_like_document_path_is_grounded_without_quest_tokens() {
+        let mut s = sample("Cursor", "main.tex", 10);
+        s.document_path = Some("/paper/main.tex".into());
+        assert_eq!(
+            hint_sample(&s, &hdp_policy(), &[], None),
+            Hint::CoreCandidate
+        );
+        assert!(is_grounded_core_sample(&s, &[]));
+    }
+
+    #[test]
+    fn title_only_filename_is_not_grounded() {
+        let s = sample("Cursor", "main.tex", 10);
+        assert_eq!(s.document_path, None);
+        assert!(!is_grounded_core_sample(&s, &[]));
     }
 
     #[test]

@@ -1,3 +1,38 @@
+const WORK_EXTS: &[&str] = &[
+    "tex", "py", "rs", "md", "ts", "tsx", "js", "jsx", "r", "rmd", "ipynb", "pdf", "typ", "bib",
+    "cpp", "h", "go", "jl",
+];
+
+const PROJECT_FILES: &[&str] = &[
+    "Cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "go.mod",
+    "CMakeLists.txt",
+    "Makefile",
+    "makefile",
+];
+
+pub fn looks_like_work_path(path: &str) -> bool {
+    let p = path.trim();
+    if p.is_empty() || !(p.contains('/') || p.contains('\\')) {
+        return false;
+    }
+    let name = p.rsplit(['/', '\\']).find(|s| !s.is_empty()).unwrap_or("");
+    if name.is_empty() {
+        return false;
+    }
+    if PROJECT_FILES.iter().any(|f| name.eq_ignore_ascii_case(f)) {
+        return true;
+    }
+    match name.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() => {
+            WORK_EXTS.iter().any(|want| ext.eq_ignore_ascii_case(want))
+        }
+        _ => false,
+    }
+}
+
 pub fn normalize_document_path(raw: &str) -> Option<String> {
     let mut s = raw.trim().to_string();
     if s.is_empty() {
@@ -106,5 +141,15 @@ mod tests {
     #[test]
     fn relative_rejected() {
         assert_eq!(normalize_document_path("train.py"), None);
+    }
+
+    #[test]
+    fn work_like_path_needs_slash_and_work_extension() {
+        assert!(looks_like_work_path("/paper/main.tex"));
+        assert!(looks_like_work_path(r"C:\proj\train.py"));
+        assert!(looks_like_work_path("/repo/Cargo.toml"));
+        assert!(!looks_like_work_path("train.py — HDP"));
+        assert!(!looks_like_work_path("main.tex"));
+        assert!(!looks_like_work_path("/Users/me/Downloads"));
     }
 }

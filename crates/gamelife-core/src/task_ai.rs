@@ -23,14 +23,10 @@ pub fn parse_task_match_json(
 ) -> Result<Option<TaskMatch>, TaskMatchError> {
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|_| TaskMatchError::InvalidJson)?;
-    let obj = value
-        .as_object()
-        .ok_or(TaskMatchError::InvalidJson)?;
+    let obj = value.as_object().ok_or(TaskMatchError::InvalidJson)?;
 
     let confidence = match obj.get("confidence") {
-        Some(serde_json::Value::Number(n)) => n
-            .as_f64()
-            .ok_or(TaskMatchError::BadConfidence)?,
+        Some(serde_json::Value::Number(n)) => n.as_f64().ok_or(TaskMatchError::BadConfidence)?,
         _ => return Err(TaskMatchError::BadConfidence),
     };
     if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
@@ -105,19 +101,15 @@ pub enum CategoryMatchError {
     BadCategory,
 }
 
-pub fn parse_category_match_json(
-    json: &str,
-) -> Result<Option<CategoryMatch>, CategoryMatchError> {
+pub fn parse_category_match_json(json: &str) -> Result<Option<CategoryMatch>, CategoryMatchError> {
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|_| CategoryMatchError::InvalidJson)?;
-    let obj = value
-        .as_object()
-        .ok_or(CategoryMatchError::InvalidJson)?;
+    let obj = value.as_object().ok_or(CategoryMatchError::InvalidJson)?;
 
     let confidence = match obj.get("confidence") {
-        Some(serde_json::Value::Number(n)) => n
-            .as_f64()
-            .ok_or(CategoryMatchError::BadConfidence)?,
+        Some(serde_json::Value::Number(n)) => {
+            n.as_f64().ok_or(CategoryMatchError::BadConfidence)?
+        }
         _ => return Err(CategoryMatchError::BadConfidence),
     };
     if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
@@ -183,6 +175,7 @@ pub fn apply_category_match(
             output.credited_core_seconds = 0;
             output.credited_side_seconds = base;
             output.credited_chore_seconds = 0;
+            output.activity.side = output.activity.side.max(base);
             output.dominant = Dominant::SideProject;
             output.pending = false;
         }
@@ -190,6 +183,7 @@ pub fn apply_category_match(
             output.credited_core_seconds = 0;
             output.credited_side_seconds = 0;
             output.credited_chore_seconds = base;
+            output.activity.admin = output.activity.admin.max(base);
             output.dominant = Dominant::Admin;
             output.pending = false;
         }
@@ -197,6 +191,7 @@ pub fn apply_category_match(
             output.credited_core_seconds = 0;
             output.credited_side_seconds = 0;
             output.credited_chore_seconds = 0;
+            output.activity.distraction = output.activity.distraction.max(base);
             output.dominant = Dominant::Distraction;
             output.pending = false;
         }
@@ -327,5 +322,48 @@ mod tests {
         assert_eq!(out.credited_core_seconds, 0);
         assert_eq!(out.dominant, Dominant::ResearchSupport);
         assert!(!out.pending);
+    }
+
+    #[test]
+    fn category_side_admin_distraction_fill_activity_buckets() {
+        let ev = empty_evidence(900);
+        let side = apply_category_match(
+            empty_output(900),
+            &ev,
+            &CategoryMatch {
+                dominant: Dominant::SideProject,
+                confidence: 0.9,
+            },
+        );
+        assert_eq!(side.activity.side, 900);
+        assert_eq!(side.credited_side_seconds, 900);
+        assert_eq!(side.dominant, Dominant::SideProject);
+
+        let admin = apply_category_match(
+            empty_output(900),
+            &ev,
+            &CategoryMatch {
+                dominant: Dominant::Admin,
+                confidence: 0.9,
+            },
+        );
+        assert_eq!(admin.activity.admin, 900);
+        assert_eq!(admin.credited_chore_seconds, 900);
+        assert_eq!(admin.dominant, Dominant::Admin);
+
+        let dist = apply_category_match(
+            empty_output(900),
+            &ev,
+            &CategoryMatch {
+                dominant: Dominant::Distraction,
+                confidence: 0.9,
+            },
+        );
+        assert_eq!(dist.activity.distraction, 900);
+        assert_eq!(dist.credited_core_seconds, 0);
+        assert_eq!(dist.credited_side_seconds, 0);
+        assert_eq!(dist.credited_chore_seconds, 0);
+        assert_eq!(dist.dominant, Dominant::Distraction);
+        assert!(!dist.pending);
     }
 }

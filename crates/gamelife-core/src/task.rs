@@ -222,15 +222,23 @@ pub struct TimedTask {
     pub done: bool,
 }
 
-pub fn ticktick_judgment_set(
-    tasks: &[TimedTask],
+fn overlapping_timed<'a>(
+    tasks: &'a [TimedTask],
     day_start: i64,
     day_end: i64,
-) -> Vec<&TimedTask> {
-    let selected: Vec<&TimedTask> = tasks
+) -> Vec<&'a TimedTask> {
+    tasks
         .iter()
         .filter(|t| !t.done && t.start < day_end && t.end > day_start)
-        .collect();
+        .collect()
+}
+
+pub fn ticktick_overlapping_count(tasks: &[TimedTask], day_start: i64, day_end: i64) -> usize {
+    overlapping_timed(tasks, day_start, day_end).len()
+}
+
+pub fn ticktick_judgment_set(tasks: &[TimedTask], day_start: i64, day_end: i64) -> Vec<&TimedTask> {
+    let selected = overlapping_timed(tasks, day_start, day_end);
     if selected.len() > MAX_JUDGMENT_TASKS {
         Vec::new()
     } else {
@@ -349,10 +357,7 @@ mod tests {
             role_from_hashtag("讨论 #杂项", ListRole::Mainline),
             ListRole::Chore
         );
-        assert_eq!(
-            role_from_hashtag("讨论", ListRole::Side),
-            ListRole::Side
-        );
+        assert_eq!(role_from_hashtag("讨论", ListRole::Side), ListRole::Side);
     }
 
     #[test]
@@ -368,5 +373,38 @@ mod tests {
             })
             .collect();
         assert!(ticktick_judgment_set(&tasks, 0, 86400).is_empty());
+        assert_eq!(ticktick_overlapping_count(&tasks, 0, 86400), 21);
+    }
+
+    #[test]
+    fn overlapping_count_ignores_non_overlapping_and_done() {
+        let tasks = vec![
+            TimedTask {
+                id: "a".into(),
+                title: "a".into(),
+                role: ListRole::Mainline,
+                start: 1000,
+                end: 1900,
+                done: false,
+            },
+            TimedTask {
+                id: "b".into(),
+                title: "b".into(),
+                role: ListRole::Mainline,
+                start: 100_000,
+                end: 101_000,
+                done: false,
+            },
+            TimedTask {
+                id: "c".into(),
+                title: "c".into(),
+                role: ListRole::Mainline,
+                start: 1000,
+                end: 1900,
+                done: true,
+            },
+        ];
+        assert_eq!(ticktick_overlapping_count(&tasks, 0, 86400), 1);
+        assert_eq!(ticktick_judgment_set(&tasks, 0, 86400).len(), 1);
     }
 }

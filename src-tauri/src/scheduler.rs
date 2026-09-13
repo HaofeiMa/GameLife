@@ -166,8 +166,8 @@ pub fn metadata_decidable(
     {
         return true;
     }
-    if activity.side + activity.distraction >= SIDE_DISTRACTION_DOMINANT_SECS
-        && activity.side + activity.distraction > strong_core + reading_bridge
+    if activity.side + activity.admin + activity.distraction >= SIDE_DISTRACTION_DOMINANT_SECS
+        && activity.side + activity.admin + activity.distraction > strong_core + reading_bridge
     {
         return true;
     }
@@ -2042,6 +2042,13 @@ mod tests {
         let mut activity = ActivitySeconds::default();
         activity.admin = 90;
         assert!(!metadata_decidable(&activity, 800, 800, 0, 900));
+    }
+
+    #[test]
+    fn metadata_decidable_when_admin_is_trio_max() {
+        let mut activity = ActivitySeconds::default();
+        activity.admin = 400;
+        assert!(metadata_decidable(&activity, 100, 100, 0, 900));
     }
 
     #[test]

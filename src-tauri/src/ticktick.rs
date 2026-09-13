@@ -1,7 +1,7 @@
 use chrono::{DateTime, FixedOffset};
 use gamelife_core::{
-    align_range, role_from_hashtag, ticktick_judgment_set, ticktick_snapshot_id, ListRole,
-    TimedTask,
+    align_range, role_from_hashtag, ticktick_overlapping_count, ticktick_snapshot_id, ListRole,
+    TimedTask, MAX_JUDGMENT_TASKS,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -137,7 +137,7 @@ pub fn sync_result_from_cache(
 ) -> TickTickSyncResult {
     TickTickSyncResult {
         count: cache.len(),
-        truncated: ticktick_judgment_set(cache, day_start, day_end).is_empty() && cache.len() >= 21,
+        truncated: ticktick_overlapping_count(cache, day_start, day_end) > MAX_JUDGMENT_TASKS,
     }
 }
 
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_result_truncated_when_judgment_empty_and_cache_at_least_21() {
+    fn sync_result_truncated_when_today_overlapping_exceeds_twenty() {
         let twenty: Vec<_> = (0..20).map(|i| timed(i, 0, 3600)).collect();
         let under = sync_result_from_cache(&twenty, 0, 86400);
         assert_eq!(under.count, 20);
@@ -628,6 +628,14 @@ mod tests {
         let over = sync_result_from_cache(&twenty_one, 0, 86400);
         assert_eq!(over.count, 21);
         assert!(over.truncated);
+
+        let none_today: Vec<_> = (0..21).map(|i| timed(i, 100_000, 101_000)).collect();
+        let none = sync_result_from_cache(&none_today, 0, 86400);
+        assert_eq!(none.count, 21);
+        assert!(
+            !none.truncated,
+            "cache≥21 with 0 overlapping timed tasks must not be truncated"
+        );
     }
 
     #[test]

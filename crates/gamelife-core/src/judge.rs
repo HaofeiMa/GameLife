@@ -1,6 +1,6 @@
 use crate::capture::CaptureStatus;
 use crate::hint::{hint_sample, is_grounded_core_sample};
-use crate::observe::{Span, SpanKind, observed_seconds, spans_for_slot};
+use crate::observe::{observed_seconds, spans_for_slot, Span, SpanKind};
 use crate::policy::Policy;
 use crate::r#const::READING_BRIDGE_SECS;
 use crate::types::{ActivitySeconds, Hint, Quest, Sample};
@@ -49,9 +49,7 @@ pub fn parse_vision_json(
 ) -> Result<VisionResult, VisionParseError> {
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|_| VisionParseError::InvalidJson)?;
-    let obj = value
-        .as_object()
-        .ok_or(VisionParseError::InvalidJson)?;
+    let obj = value.as_object().ok_or(VisionParseError::InvalidJson)?;
 
     let category = match obj.get("category") {
         Some(serde_json::Value::String(s)) if LEGAL_VISION_CATEGORIES.contains(&s.as_str()) => {
@@ -61,9 +59,9 @@ pub fn parse_vision_json(
     };
 
     let confidence = match obj.get("confidence") {
-        Some(serde_json::Value::Number(n)) => n
-            .as_f64()
-            .ok_or(VisionParseError::InvalidConfidence)?,
+        Some(serde_json::Value::Number(n)) => {
+            n.as_f64().ok_or(VisionParseError::InvalidConfidence)?
+        }
         _ => return Err(VisionParseError::InvalidConfidence),
     };
     if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
@@ -226,33 +224,33 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     let mut pending = false;
     let mut dominant = Dominant::Unknown;
     let mut credited_raw = 0_i64;
+    let mut credited_chore = 0_i64;
+    let trio = activity.side + activity.admin + activity.distraction;
 
     if activity.unobserved == actual {
         dominant = Dominant::Unobserved;
     } else if activity.away >= AWAY_DOMINANT_SECS && strong_core < 300 {
         dominant = Dominant::BreakAway;
     } else if grounded_strong_core >= STRONG_CORE_AUTO_SECS
-        && activity.side + activity.admin + activity.distraction
-            <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
+        && trio <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
     {
         dominant = Dominant::CoreResearch;
         credited_raw = grounded_strong_core + reading_bridge;
-    } else if activity.side + activity.distraction >= SIDE_DISTRACTION_DOMINANT_SECS
-        && activity.side + activity.distraction > strong_core + reading_bridge
-    {
-        dominant = if activity.side >= activity.distraction {
-            Dominant::SideProject
+    } else if trio >= SIDE_DISTRACTION_DOMINANT_SECS && trio > strong_core + reading_bridge {
+        if activity.side >= activity.admin && activity.side >= activity.distraction {
+            dominant = Dominant::SideProject;
+        } else if activity.admin >= activity.distraction {
+            dominant = Dominant::Admin;
+            credited_chore = activity.admin;
         } else {
-            Dominant::Distraction
-        };
+            dominant = Dominant::Distraction;
+        }
     } else {
         // Gray zone
         let vision = input.vision.as_ref();
         let vision_confident = vision.is_some_and(|v| v.confidence >= VISION_CONFIDENCE_MIN);
-        let vision_wants_core =
-            vision_confident && vision.is_some_and(|v| v.wants_core);
-        let vision_rejects_core =
-            vision_confident && vision.is_some_and(|v| !v.wants_core);
+        let vision_wants_core = vision_confident && vision.is_some_and(|v| v.wants_core);
+        let vision_rejects_core = vision_confident && vision.is_some_and(|v| !v.wants_core);
         let manual_core = input.manual_core == Some(true);
 
         if vision_wants_core && strong_core > 0 {
@@ -299,7 +297,8 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
             if credited_raw > 0 {
                 dominant = Dominant::CoreResearch;
             }
-        } else if !pending && vision_confident && vision_rejects_core && input.manual_core.is_none() {
+        } else if !pending && vision_confident && vision_rejects_core && input.manual_core.is_none()
+        {
             let unsure_secs = sum_unsure_spans(&spans);
             match vision.map(|v| v.category.as_str()) {
                 Some("research_support") if unsure_secs > 0 => {
@@ -332,7 +331,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
         activity,
         credited_core_seconds: credited,
         credited_side_seconds: 0,
-        credited_chore_seconds: 0,
+        credited_chore_seconds: credited_chore.min(observed).min(actual).min(900),
         observed_seconds: observed,
         used_vision,
         pending,
@@ -431,8 +430,10 @@ fn span_matches_capture(sample: &Sample, ctx: &VisionMatchContext) -> bool {
 
 fn span_context_matches(samples: &[Sample], ctx: &VisionMatchContext, spans: &[Span]) -> bool {
     spans.iter().any(|span| {
-        matches!(span.kind, SpanKind::Observed(Hint::CoreCandidate | Hint::CoreReading))
-            && sample_for_span(samples, span).is_some_and(|s| span_matches_capture(s, ctx))
+        matches!(
+            span.kind,
+            SpanKind::Observed(Hint::CoreCandidate | Hint::CoreReading)
+        ) && sample_for_span(samples, span).is_some_and(|s| span_matches_capture(s, ctx))
     })
 }
 
@@ -543,8 +544,8 @@ fn activity_total_observed(activity: &ActivitySeconds) -> i64 {
 mod tests {
     use super::*;
     use crate::policy::{
-        CategoryGuides, Policy, builtin_never_capture, builtin_side_project_rules,
-        default_distraction_rules,
+        builtin_never_capture, builtin_side_project_rules, default_distraction_rules,
+        CategoryGuides, Policy,
     };
 
     fn pol() -> Policy {
@@ -878,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_quests_forces_zero_credit_no_auto_core_research() {
+    fn empty_quests_work_path_still_auto_cores() {
         let samples = grid("Cursor", "main.tex", 0, 58, 15, 2);
         let out = judge_slot(JudgeInput {
             slot_start: 0,
@@ -891,14 +892,19 @@ mod tests {
             vision: None,
             manual_core: None,
         });
-        assert_eq!(out.credited_core_seconds, 0);
-        assert_ne!(out.dominant, Dominant::CoreResearch);
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::CoreResearch);
+        assert!(
+            out.credited_core_seconds >= 780,
+            "work-like document_path must ground auto-core, got {}",
+            out.credited_core_seconds
+        );
     }
 
     #[test]
     fn ungrounded_title_match_does_not_auto_core() {
         let quests = [Quest::fixture("HDP", "HDP")];
-        let samples = grid("Cursor", "HDP train.py", 0, 60, 15, 5);
+        let samples = title_only_grid("Cursor", "HDP train.py", 0, 60, 15, 5);
         let out = judge_slot(JudgeInput {
             slot_start: 0,
             slot_end: 900,
@@ -920,7 +926,7 @@ mod tests {
 
     #[test]
     fn title_only_quests_without_evidence_force_zero_credit() {
-        let samples = grid("Cursor", "main.tex", 0, 58, 15, 2);
+        let samples = title_only_grid("Cursor", "main.tex", 0, 58, 15, 2);
         let out = judge_slot(JudgeInput {
             slot_start: 0,
             slot_end: 900,
@@ -938,6 +944,33 @@ mod tests {
         });
         assert_eq!(out.credited_core_seconds, 0);
         assert_ne!(out.dominant, Dominant::CoreResearch);
+    }
+
+    #[test]
+    fn mail_admin_seconds_dominant_is_admin_not_pending() {
+        let mut policy = pol();
+        policy.admin_apps = vec!["Mail".into()];
+        let mut samples = title_only_grid("Mail", "Inbox", 0, 40, 15, 2);
+        samples.extend(title_only_grid("Cursor", "notes", 600, 8, 15, 2));
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[],
+            tasks: &[],
+            policy: &policy,
+            capture: CaptureStatus::Missed,
+            vision: None,
+            manual_core: None,
+        });
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::Admin);
+        assert_eq!(out.credited_core_seconds, 0);
+        assert!(
+            out.credited_chore_seconds >= 300,
+            "admin-dominant hard rule must pay chore seconds, got {}",
+            out.credited_chore_seconds
+        );
     }
 
     #[test]
@@ -1050,13 +1083,14 @@ mod tests {
             "distraction",
             "break_away",
         ] {
-            let json = format!(
-                r#"{{"category":"{category}","confidence":0.8,"reason":""}}"#
-            );
+            let json = format!(r#"{{"category":"{category}","confidence":0.8,"reason":""}}"#);
             let v = parse_vision_json(&json, match_ctx("Cursor", "t")).unwrap();
             assert_eq!(v.category, category);
             assert_eq!(v.wants_core, category == "core_research");
-            assert_eq!(v.match_context.as_ref().map(|c| c.app.as_str()), Some("Cursor"));
+            assert_eq!(
+                v.match_context.as_ref().map(|c| c.app.as_str()),
+                Some("Cursor")
+            );
         }
     }
 
@@ -1335,7 +1369,7 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[Quest::fixture("HDP", "HDP")],
-            tasks: &[],
+            tasks: mainline_tasks(),
             policy: &browser_pol(),
             capture: CaptureStatus::Scheduled,
             vision: None,
@@ -1344,6 +1378,7 @@ mod tests {
         assert!(!out.pending);
         assert_eq!(out.dominant, Dominant::Distraction);
         assert_eq!(out.credited_core_seconds, 0);
+        assert_eq!(out.credited_chore_seconds, 0);
     }
 
     #[test]

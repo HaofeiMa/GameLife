@@ -66,7 +66,7 @@ pub use task::{
     PRESET_CHORE_ID, PRESET_LONGTERM_ID, PRESET_MAINLINE_ID, PRESET_SIDE_ID, align_range,
     in_judgment_set, judgment_tasks, match_role_alias, parse_task_snapshot_json, preset_lists,
     role_from_hashtag, snapshot_evidence_quests, snapshot_of, ticktick_judgment_set,
-    ticktick_snapshot_id, tokenize_title, validate_lists,
+    ticktick_overlapping_count, ticktick_snapshot_id, tokenize_title, validate_lists,
 };
 pub use task_parse::{ParseContext, ParsedTask, parse_task_line};
 pub use task_ai::{
@@ -77,7 +77,7 @@ pub use task_ai::{
 pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
 pub use url::{host_is_research, optional_stripped_url, strip_url_query_fragment, url_host};
-pub use document::normalize_document_path;
+pub use document::{looks_like_work_path, normalize_document_path};
 pub use vision_ctx::{
     ActivitySummary, CaptureContext, HintSeconds, SanitizedVisionContext, VisionContext,
     VisionPrivacyError, WindowShare, build_vision_prompt, format_span_secs,
