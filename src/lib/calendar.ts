@@ -29,6 +29,18 @@ export function planBlocks(tasks: PlanTask[], dayStart: number): PlanBlock[] {
     .filter((b) => b.rowStart < 96 && b.rowSpan > 0);
 }
 
+export function planMarksFromSnapshots(
+  tasks: { start: number | null; end: number | null; title: string }[],
+  dayStart: number,
+): { start: number; end: number; title: string }[] {
+  const dayEnd = dayStart + 86400;
+  return tasks.flatMap((t) => {
+    if (t.start == null || t.end == null) return [];
+    if (!(t.start < dayEnd && t.end > dayStart)) return [];
+    return [{ start: t.start, end: t.end, title: t.title }];
+  });
+}
+
 export function weekdayLabel(day: string): string {
   const [y, m, d] = day.split("-").map(Number);
   if (!y || !m || !d) return day;
@@ -54,12 +66,17 @@ export function roleClass(role: string): string {
   switch (role) {
     case "mainline":
     case "core_research":
+    case "core":
       return "role-mainline";
+    case "research_support":
+    case "support":
+      return "role-support";
     case "side":
     case "side_project":
     case "custom":
+      return "role-side";
     case "longterm":
-      return role === "longterm" ? "role-longterm" : "role-side";
+      return "role-longterm";
     case "chore":
     case "admin":
       return "role-chore";

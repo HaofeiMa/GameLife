@@ -1,30 +1,24 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmEndDay } from "../components/ConfirmEndDay";
 import { EntertainmentBanner } from "../components/EntertainmentBanner";
 import { PermissionBanner } from "../components/PermissionBanner";
-import { Progress32 } from "../components/Progress32";
 import {
-  createList,
   endToday,
   freezeDay,
   getDayView,
   getToday,
-  parseTaskLine,
   reportMisclassification,
   reviewSlot,
-  toggleTaskDone,
-  upsertTask,
+  type AppTopRow,
   type DayView,
-  type TaskListView,
-  type TaskView,
+  type SlotActivityMinutes,
   type TodaySlot,
   type TodayView,
 } from "../lib/api";
 import {
   addDays,
-  dayStartUnix,
   dominantLabel,
-  planBlocks,
+  planMarksFromSnapshots,
   roleClass,
   weekdayLabel,
 } from "../lib/calendar";
@@ -41,8 +35,21 @@ const REVIEW_CATEGORIES = [
   { id: "break_away", label: "离开" },
 ];
 
+const CAT_ROWS: { key: keyof SlotActivityMinutes; label: string; color: string }[] = [
+  { key: "core", label: "主线", color: "var(--gl-mainline)" },
+  { key: "support", label: "辅助", color: "#86efac" },
+  { key: "side", label: "支线", color: "var(--gl-side)" },
+  { key: "admin", label: "杂项", color: "var(--gl-chore)" },
+  { key: "distraction", label: "娱乐", color: "var(--gl-play)" },
+  { key: "away", label: "离开", color: "#d1d5db" },
+  { key: "unobserved", label: "未观测", color: "#9ca3af" },
+];
+
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 const SLOT_PX = 14;
+const SLOT_COUNT = 96;
+const GOAL_MINUTES = 480;
+const CAL_DAY_KEY = "gl-cal-day";
 
 function hm(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString("zh-CN", {
@@ -52,11 +59,25 @@ function hm(ts: number): string {
   });
 }
 
-function isLeftListTask(task: TaskView, dayStart: number, dayEnd: number): boolean {
-  if (task.start != null && task.end != null) {
-    return task.start < dayEnd && task.end > dayStart;
+function activityTotal(a: SlotActivityMinutes): number {
+  return a.core + a.support + a.admin + a.side + a.distraction + a.away + a.unobserved;
+}
+
+function pendingMinutesOf(slots: TodaySlot[]): number {
+  return slots.filter((s) => s.pending).reduce((n, s) => n + activityTotal(s.activity), 0);
+}
+
+function readStoredCalDay(): string | null {
+  try {
+    const stored = window.localStorage.getItem(CAL_DAY_KEY);
+    if (stored) {
+      window.localStorage.removeItem(CAL_DAY_KEY);
+      return stored;
+    }
+  } catch {
+    /* ignore quota / private mode */
   }
-  return !task.done;
+  return null;
 }
 
 function StreakRing({ streak, atRisk }: { streak: number; atRisk: boolean }) {
@@ -188,17 +209,16 @@ function SlotReview({
 export function Today() {
   const [data, setData] = useState<TodayView | null>(null);
   const [dayView, setDayView] = useState<DayView | null>(null);
-  const [calDay, setCalDay] = useState<string | null>(null);
-  const [currentListId, setCurrentListId] = useState("list-mainline");
-  const [line, setLine] = useState("");
-  const [newListName, setNewListName] = useState("");
+  const [calDay, setCalDay] = useState<string | null>(readStoredCalDay);
   const [error, setError] = useState<string | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [busy, setBusy] = useState(false);
   const [freezeDate, setFreezeDate] = useState("");
   const [freezeMsg, setFreezeMsg] = useState<string | null>(null);
   const [selected, setSelected] = useState<TodaySlot | null>(null);
+  const [openApp, setOpenApp] = useState<string | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const timelineRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -229,62 +249,6 @@ export function Today() {
     return () => clearInterval(id);
   }, []);
 
-  async function handleAdd(e: FormEvent) {
-    e.preventDefault();
-    const raw = line.trim();
-    if (!raw || busy) return;
-    setBusy(true);
-    try {
-      const parsed = await parseTaskLine(raw, currentListId);
-      await upsertTask({
-        id: `task-${Date.now()}`,
-        listId: parsed.listId,
-        title: parsed.title,
-        done: false,
-        start: parsed.start,
-        end: parsed.end,
-        range: null,
-      });
-      setLine("");
-      await refresh();
-    } catch (err) {
-      const msg = String(err);
-      setError(
-        msg.includes("too_many_judgment_tasks")
-          ? "当天待判定任务已满 20 条，请先勾完或改期。"
-          : msg,
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleCreateList(e: FormEvent) {
-    e.preventDefault();
-    const name = newListName.trim();
-    if (!name) return;
-    setBusy(true);
-    try {
-      const created = await createList(name);
-      setCurrentListId(created.id);
-      setNewListName("");
-      await refresh();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleToggle(task: TaskView) {
-    try {
-      await toggleTaskDone(task.id, !task.done);
-      await refresh();
-    } catch (err) {
-      setError(String(err));
-    }
-  }
-
   async function handleEndToday() {
     setBusy(true);
     try {
@@ -313,18 +277,11 @@ export function Today() {
     }
   }
 
-  const listsById = useMemo(() => {
-    const m = new Map<string, TaskListView>();
-    for (const l of data?.lists ?? []) m.set(l.id, l);
+  const slotsByStart = useMemo(() => {
+    const m = new Map<number, TodaySlot>();
+    for (const s of dayView?.slots ?? []) m.set(s.start, s);
     return m;
-  }, [data]);
-
-  const leftTasks = useMemo(() => {
-    if (!data) return [];
-    const start = dayStartUnix(data.day);
-    const end = dayStartUnix(addDays(data.day, 1));
-    return data.tasks.filter((t) => isLeftListTask(t, start, end));
-  }, [data]);
+  }, [dayView]);
 
   if (error && !data) {
     return (
@@ -338,22 +295,35 @@ export function Today() {
   }
   if (!data || !dayView || !calDay) return <p className="muted">加载中…</p>;
 
-  const showFreeze = data.atRisk || data.freezeCandidates.length > 0;
   const dayStart = dayView.dayStart;
-  const plans = planBlocks(
-    dayView.tasks
-      .filter((t) => t.start != null && t.end != null)
-      .map((t) => ({
-        start: t.start as number,
-        end: t.end as number,
-        role: listsById.get(t.listId)?.role ?? "side",
-        title: t.title,
-      })),
+  const marks = planMarksFromSnapshots(
+    (dayView.planMarks ?? []).map((m) => ({
+      start: m.start,
+      end: m.end,
+      title: m.title,
+    })),
     dayStart,
   );
   const showNow = calDay === data.day;
-  const nowOffset = Math.min(96 * SLOT_PX, Math.max(0, ((now - dayStart) / 900) * SLOT_PX));
+  const nowOffset = Math.min(SLOT_COUNT * SLOT_PX, Math.max(0, ((now - dayStart) / 900) * SLOT_PX));
   const isTodayCal = calDay === data.day;
+  const activity = isTodayCal ? data.activity : dayView.activity;
+  const appTop: AppTopRow[] = isTodayCal ? data.appTop : dayView.appTop;
+  const pendingCount = isTodayCal ? data.pendingCount : dayView.pendingCount;
+  const pendingMinutes = pendingMinutesOf(dayView.slots);
+  const catMax = Math.max(
+    1,
+    ...CAT_ROWS.map((c) => activity[c.key]),
+    pendingMinutes,
+  );
+  const creditedMin = Math.floor(data.creditedSeconds / 60);
+  const fillPct = data.goldDay ? 100 : Math.min(100, (creditedMin / GOAL_MINUTES) * 100);
+  const emptyDay = dayView.slots.length === 0;
+
+  function scrollToFirstPending() {
+    const el = timelineRef.current?.querySelector(".cal-actual.pending");
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
 
   return (
     <div className="page today-shell">
@@ -363,189 +333,133 @@ export function Today() {
         ended={data.endedEntertainment}
       />
       {error && <p className="error">{error}</p>}
-      <div className="today-split">
-        <section className="today-left">
-          <header className="today-left-head">
-            <h2>今日</h2>
-            <div className="today-badges">
-              <div className="badge-card">
-                <span className="badge-label">硬币</span>
-                <strong>
-                  今日 +{data.coinsToday}
-                  <span className="badge-sub"> · 共 {data.coinBalance}</span>
-                </strong>
-              </div>
-              <div className="badge-card">
-                <span className="badge-label">能量</span>
-                <strong>
-                  今日 {data.xpToday}
-                  {!data.xpShopUnlocked && <span className="badge-sub">（商店锁定）</span>}
-                </strong>
-              </div>
-              <div className="badge-card badge-streak">
-                <StreakRing streak={data.streak} atRisk={data.atRisk} />
-                <div>
-                  <span className="badge-label">连胜</span>
-                  {data.atRisk && <p className="badge-warn">未达宝箱有断连风险</p>}
-                </div>
-              </div>
-            </div>
-            <p className="hero today-hero">{data.creditedLabel} / 8h</p>
-            <Progress32 haveSecs={data.creditedSeconds} />
-            <p className="muted">
-              宝箱 {data.chest.have}/{data.chest.need} 分钟 · 黄金日 {data.gold.have}/
-              {data.gold.need} 分钟
-            </p>
-            {data.goldDay && <p className="gold-day">{GOLD_DAY_MSG}</p>}
-            {data.firstCoreLabel && <p className="muted">{data.firstCoreLabel}</p>}
-          </header>
 
-          <form className="nl-form" onSubmit={(e) => void handleAdd(e)}>
-            <input
-              value={line}
-              disabled={busy}
-              placeholder="明天上午十点到十一点，标题 #杂项"
-              onChange={(e) => setLine(e.target.value)}
-            />
-            <button type="submit" disabled={busy || !line.trim()}>
-              添加
-            </button>
-          </form>
-          <p className="muted nl-hint">
-            无 # 时加入「{listsById.get(currentListId)?.name ?? "主线任务"}」
-          </p>
+      <div className="today-badges today-badges-row">
+        <div className="badge-card">
+          <span className="badge-label">硬币</span>
+          <strong>
+            今日 +{data.coinsToday}
+            <span className="badge-sub"> · 共 {data.coinBalance}</span>
+          </strong>
+        </div>
+        <div className="badge-card">
+          <span className="badge-label">能量</span>
+          <strong>
+            今日 {data.xpToday}
+            {!data.xpShopUnlocked && <span className="badge-sub">（商店锁定）</span>}
+          </strong>
+        </div>
+        <div className="badge-card badge-streak">
+          <StreakRing streak={data.streak} atRisk={data.atRisk} />
+          <div>
+            <span className="badge-label">连胜</span>
+            {data.atRisk && <p className="badge-warn">未达宝箱有断连风险</p>}
+          </div>
+        </div>
+      </div>
 
-          {data.lists.map((list) => {
-            const items = leftTasks.filter((t) => t.listId === list.id);
+      <section className="today-report-card">
+        <div className="today-progress-head">
+          <strong className="hero today-hero">{data.creditedLabel} / 8h</strong>
+          <span className="muted">
+            宝箱 {data.chest.have}/{data.chest.need} · 黄金日 {data.gold.have}/{data.gold.need}
+          </span>
+        </div>
+        <div
+          className="today-progress-track"
+          role="progressbar"
+          aria-valuenow={creditedMin}
+          aria-valuemin={0}
+          aria-valuemax={GOAL_MINUTES}
+        >
+          <div className="today-progress-fill" style={{ width: `${fillPct}%` }} />
+        </div>
+        {data.goldDay && <p className="gold-day">{GOLD_DAY_MSG}</p>}
+        {data.firstCoreLabel && <p className="muted">{data.firstCoreLabel}</p>}
+      </section>
+
+      <section className="today-report-card">
+        <h3>类别</h3>
+        <p className="muted">跨槽求和 activity 分钟，不是 dominant × 15。</p>
+        {emptyDay && <p className="muted">这一天没有监测记录</p>}
+        <ul className="today-cat-list">
+          {CAT_ROWS.map((c) => {
+            const mins = activity[c.key];
             return (
-              <div key={list.id} className="task-list-group">
-                <button
-                  type="button"
-                  className={`task-list-head ${roleClass(list.role)} ${
-                    currentListId === list.id ? "current" : ""
-                  }`}
-                  onClick={() => setCurrentListId(list.id)}
-                >
-                  {list.name}
-                  <span>{items.length}</span>
-                </button>
-                <ul className="task-list">
-                  {items.length === 0 && <li className="muted">暂无任务</li>}
-                  {items.map((task) => (
-                    <li key={task.id} className={task.done ? "done" : ""}>
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={task.done}
-                          onChange={() => void handleToggle(task)}
-                        />
-                        <span>{task.title}</span>
-                      </label>
-                      {task.start != null && task.end != null && (
-                        <span className="task-when">
-                          {hm(task.start)}–{hm(task.end)}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              <li key={c.key}>
+                <div className="week-cat-meta">
+                  <span>
+                    <i className="week-swatch" style={{ background: c.color }} />
+                    {c.label}
+                  </span>
+                  <strong>{mins} 分钟</strong>
+                </div>
+                <div className="week-bar-track">
+                  <div
+                    className="week-bar-fill"
+                    style={{ width: `${(mins / catMax) * 100}%`, background: c.color }}
+                  />
+                </div>
+              </li>
             );
           })}
-
-          <form className="new-list-form" onSubmit={(e) => void handleCreateList(e)}>
-            <input
-              value={newListName}
-              disabled={busy}
-              placeholder="新建列表"
-              onChange={(e) => setNewListName(e.target.value)}
-            />
-            <button type="submit" disabled={busy || !newListName.trim()}>
-              创建
-            </button>
-          </form>
-
-          {showFreeze && (
-            <div className="freeze-section">
-              <h3>保护连胜（冻结）</h3>
-              {data.atRisk && (
-                <p className="muted">
-                  今日估计有效主线未满 6 小时。可冻结一个 failed 工作日以恢复连胜（每月 2 次）。
-                </p>
-              )}
-              {data.freezeCandidates.length > 0 ? (
-                <>
-                  <label>
-                    被保护日
-                    <select
-                      value={freezeDate}
-                      disabled={busy}
-                      onChange={(e) => setFreezeDate(e.target.value)}
-                    >
-                      {data.freezeCandidates.map((d) => (
-                        <option key={d} value={d}>
-                          {d}（failed）
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    disabled={busy || !freezeDate}
-                    onClick={() => void handleFreeze()}
-                  >
-                    {busy ? "冻结中…" : `冻结 ${freezeDate || "…"}`}
-                  </button>
-                </>
-              ) : (
-                <p className="muted">当前没有可冻结的 failed 工作日。</p>
-              )}
-              {freezeMsg && <p className="muted">{freezeMsg}</p>}
+          <li>
+            <div className="week-cat-meta">
+              <span>
+                <i className="week-swatch" style={{ background: "#fbbf24" }} />
+                待复核
+              </span>
+              <strong>{pendingMinutes} 分钟</strong>
             </div>
-          )}
+            <div className="week-bar-track">
+              <div
+                className="week-bar-fill"
+                style={{
+                  width: `${(pendingMinutes / catMax) * 100}%`,
+                  background: "#fbbf24",
+                }}
+              />
+            </div>
+          </li>
+        </ul>
+        {pendingCount > 0 && (
+          <button type="button" className="linkish today-pending-link" onClick={scrollToFirstPending}>
+            {pendingCount} 条待复核，点按滚到时间轴
+          </button>
+        )}
+      </section>
 
+      <section className="today-cal today-report-card">
+        <header className="today-cal-head">
           <button
             type="button"
-            className="danger"
-            disabled={busy}
-            onClick={() => setConfirmEnd(true)}
+            aria-label="前一天"
+            onClick={() => setCalDay(addDays(calDay, -1))}
           >
-            结束今天
+            ‹
           </button>
-        </section>
-
-        <section className="today-cal">
-          <header className="today-cal-head">
-            <button
-              type="button"
-              aria-label="前一天"
-              onClick={() => setCalDay(addDays(calDay, -1))}
-            >
-              ‹
-            </button>
-            <div>
-              <h2>{weekdayLabel(calDay)}</h2>
-              {!isTodayCal && (
-                <button type="button" className="linkish" onClick={() => setCalDay(data.day)}>
-                  回到今天
-                </button>
-              )}
-            </div>
-            <button
-              type="button"
-              aria-label="后一天"
-              onClick={() => setCalDay(addDays(calDay, 1))}
-            >
-              ›
-            </button>
-          </header>
-          <div className="today-cal-cols">
-            <span />
-            <span>计划</span>
-            <span>实际</span>
+          <div>
+            <h2>{weekdayLabel(calDay)}</h2>
+            {!isTodayCal && (
+              <button type="button" className="linkish" onClick={() => setCalDay(data.day)}>
+                回到今天
+              </button>
+            )}
           </div>
-          <div className="today-cal-scroll">
-            <div className="today-cal-grid" style={{ gridTemplateRows: `repeat(96, ${SLOT_PX}px)` }}>
+          <button
+            type="button"
+            aria-label="后一天"
+            onClick={() => setCalDay(addDays(calDay, 1))}
+          >
+            ›
+          </button>
+        </header>
+        <div className="today-cal-body" ref={timelineRef}>
+          <div className="today-cal-grid-wrap">
+            <div
+              className="today-cal-grid today-cal-grid-single"
+              style={{ gridTemplateRows: `repeat(${SLOT_COUNT}, ${SLOT_PX}px)` }}
+            >
               {HOURS.map((h) => (
                 <div
                   key={h}
@@ -555,44 +469,153 @@ export function Today() {
                   {String(h).padStart(2, "0")}
                 </div>
               ))}
-              {plans.map((b, i) => (
-                <div
-                  key={`p-${i}`}
-                  className={`cal-block ${roleClass(b.role)}`}
-                  style={{
-                    gridColumn: 2,
-                    gridRow: `${b.rowStart + 1} / span ${b.rowSpan}`,
-                  }}
-                  title={b.title}
-                >
-                  {b.title}
-                </div>
-              ))}
-              {dayView.slots.map((slot) => {
-                const row = Math.max(0, Math.min(95, Math.floor((slot.start - dayStart) / 900)));
+              {Array.from({ length: SLOT_COUNT }, (_, i) => {
+                const start = dayStart + i * 900;
+                const slot = slotsByStart.get(start);
                 const live =
-                  showNow && now >= slot.start && now < slot.start + 900 && !slot.final;
+                  showNow && now >= start && now < start + 900 && !(slot?.final);
+                const label = live
+                  ? "正在识别"
+                  : slot
+                    ? dominantLabel(slot.dominant)
+                    : "";
+                const className = [
+                  "cal-block",
+                  "cal-actual",
+                  slot ? roleClass(slot.dominant) : "cal-empty",
+                  live ? "identifying" : "",
+                  slot?.pending ? "pending" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ");
+                if (slot) {
+                  return (
+                    <button
+                      key={start}
+                      type="button"
+                      className={className}
+                      style={{ gridColumn: 2, gridRow: `${i + 1} / span 1` }}
+                      onClick={() => setSelected(slot)}
+                    >
+                      {label}
+                    </button>
+                  );
+                }
                 return (
-                  <button
-                    key={slot.start}
-                    type="button"
-                    className={`cal-block cal-actual ${roleClass(slot.dominant)} ${
-                      live ? "identifying" : ""
-                    } ${slot.pending ? "pending" : ""}`}
-                    style={{ gridColumn: 3, gridRow: `${row + 1} / span 1` }}
-                    onClick={() => setSelected(slot)}
+                  <div
+                    key={start}
+                    className={className}
+                    style={{ gridColumn: 2, gridRow: `${i + 1} / span 1` }}
                   >
-                    {live ? "正在识别" : dominantLabel(slot.dominant)}
-                  </button>
+                    {label}
+                  </div>
                 );
               })}
-              {showNow && (
-                <div className="cal-now" style={{ top: nowOffset }} aria-hidden="true" />
-              )}
             </div>
+            {marks.map((m, i) => {
+              const start = Math.max(m.start, dayStart);
+              const end = Math.min(m.end, dayStart + 86400);
+              const top = ((start - dayStart) / 900) * SLOT_PX;
+              const height = Math.max(6, ((end - start) / 900) * SLOT_PX);
+              return (
+                <div
+                  key={`m-${i}`}
+                  className="cal-plan-mark"
+                  title={m.title}
+                  style={{ top, height }}
+                />
+              );
+            })}
+            {showNow && (
+              <div className="cal-now" style={{ top: nowOffset }} aria-hidden="true" />
+            )}
           </div>
-        </section>
-      </div>
+        </div>
+      </section>
+
+      <section className="today-report-card">
+        <h3>当日应用</h3>
+        {appTop.length === 0 ? (
+          <p className="muted">今天还没有应用明细</p>
+        ) : (
+          <ul className="today-app-list">
+            {appTop.slice(0, 5).map((row) => (
+              <li key={row.name}>
+                <button
+                  type="button"
+                  className={`today-app-row ${roleClass(row.dominant)}`}
+                  onClick={() => setOpenApp(openApp === row.name ? null : row.name)}
+                >
+                  <span>{row.name}</span>
+                  <strong>{row.minutes} 分钟</strong>
+                </button>
+                {openApp === row.name && (
+                  <p className="muted">
+                    {row.name} 当日 {row.minutes} 分钟 · {dominantLabel(
+                      row.dominant === "core"
+                        ? "core_research"
+                        : row.dominant === "support"
+                          ? "research_support"
+                          : row.dominant === "side"
+                            ? "side_project"
+                            : row.dominant === "admin"
+                              ? "admin"
+                              : row.dominant,
+                    )}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <details className="freeze-section">
+        <summary>保护连胜</summary>
+        {data.atRisk && (
+          <p className="muted">
+            今日估计有效主线未满 6 小时。可冻结一个 failed 工作日以恢复连胜（每月 2 次）。
+          </p>
+        )}
+        {data.freezeCandidates.length > 0 ? (
+          <>
+            <label>
+              被保护日
+              <select
+                value={freezeDate}
+                disabled={busy}
+                onChange={(e) => setFreezeDate(e.target.value)}
+              >
+                {data.freezeCandidates.map((d) => (
+                  <option key={d} value={d}>
+                    {d}（failed）
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={busy || !freezeDate}
+              onClick={() => void handleFreeze()}
+            >
+              {busy ? "冻结中…" : `冻结 ${freezeDate || "…"}`}
+            </button>
+          </>
+        ) : (
+          <p className="muted">当前没有可冻结的 failed 工作日。</p>
+        )}
+        {freezeMsg && <p className="muted">{freezeMsg}</p>}
+      </details>
+
+      <button
+        type="button"
+        className="danger"
+        disabled={busy}
+        onClick={() => setConfirmEnd(true)}
+      >
+        结束今天
+      </button>
+
       <ConfirmEndDay
         open={confirmEnd}
         onCancel={() => setConfirmEnd(false)}

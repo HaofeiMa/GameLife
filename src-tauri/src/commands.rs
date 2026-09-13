@@ -8,9 +8,10 @@ use tauri::State;
 
 use gamelife_core::{
     distraction_runs, first_core_hour, format_estimated_minutes, hit_rate, is_weekday,
-    judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line, sum_activity,
-    validate_lists, wow_delta, xp_shop_unlocked, ListRole, ParseContext, Policy, QuestDraft, Task,
-    TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS, PRESET_MAINLINE_ID, SLOT_SECS,
+    judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line,
+    parse_task_snapshot_json, sum_activity, validate_lists, wow_delta, xp_shop_unlocked, ListRole,
+    ParseContext, Policy, QuestDraft, Task, TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
+    PRESET_MAINLINE_ID, SLOT_SECS,
 };
 use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
@@ -215,6 +216,14 @@ pub struct TodayView {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PlanMark {
+    pub start: i64,
+    pub end: i64,
+    pub title: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DayView {
     pub day: String,
     pub day_start: i64,
@@ -223,6 +232,7 @@ pub struct DayView {
     pub activity: SlotActivityMinutes,
     pub app_top: Vec<AppTopRow>,
     pub pending_count: i64,
+    pub plan_marks: Vec<PlanMark>,
 }
 
 #[derive(Serialize)]
@@ -1258,12 +1268,80 @@ fn tasks_overlapping_day(
         .collect())
 }
 
+fn timed_overlaps_day(start: i64, end: i64, day_start: i64, day_end: i64) -> bool {
+    start < day_end && end > day_start
+}
+
+fn insert_plan_mark(
+    by_id: &mut BTreeMap<String, PlanMark>,
+    id: String,
+    start: i64,
+    end: i64,
+    title: String,
+    day_start: i64,
+    day_end: i64,
+) {
+    if timed_overlaps_day(start, end, day_start, day_end) {
+        by_id.entry(id).or_insert(PlanMark { start, end, title });
+    }
+}
+
+fn load_plan_marks(
+    conn: &Connection,
+    day_start: i64,
+    day_end: i64,
+    slots: &[TodaySlot],
+) -> Result<Vec<PlanMark>, DbOpError> {
+    let cache = crate::ticktick::load_ticktick_cache(conn)?;
+    let mut by_id: BTreeMap<String, PlanMark> = BTreeMap::new();
+    for task in &cache {
+        insert_plan_mark(
+            &mut by_id,
+            task.id.clone(),
+            task.start,
+            task.end,
+            task.title.clone(),
+            day_start,
+            day_end,
+        );
+    }
+    for slot in slots {
+        let Some(raw) = slot.task_snapshot_json.as_deref() else {
+            continue;
+        };
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let Ok(snaps) = parse_task_snapshot_json(raw) else {
+            continue;
+        };
+        for snap in snaps {
+            if by_id.contains_key(&snap.id) {
+                continue;
+            }
+            if let Some(task) = cache.iter().find(|t| t.id == snap.id) {
+                insert_plan_mark(
+                    &mut by_id,
+                    task.id.clone(),
+                    task.start,
+                    task.end,
+                    task.title.clone(),
+                    day_start,
+                    day_end,
+                );
+            }
+        }
+    }
+    Ok(by_id.into_values().collect())
+}
+
 fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
     let day_start =
         start_of_named_day(day).ok_or_else(|| DbOpError::Rejected("bad_day".into()))?;
     let day_end = end_of_local_day(day_start);
     let slots = load_today_slots(conn, day)?;
     let pending_count = slots.iter().filter(|s| s.pending).count() as i64;
+    let plan_marks = load_plan_marks(conn, day_start, day_end, &slots)?;
     Ok(DayView {
         day: day.to_string(),
         day_start,
@@ -1272,6 +1350,7 @@ fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
         activity: activity_to_minutes(&load_day_activity(conn, day)?),
         app_top: load_app_top(conn, day, 5)?,
         pending_count,
+        plan_marks,
     })
 }
 
@@ -2734,5 +2813,37 @@ mod tests {
             (1, 6),
             "weekend gap must not become one 6-slot run"
         );
+    }
+
+    #[test]
+    fn build_day_view_overlapping_timed_tasks_become_plan_marks() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        let day_start = start_of_named_day(day).unwrap();
+        conn.execute(
+            "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at)
+             VALUES ('tt-a', 'p', 'A', 'mainline', ?1, ?2, 1)",
+            params![day_start + 10 * 3600, day_start + 11 * 3600],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at)
+             VALUES ('tt-out', 'p', 'Out', 'mainline', ?1, ?2, 1)",
+            params![day_start - 5 * 3600, day_start - 4 * 3600],
+        )
+        .unwrap();
+        let snapshot = r#"[{"id":"tt-a","title":"A","role":"mainline"}]"#;
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, credited_core_seconds, task_snapshot_json)
+             VALUES (?1, ?2, 'pending_review', 0, ?3)",
+            params![day, day_start + 10 * 3600, snapshot],
+        )
+        .unwrap();
+        let view = build_day_view(&conn, day).unwrap();
+        assert_eq!(view.plan_marks.len(), 1);
+        assert_eq!(view.plan_marks[0].title, "A");
+        assert_eq!(view.plan_marks[0].start, day_start + 10 * 3600);
+        assert_eq!(view.plan_marks[0].end, day_start + 11 * 3600);
     }
 }

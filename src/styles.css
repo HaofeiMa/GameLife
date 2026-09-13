@@ -24,7 +24,9 @@ body {
   margin: 0;
   padding: 0;
   display: flex;
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
 }
 
 .app-rail {
@@ -117,6 +119,12 @@ nav button.active {
   border-color: #2563eb;
 }
 
+.page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
 .page section {
   margin-bottom: 1.25rem;
 }
@@ -196,6 +204,19 @@ nav button.active {
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.freeze-section summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.freeze-section label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0.6rem 0 0.5rem;
 }
 
 input,
@@ -514,47 +535,116 @@ button.danger {
 .today-shell {
   flex: 1;
   min-height: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
 }
 
-.today-split {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(280px, 360px) 1fr;
-  gap: 1rem;
-}
-
-.today-left,
-.today-cal {
+.today-report-card {
   background: #fff;
   border-radius: 16px;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
   border: 1px solid #eef0f3;
-  min-height: 0;
-  overflow: auto;
+  padding: 1rem 1.1rem 1.15rem;
+  margin-bottom: 1rem;
 }
 
-.today-left {
-  padding: 1rem 1.1rem 1.25rem;
-}
-
-.today-left h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1.15rem;
+.today-report-card h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
 }
 
 .today-hero {
-  margin: 0.35rem 0 0.15rem;
+  margin: 0;
   font-size: 1.25rem;
 }
+
+.today-progress-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.today-progress-track {
+  height: 10px;
+  background: #f3f4f6;
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.today-progress-fill {
+  height: 100%;
+  background: var(--gl-mainline);
+  border-radius: 99px;
+}
+
+.today-cat-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.today-pending-link,
+.today-cal-head .linkish {
+  width: auto;
+  height: auto;
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  font-size: 0.85rem;
+  padding: 0.35rem 0 0;
+  cursor: pointer;
+}
+
+.today-app-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.today-app-row {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border: 0;
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 0.45rem 0.65rem;
+  cursor: pointer;
+  text-align: left;
+  border-left: 3px solid transparent;
+}
+
+.today-app-row.role-mainline { border-left-color: var(--gl-mainline); }
+.today-app-row.role-support { border-left-color: #86efac; }
+.today-app-row.role-side { border-left-color: var(--gl-side); }
+.today-app-row.role-chore { border-left-color: var(--gl-chore); }
+.today-app-row.role-play { border-left-color: var(--gl-play); }
 
 .today-badges {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
+}
+
+.today-badges.today-badges-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.today-badges.today-badges-row .badge-streak {
+  grid-column: auto;
 }
 
 .badge-card {
@@ -595,103 +685,6 @@ button.danger {
   font-size: 0.75rem;
 }
 
-.nl-form,
-.new-list-form {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-}
-
-.nl-form input,
-.new-list-form input {
-  margin: 0;
-  flex: 1;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 0.5rem 0.7rem;
-}
-
-.nl-form button,
-.new-list-form button {
-  margin: 0;
-  border: 0;
-  background: #111827;
-  color: #fff;
-  border-radius: 10px;
-  padding: 0.5rem 0.8rem;
-  cursor: pointer;
-}
-
-.nl-hint {
-  margin: 0.35rem 0 0.85rem;
-  font-size: 0.8rem;
-}
-
-.task-list-group {
-  margin-bottom: 0.85rem;
-}
-
-.task-list-head {
-  width: 100%;
-  display: flex;
-  justify-content: space-between;
-  border: 0;
-  background: transparent;
-  padding: 0.2rem 0;
-  cursor: pointer;
-  font-weight: 650;
-  border-left: 3px solid transparent;
-  padding-left: 0.45rem;
-}
-
-.task-list-head.current {
-  background: #f8fafc;
-  border-radius: 8px;
-}
-
-.task-list-head.role-mainline { border-left-color: var(--gl-mainline); }
-.task-list-head.role-side { border-left-color: var(--gl-side); }
-.task-list-head.role-longterm { border-left-color: var(--gl-longterm); }
-.task-list-head.role-chore { border-left-color: var(--gl-chore); }
-
-.task-list {
-  list-style: none;
-  margin: 0.25rem 0 0;
-  padding: 0;
-}
-
-.task-list li {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-  align-items: center;
-  padding: 0.28rem 0.2rem;
-  font-size: 0.9rem;
-}
-
-.task-list li.done span {
-  text-decoration: line-through;
-  color: #9ca3af;
-}
-
-.task-list label {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-width: 0;
-}
-
-.task-list label input {
-  width: auto;
-  margin: 0;
-}
-
-.task-when {
-  color: #6b7280;
-  font-size: 0.75rem;
-  flex-shrink: 0;
-}
-
 .today-cal {
   display: flex;
   flex-direction: column;
@@ -730,23 +723,11 @@ button.danger {
   padding: 0.15rem 0;
 }
 
-.today-cal-cols {
-  display: grid;
-  grid-template-columns: 2.6rem 1fr 1fr;
-  font-size: 0.75rem;
-  color: #6b7280;
-  padding: 0 0 0.35rem;
-  border-bottom: 1px solid #f3f4f6;
+.today-cal-body {
+  position: relative;
 }
 
-.today-cal-cols span:not(:first-child) {
-  text-align: center;
-  font-weight: 600;
-}
-
-.today-cal-scroll {
-  flex: 1;
-  overflow: auto;
+.today-cal-grid-wrap {
   position: relative;
 }
 
@@ -755,6 +736,10 @@ button.danger {
   grid-template-columns: 2.6rem 1fr 1fr;
   position: relative;
   min-height: 1344px;
+}
+
+.today-cal-grid-single {
+  grid-template-columns: 2.6rem 1fr;
 }
 
 .cal-hour {
@@ -783,9 +768,19 @@ button.danger {
   opacity: 0.92;
 }
 
+.cal-empty {
+  background: transparent;
+  cursor: default;
+}
+
 .cal-block.role-mainline,
 .cal-block.core_research {
   background: color-mix(in srgb, var(--gl-mainline) 28%, white);
+  color: #166534;
+}
+
+.cal-block.role-support {
+  background: color-mix(in srgb, #86efac 40%, white);
   color: #166534;
 }
 
@@ -824,6 +819,16 @@ button.danger {
   outline: 2px solid #111827;
   outline-offset: -1px;
   font-weight: 650;
+}
+
+.cal-plan-mark {
+  position: absolute;
+  left: 2.6rem;
+  width: 3px;
+  background: #111827;
+  border-radius: 2px;
+  z-index: 1;
+  pointer-events: none;
 }
 
 .cal-now {

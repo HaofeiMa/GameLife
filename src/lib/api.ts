@@ -272,6 +272,13 @@ export interface DayView {
   activity: SlotActivityMinutes;
   appTop: AppTopRow[];
   pendingCount: number;
+  planMarks: PlanMark[];
+}
+
+export interface PlanMark {
+  start: number;
+  end: number;
+  title: string;
 }
 
 export function getToday(): Promise<TodayView> {
