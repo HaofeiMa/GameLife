@@ -8,6 +8,7 @@ import {
   setProviderApiKey,
   ticktickBeginOauth,
   ticktickDisconnect,
+  ticktickFinishOauth,
   ticktickListProjects,
   ticktickSetClientSecret,
   ticktickStatus,
@@ -114,7 +115,9 @@ export function Settings() {
   const [ttStatus, setTtStatus] = useState<TickTickStatus>({
     connected: false,
     lastSync: null,
+    lastError: null,
   });
+  const [callbackDraft, setCallbackDraft] = useState("");
   const [projects, setProjects] = useState<TickTickProject[]>([]);
   const [truncated, setTruncated] = useState(false);
 
@@ -234,6 +237,10 @@ export function Settings() {
         await new Promise((r) => setTimeout(r, 1000));
         const status = await ticktickStatus();
         setTtStatus(status);
+        if (status.lastError) {
+          setMsg(status.lastError);
+          return;
+        }
         if (status.connected) {
           const list = await ticktickListProjects();
           setProjects(list);
@@ -254,10 +261,34 @@ export function Settings() {
     setMsg(null);
     try {
       await ticktickDisconnect();
-      setTtStatus({ connected: false, lastSync: null });
+      setTtStatus({ connected: false, lastSync: null, lastError: null });
       setProjects([]);
       setTruncated(false);
       setMsg("已断开 TickTick");
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePasteCallback() {
+    const url = callbackDraft.trim();
+    if (!url) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await ticktickFinishOauth(url);
+      setCallbackDraft("");
+      const status = await ticktickStatus();
+      setTtStatus(status);
+      if (status.connected) {
+        const list = await ticktickListProjects();
+        setProjects(list);
+        setMsg("已连接 TickTick");
+      } else if (status.lastError) {
+        setMsg(status.lastError);
+      }
     } catch (e) {
       setMsg(String(e));
     } finally {
@@ -582,6 +613,9 @@ export function Settings() {
             {!ttStatus.connected && (
               <p className="error">尚未连接 TickTick。</p>
             )}
+            {ttStatus.lastError && (
+              <p className="error">{ttStatus.lastError}</p>
+            )}
             <label>
               Client ID
               <input
@@ -620,6 +654,28 @@ export function Settings() {
                 </button>
               )}
             </div>
+            {!ttStatus.connected && (
+              <label>
+                回调地址
+                <input
+                  value={callbackDraft}
+                  disabled={busy}
+                  placeholder="http://127.0.0.1:18789/callback?code=…"
+                  onChange={(e) => setCallbackDraft(e.target.value)}
+                />
+              </label>
+            )}
+            {!ttStatus.connected && (
+              <div className="slot-actions">
+                <button
+                  type="button"
+                  disabled={busy || !callbackDraft.trim()}
+                  onClick={() => void handlePasteCallback()}
+                >
+                  粘贴回调完成连接
+                </button>
+              </div>
+            )}
           </section>
           {ttStatus.connected && (
             <section>

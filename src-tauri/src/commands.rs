@@ -2090,6 +2090,7 @@ pub fn provider_key_status() -> Result<ProviderKeyStatus, String> {
 pub struct TickTickStatus {
     pub connected: bool,
     pub last_sync: Option<i64>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2113,6 +2114,7 @@ pub fn ticktick_status() -> Result<TickTickStatus, String> {
     Ok(TickTickStatus {
         connected,
         last_sync,
+        last_error: crate::ticktick::oauth_last_error(),
     })
 }
 
@@ -2124,13 +2126,23 @@ pub fn ticktick_set_client_secret(secret: String) -> Result<(), String> {
 #[tauri::command]
 pub fn ticktick_begin_oauth() -> Result<TickTickAuthorize, String> {
     let client_id = load_settings().ticktick_client_id.trim().to_string();
-    if client_id.is_empty() {
-        return Err("missing ticktick client id".into());
-    }
+    crate::ticktick::oauth_begin_preflight(
+        &client_id,
+        crate::ticktick::client_secret_present(),
+    )
+    .map_err(|e| {
+        crate::ticktick::set_oauth_last_error(e.clone());
+        e
+    })?;
+    let listener = crate::ticktick::bind_oauth_loopback().map_err(|e| {
+        crate::ticktick::set_oauth_last_error(e.clone());
+        e
+    })?;
+    crate::ticktick::clear_oauth_last_error();
     let verifier = crate::ticktick::pkce_verifier();
     let challenge = crate::ticktick::pkce_challenge(&verifier);
     crate::ticktick::store_pkce_verifier(verifier);
-    crate::ticktick::spawn_oauth_loopback();
+    crate::ticktick::spawn_oauth_loopback(listener);
     let url = format!(
         "{}?client_id={}&redirect_uri=http%3A%2F%2F127.0.0.1%3A18789%2Fcallback&response_type=code&scope=tasks:read&code_challenge={}&code_challenge_method=S256",
         crate::ticktick::TICKTICK_AUTHORIZE,
@@ -2143,7 +2155,17 @@ pub fn ticktick_begin_oauth() -> Result<TickTickAuthorize, String> {
 #[tauri::command]
 pub fn ticktick_finish_oauth(callback_url: String) -> Result<(), String> {
     let code = crate::ticktick::oauth_code_from_callback(&callback_url)?;
-    crate::ticktick::complete_oauth_with_code(&crate::ticktick::ReqwestTickTick, &code)
+    match crate::ticktick::complete_oauth_with_code(&crate::ticktick::ReqwestTickTick, &code) {
+        Ok(()) => {
+            crate::ticktick::clear_oauth_last_error();
+            Ok(())
+        }
+        Err(e) => {
+            let public = crate::ticktick::public_oauth_error(&e);
+            crate::ticktick::set_oauth_last_error(public.clone());
+            Err(public)
+        }
+    }
 }
 
 #[tauri::command]

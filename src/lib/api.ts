@@ -428,6 +428,7 @@ export function requestScreenRecording(): Promise<boolean> {
 export interface TickTickStatus {
   connected: boolean;
   lastSync: number | null;
+  lastError: string | null;
 }
 
 export interface TickTickAuthorize {

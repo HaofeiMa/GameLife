@@ -76,6 +76,52 @@ const TICKTICK_LOOPBACK_PORT: u16 = 18789;
 const CACHE_FRESH_SECS: i64 = 300;
 const OAUTH_LISTEN_TIMEOUT: Duration = Duration::from_secs(180);
 static PKCE_VERIFIER: Mutex<Option<String>> = Mutex::new(None);
+static OAUTH_LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn oauth_begin_preflight(client_id: &str, secret_present: bool) -> Result<(), String> {
+    if client_id.trim().is_empty() {
+        return Err("missing ticktick client id".into());
+    }
+    if !secret_present {
+        return Err("missing ticktick client secret".into());
+    }
+    Ok(())
+}
+
+pub fn client_secret_present() -> bool {
+    crate::keychain::get_ticktick_client_secret()
+        .ok()
+        .is_some_and(|s| !s.trim().is_empty())
+}
+
+pub fn clear_oauth_last_error() {
+    *OAUTH_LAST_ERROR.lock().expect("oauth error mutex") = None;
+}
+
+pub fn set_oauth_last_error(msg: String) {
+    *OAUTH_LAST_ERROR.lock().expect("oauth error mutex") = Some(msg);
+}
+
+pub fn oauth_last_error() -> Option<String> {
+    OAUTH_LAST_ERROR.lock().expect("oauth error mutex").clone()
+}
+
+pub fn public_oauth_error(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("missing ticktick client secret") || lower.contains("client secret") {
+        return "missing ticktick client secret".into();
+    }
+    if lower.contains("pkce") {
+        return "missing pkce verifier".into();
+    }
+    if lower.contains("oauth listen") || lower.contains("oauth accept") {
+        return "oauth listen".into();
+    }
+    if lower.contains("oauth timeout") {
+        return "oauth timeout".into();
+    }
+    "oauth token exchange failed".into()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,15 +182,19 @@ pub fn complete_oauth_with_code(http: &impl TickTickHttp, code: &str) -> Result<
     Ok(())
 }
 
-pub fn spawn_oauth_loopback() {
-    std::thread::spawn(|| {
-        let _ = listen_oauth_callback_once();
+pub fn bind_oauth_loopback() -> Result<TcpListener, String> {
+    TcpListener::bind(("127.0.0.1", TICKTICK_LOOPBACK_PORT)).map_err(|_| "oauth listen".to_string())
+}
+
+pub fn spawn_oauth_loopback(listener: TcpListener) {
+    std::thread::spawn(move || {
+        if let Err(e) = accept_oauth_callback_once(listener) {
+            set_oauth_last_error(public_oauth_error(&e));
+        }
     });
 }
 
-fn listen_oauth_callback_once() -> Result<(), String> {
-    let listener = TcpListener::bind(("127.0.0.1", TICKTICK_LOOPBACK_PORT))
-        .map_err(|_| "oauth listen".to_string())?;
+fn accept_oauth_callback_once(listener: TcpListener) -> Result<(), String> {
     listener
         .set_nonblocking(true)
         .map_err(|_| "oauth listen".to_string())?;
@@ -158,12 +208,10 @@ fn listen_oauth_callback_once() -> Result<(), String> {
                 if !addr.ip().is_loopback() {
                     continue;
                 }
-                match read_oauth_code(stream) {
-                    Ok(code) => {
-                        complete_oauth_with_code(&ReqwestTickTick, &code)?;
-                        return Ok(());
-                    }
-                    Err(_) => continue,
+                match handle_oauth_stream(stream) {
+                    Ok(()) => return Ok(()),
+                    Err(e) if e == "missing oauth code" => continue,
+                    Err(e) => return Err(e),
                 }
             }
             Err(e)
@@ -177,7 +225,21 @@ fn listen_oauth_callback_once() -> Result<(), String> {
     }
 }
 
-fn read_oauth_code(mut stream: std::net::TcpStream) -> Result<String, String> {
+fn write_oauth_html(stream: &mut std::net::TcpStream, connected: bool) {
+    let body = if connected {
+        "<!doctype html><meta charset=utf-8><p>已连接，可以关闭此页。</p>"
+    } else {
+        "<!doctype html><meta charset=utf-8><p>未完成授权，可以关闭此页。</p>"
+    };
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(resp.as_bytes());
+    let _ = stream.flush();
+}
+
+fn handle_oauth_stream(mut stream: std::net::TcpStream) -> Result<(), String> {
     stream.set_nonblocking(false).ok();
     stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
     let mut buf = [0u8; 8192];
@@ -190,19 +252,25 @@ fn read_oauth_code(mut stream: std::net::TcpStream) -> Result<String, String> {
         .split_whitespace()
         .nth(1)
         .unwrap_or("");
-    let code = oauth_code_from_callback(path);
-    let body = if code.is_ok() {
-        "<!doctype html><meta charset=utf-8><p>已连接，可以关闭此页。</p>"
-    } else {
-        "<!doctype html><meta charset=utf-8><p>未完成授权，可以关闭此页。</p>"
+    let code = match oauth_code_from_callback(path) {
+        Ok(code) => code,
+        Err(e) => {
+            write_oauth_html(&mut stream, false);
+            return Err(e);
+        }
     };
-    let resp = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    let _ = stream.write_all(resp.as_bytes());
-    let _ = stream.flush();
-    code
+    match complete_oauth_with_code(&ReqwestTickTick, &code) {
+        Ok(()) => {
+            write_oauth_html(&mut stream, true);
+            clear_oauth_last_error();
+            Ok(())
+        }
+        Err(e) => {
+            write_oauth_html(&mut stream, false);
+            set_oauth_last_error(public_oauth_error(&e));
+            Err(e)
+        }
+    }
 }
 
 pub trait TickTickHttp {
@@ -560,5 +628,18 @@ mod tests {
         let over = sync_result_from_cache(&twenty_one, 0, 86400);
         assert_eq!(over.count, 21);
         assert!(over.truncated);
+    }
+
+    #[test]
+    fn oauth_begin_preflight_rejects_missing_secret_without_touching_pkce() {
+        store_pkce_verifier("keep-me".into());
+        let err = oauth_begin_preflight("client-id", false).unwrap_err();
+        assert_eq!(err, "missing ticktick client secret");
+        assert_eq!(take_pkce_verifier().as_deref(), Some("keep-me"));
+        assert!(oauth_begin_preflight("client-id", true).is_ok());
+        assert_eq!(
+            oauth_begin_preflight("  ", true).unwrap_err(),
+            "missing ticktick client id"
+        );
     }
 }
