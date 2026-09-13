@@ -138,15 +138,25 @@ const WISH_REJECTED: Record<string, string> = {
   empty_name: "名称不能为空",
   name_too_long: "名称最多 80 字",
   non_positive_price: "价格必须大于 0",
-  entertainment_needs_duration: "能量兑换时长至少 5 分钟",
+  entertainment_needs_duration: "能量兑换至少 5 分钟",
+  shop_locked: "估计有效主线未满 60 分钟，商店未开",
+  insufficient: "余额不足",
+  entertainment_in_progress: "已有一段娱乐在计时",
+  wish_missing: "这张卡不可兑",
+  wish_archived: "这张卡不可兑",
 };
 
+export function rejectedCode(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object" && "message" in err) {
+    const message = (err as { message: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return String(err);
+}
+
 export function wishRejectedMessage(err: unknown): string {
-  const raw =
-    typeof err === "string"
-      ? err
-      : err instanceof Error
-        ? err.message
-        : String(err);
+  const raw = rejectedCode(err);
   return WISH_REJECTED[raw] ?? raw;
 }

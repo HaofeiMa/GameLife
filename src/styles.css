@@ -1247,39 +1247,138 @@ button.danger {
   margin-top: 0.6rem;
 }
 
-.shop-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 1rem;
-  margin-bottom: 0.75rem;
-}
-
-.shop-head h2 {
-  margin: 0 0 0.2rem;
-}
-
-.shop-badges {
-  display: flex;
-  gap: 0.75rem;
-}
-
-.shop-badges > div {
+.shop-hero {
   background: #fff;
-  border-radius: 12px;
-  padding: 0.45rem 0.8rem;
-  min-width: 5.5rem;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  border: 1px solid #eef0f3;
+  padding: 1rem 1.1rem 1.15rem;
+  margin-bottom: 1rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
 }
 
-.shop-badges span {
-  display: block;
+.shop-hero-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.shop-hero-label {
   font-size: 0.72rem;
+  color: #6b7280;
+  letter-spacing: 0.04em;
+}
+
+.shop-hero-value {
+  font-size: 1.7rem;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.shop-hero-unlocked {
+  font-size: 1.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.shop-unlock-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 99px;
+  background: var(--gl-mainline);
+  color: #fff;
+  font-size: 0.85rem;
+}
+
+.shop-hero-unit {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #4b5563;
+}
+
+.shop-hero-note,
+.shop-hero-gold {
+  margin: 0;
+  font-size: 0.8rem;
   color: #6b7280;
 }
 
-.shop-badges strong {
+.shop-hero-gold {
+  color: #92400e;
+}
+
+.shop-unlock-track {
+  height: 10px;
+  background: #f3f4f6;
+  border-radius: 99px;
+  overflow: hidden;
+  margin-top: 0.35rem;
+}
+
+.shop-unlock-fill {
+  height: 100%;
+  background: var(--gl-mainline);
+  border-radius: 99px;
+}
+
+.shop-live-card {
+  background: linear-gradient(160deg, #1e40af, #3b82f6);
+  color: #fff;
+  border-radius: 16px;
+  padding: 1.15rem 1.2rem 1.2rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.shop-live-kicker {
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+}
+
+.shop-live-name {
+  margin: 0.15rem 0 0.35rem;
   font-size: 1.15rem;
+}
+
+.shop-live-remain {
+  margin: 0;
+  font-size: 2.4rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.shop-live-card .shop-live-remain {
+  animation: shop-remain-pulse 1.4s ease-in-out infinite;
+}
+
+.shop-hero .shop-live-remain {
+  font-size: 1.7rem;
+}
+
+.shop-live-ends,
+.shop-live-rule {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+}
+
+.shop-live-rule {
+  opacity: 0.9;
+}
+
+@keyframes shop-remain-pulse {
+  50% {
+    opacity: 0.62;
+  }
 }
 
 .shop-section {
@@ -1296,18 +1395,17 @@ button.danger {
 
 .gift-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 112px));
-  gap: 0.65rem;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.85rem;
   margin-top: 0.75rem;
 }
 
 .gift-card {
-  aspect-ratio: 1;
-  max-width: 112px;
+  min-height: 11.5rem;
   width: 100%;
   border: 0;
   border-radius: 14px;
-  padding: 0.55rem 0.5rem 0.45rem;
+  padding: 0.75rem 0.7rem 0.65rem;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -1317,69 +1415,97 @@ button.danger {
 }
 
 .gift-card.coin {
-  background: linear-gradient(160deg, #fef3c7, #fde68a);
+  background: linear-gradient(160deg, #fef3c7, #f59e0b);
 }
 
 .gift-card.energy {
-  background: linear-gradient(160deg, #dbeafe, #93c5fd);
+  background: linear-gradient(160deg, #dbeafe, #60a5fa);
+}
+
+.gift-card.just-redeemed {
+  box-shadow: inset 0 0 0 2px #166534;
 }
 
 .gift-glyph {
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.7);
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.75);
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.4rem;
+  color: #1f2937;
+}
+
+.gift-glyph-svg {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 
 .gift-card strong {
-  font-size: 0.78rem;
-  line-height: 1.2;
+  font-size: 0.95rem;
+  line-height: 1.25;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
 .gift-card p {
-  margin: 0.15rem 0 auto;
-  font-size: 0.68rem;
-  color: #4b5563;
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+  color: #1f2937;
+}
+
+.gift-price {
+  font-weight: 650;
+}
+
+.gift-duration {
+  color: #374151;
+}
+
+.gift-card .error {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: #b91c1c;
 }
 
 .gift-card > button {
-  margin-top: 0.25rem;
+  margin-top: auto;
   border: 0;
   background: #111827;
   color: #fff;
   border-radius: 8px;
-  padding: 0.25rem 0.35rem;
-  font-size: 0.7rem;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
   cursor: pointer;
 }
 
 .gift-card > button:disabled {
-  opacity: 0.45;
+  opacity: 1;
+  background: #e5e7eb;
+  color: #1f2937;
   cursor: not-allowed;
 }
 
 .gift-more {
   display: flex;
-  gap: 0.2rem;
-  margin-top: 0.2rem;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
 }
 
 .gift-more .secondary {
   flex: 1;
   border: 0;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.72);
+  color: #1f2937;
   border-radius: 6px;
-  padding: 0.1rem;
-  font-size: 0.65rem;
+  padding: 0.25rem;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 
@@ -1388,33 +1514,34 @@ button.danger {
   border: 1px dashed #cbd5e1 !important;
   align-items: center;
   justify-content: center;
-  color: #64748b;
+  color: #334155;
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: 0.9rem;
   gap: 0.2rem;
+  min-height: 11.5rem;
 }
 
 .gift-add span {
-  font-size: 1.4rem;
+  font-size: 1.6rem;
   font-weight: 400;
 }
 
 .gift-edit {
   aspect-ratio: auto;
-  min-height: 112px;
+  min-height: 11.5rem;
   background: #fff;
   border: 1px solid #e5e7eb;
 }
 
 .gift-edit input {
   margin: 0 0 0.25rem;
-  padding: 0.2rem 0.3rem;
-  font-size: 0.7rem;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.8rem;
 }
 
 .gift-edit button {
   margin-top: 0.15rem;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
 }
 
 .shop-history {
@@ -1437,8 +1564,16 @@ button.danger {
 .history-table th,
 .history-table td {
   text-align: left;
-  padding: 0.4rem 0.35rem;
+  padding: 0.45rem 0.4rem;
   border-bottom: 1px solid #f3f4f6;
+}
+
+.history-table tr.history-live td {
+  background: #eff6ff;
+}
+
+.history-table tr.history-live td:first-child {
+  box-shadow: inset 3px 0 0 #3b82f6;
 }
 
 .settings-tabs {
@@ -1467,8 +1602,8 @@ button.danger {
   padding: 0.85rem 1rem;
 }
 
-@media (max-width: 900px) {
-  .gift-grid {
-    grid-template-columns: repeat(4, minmax(0, 112px));
+@media (max-width: 720px) {
+  .shop-hero {
+    grid-template-columns: 1fr;
   }
 }

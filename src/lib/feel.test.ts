@@ -81,8 +81,20 @@ describe("wishRejectedMessage", () => {
     expect(wishRejectedMessage("name_too_long")).toBe("名称最多 80 字");
     expect(wishRejectedMessage("non_positive_price")).toBe("价格必须大于 0");
     expect(wishRejectedMessage("entertainment_needs_duration")).toBe(
-      "能量兑换时长至少 5 分钟",
+      "能量兑换至少 5 分钟",
     );
+  });
+
+  it("maps shop redeem codes to spec H §7 copy", () => {
+    expect(wishRejectedMessage("shop_locked")).toBe(
+      "估计有效主线未满 60 分钟，商店未开",
+    );
+    expect(wishRejectedMessage("insufficient")).toBe("余额不足");
+    expect(wishRejectedMessage("entertainment_in_progress")).toBe(
+      "已有一段娱乐在计时",
+    );
+    expect(wishRejectedMessage("wish_missing")).toBe("这张卡不可兑");
+    expect(wishRejectedMessage("wish_archived")).toBe("这张卡不可兑");
   });
 });
 
