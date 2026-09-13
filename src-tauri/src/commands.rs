@@ -888,6 +888,7 @@ fn build_week(conn: &Connection, today: &str, now: i64) -> Result<WeekView, DbOp
 #[tauri::command]
 pub fn get_today() -> Result<TodayView, String> {
     with_db(|conn| {
+        crate::scheduler::maybe_refresh_ticktick_cache(conn);
         let now = now_secs();
         let day = day_str_for_ts(now);
         build_today(conn, &day, now)
@@ -1299,6 +1300,8 @@ pub fn save_settings(settings: AppSettings) -> Result<(), String> {
             "side_project_rules": settings.side_project_rules,
             "reading_apps": settings.reading_apps,
             "never_capture_apps": settings.never_capture_apps,
+            "admin_apps": settings.admin_apps,
+            "category_guides": settings.category_guides,
         });
         let ts = now_secs();
         conn.execute(
