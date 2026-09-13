@@ -342,3 +342,46 @@ export function getPermissionStatus(): Promise<PermissionStatus> {
 export function requestScreenRecording(): Promise<boolean> {
   return invoke("request_screen_recording");
 }
+
+export interface TickTickStatus {
+  connected: boolean;
+  lastSync: number | null;
+}
+
+export interface TickTickAuthorize {
+  authorizeUrl: string;
+}
+
+export interface TickTickProject {
+  id: string;
+  name: string;
+  role: string;
+}
+
+export function ticktickStatus(): Promise<TickTickStatus> {
+  return invoke("ticktick_status");
+}
+
+export function ticktickSetClientSecret(secret: string): Promise<void> {
+  return invoke("ticktick_set_client_secret", { secret });
+}
+
+export function ticktickBeginOauth(): Promise<TickTickAuthorize> {
+  return invoke("ticktick_begin_oauth");
+}
+
+export function ticktickFinishOauth(callbackUrl: string): Promise<void> {
+  return invoke("ticktick_finish_oauth", { callbackUrl });
+}
+
+export function ticktickDisconnect(): Promise<void> {
+  return invoke("ticktick_disconnect");
+}
+
+export function ticktickSync(): Promise<void> {
+  return invoke("ticktick_sync");
+}
+
+export function ticktickListProjects(): Promise<TickTickProject[]> {
+  return invoke("ticktick_list_projects");
+}

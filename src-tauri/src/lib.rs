@@ -31,7 +31,9 @@ use commands::{
     get_permission_status, get_settings, get_today, get_day_view, get_week, has_api_key, list_tasks,
     parse_task_line_cmd, provider_key_status, redeem, report_misclassification,
     request_screen_recording, review_slot, save_settings, set_api_key, set_provider_api_key,
-    set_quests, toggle_task_done, update_wish, upsert_task,
+    set_quests, ticktick_begin_oauth, ticktick_disconnect, ticktick_finish_oauth,
+    ticktick_list_projects, ticktick_set_client_secret, ticktick_status, ticktick_sync,
+    toggle_task_done, update_wish, upsert_task,
 };
 
 use tauri::{
@@ -104,6 +106,13 @@ pub fn run() {
             provider_key_status,
             get_permission_status,
             request_screen_recording,
+            ticktick_status,
+            ticktick_set_client_secret,
+            ticktick_begin_oauth,
+            ticktick_finish_oauth,
+            ticktick_disconnect,
+            ticktick_sync,
+            ticktick_list_projects,
         ])
         .setup(|app| {
             let pause = PauseControl::new();

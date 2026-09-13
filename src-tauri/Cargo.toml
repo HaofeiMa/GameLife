@@ -26,6 +26,8 @@ keyring = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 base64 = "0.22"
+sha2 = "0.10"
+getrandom = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

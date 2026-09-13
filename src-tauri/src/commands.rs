@@ -14,6 +14,7 @@ use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
 
 use crate::config::{load_settings, retention_from_str, save_settings as write_settings_file, AppSettings};
+use crate::ticktick::TickTickHttp;
 use crate::db::{
     archive_wish as db_archive_wish, insert_wish as db_insert_wish, list_role_sql,
     load_active_session, load_task_lists, load_tasks, migrate, open, redeem as db_redeem,
@@ -1342,6 +1343,150 @@ pub fn provider_key_status() -> Result<ProviderKeyStatus, String> {
         openai: get_openai_api_key().is_ok(),
         custom: get_provider_api_key("custom").is_ok(),
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickTickStatus {
+    pub connected: bool,
+    pub last_sync: Option<i64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickTickAuthorize {
+    pub authorize_url: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickTickProjectView {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+}
+
+#[tauri::command]
+pub fn ticktick_status() -> Result<TickTickStatus, String> {
+    let connected = crate::keychain::get_ticktick_access_token().is_ok();
+    let last_sync = with_db(|conn| crate::ticktick::cache_fetched_at_max(conn)).ok().flatten();
+    Ok(TickTickStatus {
+        connected,
+        last_sync,
+    })
+}
+
+#[tauri::command]
+pub fn ticktick_set_client_secret(secret: String) -> Result<(), String> {
+    crate::keychain::set_ticktick_client_secret(&secret)
+}
+
+#[tauri::command]
+pub fn ticktick_begin_oauth() -> Result<TickTickAuthorize, String> {
+    let client_id = load_settings().ticktick_client_id.trim().to_string();
+    if client_id.is_empty() {
+        return Err("missing ticktick client id".into());
+    }
+    let verifier = crate::ticktick::pkce_verifier();
+    let challenge = crate::ticktick::pkce_challenge(&verifier);
+    crate::ticktick::store_pkce_verifier(verifier);
+    let url = format!(
+        "{}?client_id={}&redirect_uri=http%3A%2F%2F127.0.0.1%3A18789%2Fcallback&response_type=code&scope=tasks:read&code_challenge={}&code_challenge_method=S256",
+        crate::ticktick::TICKTICK_AUTHORIZE,
+        client_id,
+        challenge
+    );
+    Ok(TickTickAuthorize { authorize_url: url })
+}
+
+#[tauri::command]
+pub fn ticktick_finish_oauth(callback_url: String) -> Result<(), String> {
+    let code = crate::ticktick::oauth_code_from_callback(&callback_url)?;
+    let verifier = crate::ticktick::take_pkce_verifier().ok_or("missing pkce verifier")?;
+    let client_id = load_settings().ticktick_client_id;
+    let secret = crate::keychain::get_ticktick_client_secret()?;
+    let body = crate::ticktick::ReqwestTickTick.post_form(
+        crate::ticktick::TICKTICK_TOKEN,
+        &[
+            ("client_id", client_id.as_str()),
+            ("client_secret", secret.as_str()),
+            ("code", code.as_str()),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", crate::ticktick::TICKTICK_REDIRECT),
+            ("code_verifier", verifier.as_str()),
+        ],
+    )?;
+    let (access, refresh) = crate::ticktick::parse_token_response(&body)?;
+    crate::keychain::set_ticktick_access_token(&access)?;
+    if let Some(refresh) = refresh {
+        crate::keychain::set_ticktick_refresh_token(&refresh)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn ticktick_disconnect() -> Result<(), String> {
+    crate::keychain::clear_ticktick_tokens()?;
+    with_db(|conn| {
+        conn.execute("DELETE FROM ticktick_cache", [])
+            .map_err(crate::db_error::map_rusqlite)?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn ticktick_sync() -> Result<(), String> {
+    let now = now_secs();
+    let access = crate::keychain::get_ticktick_access_token()?;
+    let roles = load_settings().ticktick_project_roles;
+    with_db(|conn| {
+        if let Some(until) = crate::ticktick::ticktick_backoff_until(conn)? {
+            if now < until {
+                return Err(DbOpError::Rejected("ticktick_backoff".into()));
+            }
+        }
+        match crate::ticktick::sync_projects(
+            &crate::ticktick::ReqwestTickTick,
+            conn,
+            &roles,
+            &access,
+            now,
+        ) {
+            Ok(_) => Ok(()),
+            Err(e) if e == "429" => {
+                crate::ticktick::set_ticktick_backoff(conn, now + 60)?;
+                Err(DbOpError::Rejected("ticktick_429".into()))
+            }
+            Err(e) => Err(DbOpError::Fatal(e)),
+        }
+    })
+}
+
+#[tauri::command]
+pub fn ticktick_list_projects() -> Result<Vec<TickTickProjectView>, String> {
+    let access = crate::keychain::get_ticktick_access_token()?;
+    let roles = load_settings().ticktick_project_roles;
+    let json = crate::ticktick::ReqwestTickTick
+        .get_json(
+            &format!("{}/project", crate::ticktick::TICKTICK_API),
+            Some(&access),
+        )
+        .map_err(|e| e)?;
+    let projects: Vec<serde_json::Value> =
+        serde_json::from_str(&json).map_err(|e| format!("projects json: {e}"))?;
+    Ok(projects
+        .into_iter()
+        .filter_map(|p| {
+            let id = p.get("id")?.as_str()?.to_string();
+            let name = p
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let role = roles.get(&id).cloned().unwrap_or_else(|| "ignore".into());
+            Some(TickTickProjectView { id, name, role })
+        })
+        .collect())
 }
 
 #[cfg(test)]
