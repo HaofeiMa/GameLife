@@ -390,7 +390,7 @@ function GiftCard({
         className={cn(
           "mt-auto w-full rounded-[10px] py-[5px] text-center text-xs font-semibold transition-colors",
           locked || entertainmentBlocked || justRedeemed
-            ? "bg-pip font-medium text-[hsl(34_17%_62%)]"
+            ? "bg-pip font-medium text-off-ink"
             : "bg-primary text-primary-foreground hover:brightness-[1.04]",
         )}
       >

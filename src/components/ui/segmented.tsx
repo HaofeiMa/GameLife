@@ -56,7 +56,7 @@ export function Segmented<T extends string>({
               size === "sm" ? "px-[9px] py-[3px] text-[11.5px]" : "px-3 py-1 text-[12.5px]",
               active
                 ? "bg-card font-semibold text-foreground shadow-[0_2px_6px_-3px_rgba(120,95,60,0.45)]"
-                : "text-[hsl(30_16%_42%)] hover:text-foreground",
+                : "text-ink-dim hover:text-foreground",
             )}
           >
             {option.icon}

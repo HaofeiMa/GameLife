@@ -431,9 +431,9 @@ function Timeline({
 
 /** The mockup's .tag ok / mid / idle. */
 const COMPARE_TAG: Record<string, string> = {
-  idle: "bg-[hsl(34_32%_92%)] text-[hsl(34_16%_60%)]",
-  doing: "bg-[hsl(33_100%_94%)] text-[hsl(20_37%_54%)]",
-  done: "bg-[hsl(147_41%_93%)] text-[hsl(151_42%_37%)]",
+  idle: "bg-idle-soft text-idle-ink",
+  doing: "bg-mid-soft text-warm",
+  done: "bg-ok-soft text-ok-ink",
 };
 
 /**
@@ -501,7 +501,7 @@ function TaskCompareCard({
                   <span
                     className={cn(
                       "truncate text-[13px] font-semibold",
-                      idle && "text-[hsl(34_14%_54%)]",
+                      idle && "text-muted-foreground",
                     )}
                   >
                     {r.title}

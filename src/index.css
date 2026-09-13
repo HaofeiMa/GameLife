@@ -64,6 +64,7 @@
   --hour-line: 37.5 42.1% 92.5%;  /* #F4EEE4 */
   --heat-ink: 152.0 39.0% 30.2%;  /* #2F6B4F */
   --track-rail: 36.0 40.0% 90.2%;  /* #F0E8DC */
+  --off-ink: 33.5 17.7% 62.4%;  /* #B0A18E */
   --energy: 220.0 76.9% 61.0%;  /* #4F82E8 */
 
   --cat-mainline: 152.4 43.2% 46.3%;  /* #43A97A */
@@ -211,6 +212,7 @@
   --color-hour-line: hsl(var(--hour-line));
   --color-heat-ink: hsl(var(--heat-ink));
   --color-track-rail: hsl(var(--track-rail));
+  --color-off-ink: hsl(var(--off-ink));
   --color-energy: hsl(var(--energy));
 
   /* The mockup's radii: cards 18, hero 20, tiles 16, rows 14,
