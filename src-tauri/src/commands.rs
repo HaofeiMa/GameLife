@@ -10,7 +10,7 @@ use gamelife_core::{
     distraction_runs, first_core_hour, format_estimated_minutes, hit_rate, is_weekday,
     judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line, sum_activity,
     validate_lists, wow_delta, xp_shop_unlocked, ListRole, ParseContext, Policy, QuestDraft, Task,
-    TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS, PRESET_MAINLINE_ID,
+    TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS, PRESET_MAINLINE_ID, SLOT_SECS,
 };
 use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
@@ -694,6 +694,24 @@ fn is_pending_status(status: &str) -> bool {
 
 fn is_final_status(status: &str) -> bool {
     status == "final"
+}
+
+/// Insert a `false` breaker when slots are not adjacent (Δ ≠ 900s) or the day
+/// changes, so a weekend / missing row cannot glue two entertainment runs.
+fn distraction_run_flags(slots: &[RangeSlot]) -> Vec<bool> {
+    let slot_secs = i64::try_from(SLOT_SECS).unwrap_or(900);
+    let mut flags = Vec::new();
+    let mut prev: Option<(&str, i64)> = None;
+    for slot in slots {
+        if let Some((prev_day, prev_start)) = prev {
+            if slot.day != prev_day || slot.slot_start - prev_start != slot_secs {
+                flags.push(false);
+            }
+        }
+        flags.push(slot.category == "distraction");
+        prev = Some((slot.day.as_str(), slot.slot_start));
+    }
+    flags
 }
 
 fn activity_observed_secs(total: &ActivitySeconds) -> i64 {
@@ -1536,10 +1554,7 @@ fn build_rhythm_report(
         d += chrono::Duration::days(1);
     }
     let weekday_credited = weekday_credited_slice(start, end, today_date, &credited_map);
-    let flags: Vec<bool> = slots
-        .iter()
-        .map(|s| s.category == "distraction")
-        .collect();
+    let flags = distraction_run_flags(&slots);
     let (run_count, run_slots) = distraction_runs(&flags);
     let by_hour = fill_hour_rows(&slots);
     Ok(RhythmReportView {
@@ -2674,5 +2689,38 @@ mod tests {
         assert_eq!(mystery.listed_as, "");
         assert_eq!(apps.hosts[0].host, "arxiv.org");
         assert_eq!(apps.hosts[0].minutes, 2);
+    }
+
+    #[test]
+    fn rhythm_does_not_join_friday_and_monday_distraction_runs() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let friday = "2026-09-11";
+        let monday = "2026-09-14";
+        let friday_start = start_of_named_day(friday).unwrap();
+        let monday_start = start_of_named_day(monday).unwrap();
+        let json = r#"{"core":0,"support":0,"admin":0,"side":0,"distraction":900,"away":0,"unobserved":0}"#;
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json, credited_core_seconds, category)
+                 VALUES (?1, ?2, 'final', 900, ?3, 0, 'distraction')",
+                params![friday, friday_start + 21 * 3600 + i * 900, json],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json, credited_core_seconds, category)
+                 VALUES (?1, ?2, 'final', 900, ?3, 0, 'distraction')",
+                params![monday, monday_start + 8 * 3600 + i * 900, json],
+            )
+            .unwrap();
+        }
+        let rhythm = build_rhythm_report(&conn, "month", monday, monday).unwrap();
+        assert_eq!(rhythm.distraction_run_count, 2);
+        assert_eq!(rhythm.distraction_run_slots, 6);
+        assert_ne!(
+            (rhythm.distraction_run_count, rhythm.distraction_run_slots),
+            (1, 6),
+            "weekend gap must not become one 6-slot run"
+        );
     }
 }
