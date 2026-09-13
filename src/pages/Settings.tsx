@@ -430,7 +430,7 @@ export function Settings() {
 
   const header = (
     <PageHeader
-      title={<h1 className="text-lg font-semibold tracking-tight">设置</h1>}
+      title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">设置</h1>}
       center={
         <Segmented
           size="sm"

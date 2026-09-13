@@ -1,9 +1,13 @@
 import type { ReactNode } from "react";
 
-/** macOS paints the traffic lights over us (`titleBarStyle: "Overlay"`). */
-export const TRAFFIC_LIGHT_STRIP = 28;
-/** Height of the sidebar brand row under the traffic lights. */
-export const TOOLBAR_ROW = 30;
+/**
+ * The mockup's .hd is a flat 58px with its content vertically centred and
+ * no space reserved for the macOS traffic lights — the design calls that out
+ * as deliberate, so the bar reads the same on every platform.
+ */
+export const TRAFFIC_LIGHT_STRIP = 0;
+/** The mockup's .hd height, owned by the header itself. */
+export const TOOLBAR_ROW = 58;
 /** Breathing room under the brand row, above the shared border. */
 export const TOOLBAR_PAD_BOTTOM = 0;
 /**
@@ -46,7 +50,7 @@ export function PageHeader({
   return (
     <header
       data-tauri-drag-region
-      className="relative flex shrink-0 items-center border-b bg-background px-[22px]"
+      className="relative flex shrink-0 items-center bg-background px-[22px]"
       style={{ height: TOOLBAR_HEIGHT }}
     >
       <div className="no-drag relative z-10 flex min-w-0 shrink-0 items-center">

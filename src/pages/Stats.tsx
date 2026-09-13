@@ -1011,7 +1011,7 @@ export function Stats({ onPickDay }: { onPickDay: (day: string) => void }) {
 
   const header = (
     <PageHeader
-      title={<h1 className="text-lg font-semibold tracking-tight">统计</h1>}
+      title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">统计</h1>}
       subtitle={rangeText}
       center={
         <div className="flex items-center gap-2">

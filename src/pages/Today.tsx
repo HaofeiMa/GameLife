@@ -731,7 +731,7 @@ export function Today() {
 
   const header = (
     <PageHeader
-      title={<h1 className="text-lg font-semibold tracking-tight">今日</h1>}
+      title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">今日</h1>}
       subtitle={data?.day}
       actions={
         <Button

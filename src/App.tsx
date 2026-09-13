@@ -1,11 +1,7 @@
 import { Coins, Flame, Target, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import appIcon from "../src-tauri/icons/128x128@2x.png";
-import {
-  TOOLBAR_PAD_BOTTOM,
-  TOOLBAR_ROW,
-  TRAFFIC_LIGHT_STRIP,
-} from "./components/PageHeader";
+import { TRAFFIC_LIGHT_STRIP } from "./components/PageHeader";
 import { Toaster, type ToastItem } from "./components/ui/toaster";
 import { Progress } from "./components/ui/progress";
 import {
@@ -131,21 +127,16 @@ export function App() {
           paddingTop: TRAFFIC_LIGHT_STRIP,
         }}
         className={cn(
-          // pt-7 clears the traffic lights, which the OS overlays on us
-          // because titleBarStyle is "Overlay".
           "relative flex shrink-0 flex-col border-r border-border bg-rail px-3.5 pb-4",
           !dragging && "transition-[width] duration-200",
         )}
       >
-        {/* Matches PageHeader's inner row height so the columns line up. */}
+        {/* The mockup's .brand is its own 54px — 4px shorter than .hd. */}
         <div
           data-tauri-drag-region
-          style={{
-            height: TOOLBAR_ROW + TOOLBAR_PAD_BOTTOM,
-            paddingBottom: TOOLBAR_PAD_BOTTOM,
-          }}
+          style={{ height: 54 }}
           className={cn(
-            "flex shrink-0 items-center gap-2.5 border-b border-border",
+            "flex shrink-0 items-center gap-2.5",
             !expanded && "justify-center",
           )}
         >

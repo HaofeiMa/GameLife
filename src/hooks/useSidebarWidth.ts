@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 
 export const SIDEBAR_MIN = 184;
 export const SIDEBAR_MAX = 340;
-export const SIDEBAR_DEFAULT = 224;
+export const SIDEBAR_DEFAULT = 208;
 export const SIDEBAR_COLLAPSED = 64;
 
 const STORAGE_KEY = "gl-sidebar-width";
