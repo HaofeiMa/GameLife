@@ -34,7 +34,7 @@ export function Segmented<T extends string>({
       role="tablist"
       aria-label={ariaLabel}
       className={cn(
-        "items-center gap-1 rounded-lg border bg-muted/50 p-1",
+        "items-center gap-1 rounded-xl border bg-muted/50 p-1",
         fill ? "flex w-full" : "inline-flex",
         className,
       )}
@@ -50,12 +50,12 @@ export function Segmented<T extends string>({
             title={option.title}
             onClick={() => onChange(option.value)}
             className={cn(
-              "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-medium transition-colors",
+              "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg font-medium transition-all duration-200",
               fill && "flex-1",
               size === "sm" ? "h-6 px-2.5 text-xs" : "h-7 px-3 text-sm",
               active
-                ? "bg-primary text-primary-foreground shadow-xs"
-                : "text-muted-foreground hover:bg-background hover:text-foreground",
+                ? "bg-card font-semibold text-foreground shadow-[0_2px_8px_-3px_rgba(120,95,60,0.28)]"
+                : "text-muted-foreground hover:bg-card/60 hover:text-foreground",
             )}
           >
             {option.icon}

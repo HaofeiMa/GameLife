@@ -99,8 +99,20 @@ export function resolveTheme(
   return pref;
 }
 
+/**
+ * The pre-paint script in index.html paints this inline so a dark window
+ * never flashes light. It has to be written here too: the script's value
+ * would otherwise outrank `--background` forever, and switching to dark
+ * while it held a light value left the window looking light.
+ */
+const PREPAINT_BG: Record<ResolvedTheme, string> = {
+  light: "hsl(36 50% 96%)",
+  dark: "hsl(24 10% 10%)",
+};
+
 export function applyThemeClass(theme: ResolvedTheme, root: HTMLElement): void {
   root.classList.toggle("dark", theme === "dark");
+  root.style.backgroundColor = PREPAINT_BG[theme];
 }
 
 /**
