@@ -206,6 +206,10 @@ textarea {
   min-height: 3rem;
 }
 
+.guide-textarea {
+  min-height: 4.5rem;
+}
+
 .live-match {
   font-size: 0.95rem;
   margin: 0 0 0.75rem;
@@ -314,6 +318,12 @@ button.danger {
 .slot-actions button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.slot-actions select {
+  width: auto;
+  flex: 1;
+  margin: 0;
 }
 
 .week-table {

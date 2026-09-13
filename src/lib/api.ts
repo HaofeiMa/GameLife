@@ -460,7 +460,12 @@ export function ticktickDisconnect(): Promise<void> {
   return invoke("ticktick_disconnect");
 }
 
-export function ticktickSync(): Promise<void> {
+export interface TickTickSyncResult {
+  count: number;
+  truncated: boolean;
+}
+
+export function ticktickSync(): Promise<TickTickSyncResult> {
   return invoke("ticktick_sync");
 }
 

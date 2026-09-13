@@ -1,8 +1,14 @@
 use chrono::{DateTime, FixedOffset};
-use gamelife_core::{align_range, role_from_hashtag, ticktick_snapshot_id, ListRole, TimedTask};
+use gamelife_core::{
+    align_range, role_from_hashtag, ticktick_judgment_set, ticktick_snapshot_id, ListRole,
+    TimedTask,
+};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use base64::Engine;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -66,8 +72,28 @@ pub const TICKTICK_API: &str = "https://api.ticktick.com/open/v1";
 pub const TICKTICK_AUTHORIZE: &str = "https://ticktick.com/oauth/authorize";
 pub const TICKTICK_TOKEN: &str = "https://ticktick.com/oauth/token";
 pub const TICKTICK_REDIRECT: &str = "http://127.0.0.1:18789/callback";
+const TICKTICK_LOOPBACK_PORT: u16 = 18789;
 const CACHE_FRESH_SECS: i64 = 300;
+const OAUTH_LISTEN_TIMEOUT: Duration = Duration::from_secs(180);
 static PKCE_VERIFIER: Mutex<Option<String>> = Mutex::new(None);
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickTickSyncResult {
+    pub count: usize,
+    pub truncated: bool,
+}
+
+pub fn sync_result_from_cache(
+    cache: &[TimedTask],
+    day_start: i64,
+    day_end: i64,
+) -> TickTickSyncResult {
+    TickTickSyncResult {
+        count: cache.len(),
+        truncated: ticktick_judgment_set(cache, day_start, day_end).is_empty() && cache.len() >= 21,
+    }
+}
 
 pub fn store_pkce_verifier(v: String) {
     *PKCE_VERIFIER.lock().expect("pkce mutex") = Some(v);
@@ -85,6 +111,98 @@ pub fn oauth_code_from_callback(url: &str) -> Result<String, String> {
         }
     }
     Err("missing oauth code".into())
+}
+
+pub fn complete_oauth_with_code(http: &impl TickTickHttp, code: &str) -> Result<(), String> {
+    let verifier = take_pkce_verifier().ok_or("missing pkce verifier")?;
+    let client_id = crate::config::load_settings().ticktick_client_id;
+    let secret = crate::keychain::get_ticktick_client_secret()?;
+    let body = http.post_form(
+        TICKTICK_TOKEN,
+        &[
+            ("client_id", client_id.as_str()),
+            ("client_secret", secret.as_str()),
+            ("code", code),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", TICKTICK_REDIRECT),
+            ("code_verifier", verifier.as_str()),
+        ],
+    )?;
+    let (access, refresh) = parse_token_response(&body)?;
+    crate::keychain::set_ticktick_access_token(&access)?;
+    if let Some(refresh) = refresh {
+        crate::keychain::set_ticktick_refresh_token(&refresh)?;
+    }
+    Ok(())
+}
+
+pub fn spawn_oauth_loopback() {
+    std::thread::spawn(|| {
+        let _ = listen_oauth_callback_once();
+    });
+}
+
+fn listen_oauth_callback_once() -> Result<(), String> {
+    let listener = TcpListener::bind(("127.0.0.1", TICKTICK_LOOPBACK_PORT))
+        .map_err(|_| "oauth listen".to_string())?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|_| "oauth listen".to_string())?;
+    let deadline = Instant::now() + OAUTH_LISTEN_TIMEOUT;
+    loop {
+        if Instant::now() >= deadline {
+            return Err("oauth timeout".into());
+        }
+        match listener.accept() {
+            Ok((stream, addr)) => {
+                if !addr.ip().is_loopback() {
+                    continue;
+                }
+                match read_oauth_code(stream) {
+                    Ok(code) => {
+                        complete_oauth_with_code(&ReqwestTickTick, &code)?;
+                        return Ok(());
+                    }
+                    Err(_) => continue,
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::Interrupted =>
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return Err("oauth accept".into()),
+        }
+    }
+}
+
+fn read_oauth_code(mut stream: std::net::TcpStream) -> Result<String, String> {
+    stream.set_nonblocking(false).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    let mut buf = [0u8; 8192];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let path = req
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("");
+    let code = oauth_code_from_callback(path);
+    let body = if code.is_ok() {
+        "<!doctype html><meta charset=utf-8><p>已连接，可以关闭此页。</p>"
+    } else {
+        "<!doctype html><meta charset=utf-8><p>未完成授权，可以关闭此页。</p>"
+    };
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(resp.as_bytes());
+    let _ = stream.flush();
+    code
 }
 
 pub trait TickTickHttp {
@@ -418,5 +536,29 @@ mod tests {
         .unwrap();
         assert_eq!(access, "a");
         assert_eq!(refresh.as_deref(), Some("r"));
+    }
+
+    fn timed(i: i64, start: i64, end: i64) -> TimedTask {
+        TimedTask {
+            id: format!("tt-{i}"),
+            title: format!("t{i}"),
+            role: ListRole::Mainline,
+            start,
+            end,
+            done: false,
+        }
+    }
+
+    #[test]
+    fn sync_result_truncated_when_judgment_empty_and_cache_at_least_21() {
+        let twenty: Vec<_> = (0..20).map(|i| timed(i, 0, 3600)).collect();
+        let under = sync_result_from_cache(&twenty, 0, 86400);
+        assert_eq!(under.count, 20);
+        assert!(!under.truncated);
+
+        let twenty_one: Vec<_> = (0..21).map(|i| timed(i, 0, 3600)).collect();
+        let over = sync_result_from_cache(&twenty_one, 0, 86400);
+        assert_eq!(over.count, 21);
+        assert!(over.truncated);
     }
 }

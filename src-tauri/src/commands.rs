@@ -2130,6 +2130,7 @@ pub fn ticktick_begin_oauth() -> Result<TickTickAuthorize, String> {
     let verifier = crate::ticktick::pkce_verifier();
     let challenge = crate::ticktick::pkce_challenge(&verifier);
     crate::ticktick::store_pkce_verifier(verifier);
+    crate::ticktick::spawn_oauth_loopback();
     let url = format!(
         "{}?client_id={}&redirect_uri=http%3A%2F%2F127.0.0.1%3A18789%2Fcallback&response_type=code&scope=tasks:read&code_challenge={}&code_challenge_method=S256",
         crate::ticktick::TICKTICK_AUTHORIZE,
@@ -2142,26 +2143,7 @@ pub fn ticktick_begin_oauth() -> Result<TickTickAuthorize, String> {
 #[tauri::command]
 pub fn ticktick_finish_oauth(callback_url: String) -> Result<(), String> {
     let code = crate::ticktick::oauth_code_from_callback(&callback_url)?;
-    let verifier = crate::ticktick::take_pkce_verifier().ok_or("missing pkce verifier")?;
-    let client_id = load_settings().ticktick_client_id;
-    let secret = crate::keychain::get_ticktick_client_secret()?;
-    let body = crate::ticktick::ReqwestTickTick.post_form(
-        crate::ticktick::TICKTICK_TOKEN,
-        &[
-            ("client_id", client_id.as_str()),
-            ("client_secret", secret.as_str()),
-            ("code", code.as_str()),
-            ("grant_type", "authorization_code"),
-            ("redirect_uri", crate::ticktick::TICKTICK_REDIRECT),
-            ("code_verifier", verifier.as_str()),
-        ],
-    )?;
-    let (access, refresh) = crate::ticktick::parse_token_response(&body)?;
-    crate::keychain::set_ticktick_access_token(&access)?;
-    if let Some(refresh) = refresh {
-        crate::keychain::set_ticktick_refresh_token(&refresh)?;
-    }
-    Ok(())
+    crate::ticktick::complete_oauth_with_code(&crate::ticktick::ReqwestTickTick, &code)
 }
 
 #[tauri::command]
@@ -2175,10 +2157,13 @@ pub fn ticktick_disconnect() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn ticktick_sync() -> Result<(), String> {
+pub fn ticktick_sync() -> Result<crate::ticktick::TickTickSyncResult, String> {
     let now = now_secs();
     let access = crate::keychain::get_ticktick_access_token()?;
     let roles = load_settings().ticktick_project_roles;
+    let day = day_str_for_ts(now);
+    let day_start = start_of_named_day(&day).unwrap_or(now);
+    let day_end = end_of_local_day(day_start);
     with_db(|conn| {
         if let Some(until) = crate::ticktick::ticktick_backoff_until(conn)? {
             if now < until {
@@ -2192,7 +2177,12 @@ pub fn ticktick_sync() -> Result<(), String> {
             &access,
             now,
         ) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                let cache = crate::ticktick::load_ticktick_cache(conn)?;
+                Ok(crate::ticktick::sync_result_from_cache(
+                    &cache, day_start, day_end,
+                ))
+            }
             Err(e) if e == "429" => {
                 crate::ticktick::set_ticktick_backoff(conn, now + 60)?;
                 Err(DbOpError::Rejected("ticktick_429".into()))

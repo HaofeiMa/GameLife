@@ -6,10 +6,27 @@ import {
   providerKeyStatus,
   saveSettings,
   setProviderApiKey,
+  ticktickBeginOauth,
+  ticktickDisconnect,
+  ticktickListProjects,
+  ticktickSetClientSecret,
+  ticktickStatus,
+  ticktickSync,
   type AppSettings,
   type ProviderKeyStatus,
+  type TickTickProject,
+  type TickTickStatus,
   type VisionProviderSettings,
 } from "../lib/api";
+import { GUIDE_PLACEHOLDERS, savedCategoryGuides } from "../lib/guides";
+
+const TICKTICK_ROLES = [
+  ["ignore", "忽略"],
+  ["mainline", "主线"],
+  ["side", "支线"],
+  ["longterm", "长期"],
+  ["chore", "杂项"],
+] as const;
 
 function ListEditor({
   label,
@@ -92,7 +109,14 @@ export function Settings() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"basic" | "api" | "lists">("basic");
+  const [tab, setTab] = useState<"basic" | "api" | "lists" | "ticktick">("basic");
+  const [ticktickSecret, setTicktickSecret] = useState("");
+  const [ttStatus, setTtStatus] = useState<TickTickStatus>({
+    connected: false,
+    lastSync: null,
+  });
+  const [projects, setProjects] = useState<TickTickProject[]>([]);
+  const [truncated, setTruncated] = useState(false);
 
   useEffect(() => {
     getSettings()
@@ -103,6 +127,26 @@ export function Settings() {
       .catch((e) => setLoadError(String(e)));
     providerKeyStatus().then(setKeyStatus).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (tab !== "ticktick") return;
+    let cancelled = false;
+    ticktickStatus()
+      .then(async (status) => {
+        if (cancelled) return;
+        setTtStatus(status);
+        if (!status.connected) {
+          setProjects([]);
+          return;
+        }
+        const list = await ticktickListProjects();
+        if (!cancelled) setProjects(list);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
 
   if (loadError) {
     return (
@@ -134,12 +178,30 @@ export function Settings() {
     setSettings({ ...settings, visionProviders });
   }
 
+  async function persistSecret() {
+    const secret = ticktickSecret.trim();
+    if (!secret) return;
+    await ticktickSetClientSecret(secret);
+    setTicktickSecret("");
+  }
+
+  async function persistSettings(next: AppSettings) {
+    const trimmed = {
+      ...next,
+      categoryGuides: savedCategoryGuides(next.categoryGuides),
+    };
+    await saveSettings(trimmed);
+    setSettings(trimmed);
+    await persistSecret();
+    return trimmed;
+  }
+
   async function handleSave() {
     if (!settings) return;
     setBusy(true);
     setMsg(null);
     try {
-      await saveSettings(settings);
+      await persistSettings(settings);
       const nextStatus = { ...keyStatus };
       for (const id of ["opencode-go", "openai", "custom"] as const) {
         const typed = keys[id]?.trim();
@@ -152,6 +214,88 @@ export function Settings() {
       setKeyStatus(nextStatus);
       setKeys({ "opencode-go": "", openai: "", custom: "" });
       setMsg("已保存");
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleConnect() {
+    if (!settings) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await persistSettings(settings);
+      const { authorizeUrl } = await ticktickBeginOauth();
+      window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+      const deadline = Date.now() + 180_000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const status = await ticktickStatus();
+        setTtStatus(status);
+        if (status.connected) {
+          const list = await ticktickListProjects();
+          setProjects(list);
+          setMsg("已连接 TickTick");
+          return;
+        }
+      }
+      setMsg("等待授权超时");
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await ticktickDisconnect();
+      setTtStatus({ connected: false, lastSync: null });
+      setProjects([]);
+      setTruncated(false);
+      setMsg("已断开 TickTick");
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSync() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const result = await ticktickSync();
+      setTruncated(result.truncated);
+      const status = await ticktickStatus();
+      setTtStatus(status);
+      setMsg(result.truncated ? "同步完成" : `同步完成（${result.count}）`);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleProjectRole(id: string, role: string) {
+    if (!settings) return;
+    const ticktickProjectRoles = { ...settings.ticktickProjectRoles };
+    if (role === "ignore") {
+      delete ticktickProjectRoles[id];
+    } else {
+      ticktickProjectRoles[id] = role;
+    }
+    const next = { ...settings, ticktickProjectRoles };
+    setSettings(next);
+    setProjects((rows) => rows.map((p) => (p.id === id ? { ...p, role } : p)));
+    setBusy(true);
+    setMsg(null);
+    try {
+      await persistSettings(next);
     } catch (e) {
       setMsg(String(e));
     } finally {
@@ -173,6 +317,7 @@ export function Settings() {
             ["basic", "基础"],
             ["api", "API"],
             ["lists", "名单"],
+            ["ticktick", "TickTick"],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -201,6 +346,19 @@ export function Settings() {
                 }
               />
               登录时启动（默认开启）
+            </label>
+          </section>
+          <section>
+            <label className="quest-hero-toggle">
+              <input
+                type="checkbox"
+                checked={settings.showRailLabels}
+                disabled={busy}
+                onChange={(e) =>
+                  setSettings({ ...settings, showRailLabels: e.target.checked })
+                }
+              />
+              导航显示文字
             </label>
           </section>
           <section>
@@ -323,13 +481,27 @@ export function Settings() {
             为空，不影响采样与截图。
           </p>
           <ListEditor
-            label="信任应用"
+            label="主线应用"
             items={settings.trustedApps}
             disabled={busy}
             onChange={(trustedApps) => setSettings({ ...settings, trustedApps })}
           />
           <ListEditor
-            label="娱乐规则"
+            label="支线应用"
+            items={settings.sideProjectRules}
+            disabled={busy}
+            onChange={(sideProjectRules) =>
+              setSettings({ ...settings, sideProjectRules })
+            }
+          />
+          <ListEditor
+            label="杂项应用"
+            items={settings.adminApps}
+            disabled={busy}
+            onChange={(adminApps) => setSettings({ ...settings, adminApps })}
+          />
+          <ListEditor
+            label="娱乐应用 / 网站"
             items={settings.distractionRules}
             disabled={busy}
             onChange={(distractionRules) =>
@@ -337,18 +509,10 @@ export function Settings() {
             }
           />
           <ListEditor
-            label="阅读应用"
+            label="阅读"
             items={settings.readingApps}
             disabled={busy}
             onChange={(readingApps) => setSettings({ ...settings, readingApps })}
-          />
-          <ListEditor
-            label="支线规则"
-            items={settings.sideProjectRules}
-            disabled={busy}
-            onChange={(sideProjectRules) =>
-              setSettings({ ...settings, sideProjectRules })
-            }
           />
           <section>
             <h3>永不截屏（内置只读）</h3>
@@ -370,6 +534,136 @@ export function Settings() {
               })
             }
           />
+          <section>
+            <h3>类别说明</h3>
+            <p className="muted">灰字为样稿，空着保存不会写进判定规则。</p>
+            {(
+              [
+                ["mainline", "主线"],
+                ["side", "支线"],
+                ["admin", "杂项"],
+                ["entertainment", "娱乐"],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key}>
+                {label}
+                <textarea
+                  className="guide-textarea"
+                  maxLength={500}
+                  disabled={busy}
+                  placeholder={GUIDE_PLACEHOLDERS[key]}
+                  value={settings.categoryGuides[key]}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      categoryGuides: {
+                        ...settings.categoryGuides,
+                        [key]: e.target.value,
+                      },
+                    })
+                  }
+                />
+              </label>
+            ))}
+          </section>
+        </>
+      )}
+
+      {tab === "ticktick" && (
+        <>
+          <section>
+            <h3>连接</h3>
+            <p className="muted">
+              到 TickTick 开发者中心建应用，Redirect URI 填
+              {" "}
+              <code>http://127.0.0.1:18789/callback</code>
+              。Client Secret 只进钥匙串。
+            </p>
+            {!ttStatus.connected && (
+              <p className="error">尚未连接 TickTick。</p>
+            )}
+            <label>
+              Client ID
+              <input
+                value={settings.ticktickClientId}
+                disabled={busy}
+                onChange={(e) =>
+                  setSettings({ ...settings, ticktickClientId: e.target.value })
+                }
+              />
+            </label>
+            <label>
+              Client Secret
+              <input
+                type="password"
+                value={ticktickSecret}
+                disabled={busy}
+                placeholder="保存或连接时写入钥匙串"
+                onChange={(e) => setTicktickSecret(e.target.value)}
+              />
+            </label>
+            <div className="slot-actions">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void handleConnect()}
+              >
+                连接
+              </button>
+              {ttStatus.connected && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleDisconnect()}
+                >
+                  断开
+                </button>
+              )}
+            </div>
+          </section>
+          {ttStatus.connected && (
+            <section>
+              <h3>清单角色</h3>
+              {projects.length === 0 ? (
+                <p className="muted">没有清单。</p>
+              ) : (
+                <ul>
+                  {projects.map((project) => (
+                    <li key={project.id} className="slot-actions">
+                      <span>{project.name}</span>
+                      <select
+                        value={project.role || "ignore"}
+                        disabled={busy}
+                        onChange={(e) =>
+                          void handleProjectRole(project.id, e.target.value)
+                        }
+                      >
+                        {TICKTICK_ROLES.map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="slot-actions">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleSync()}
+                >
+                  同步任务
+                </button>
+              </div>
+              {truncated && (
+                <p className="muted">
+                  当天有时段任务超过 20，请在 TickTick 勾完或改期。
+                </p>
+              )}
+            </section>
+          )}
         </>
       )}
 
