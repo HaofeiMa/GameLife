@@ -53,3 +53,28 @@ export function CardFooter({ className, ...props }: React.ComponentProps<"div">)
     />
   );
 }
+
+/**
+ * The mockup's .ch — a card's header row: title, then an optional note
+ * pushed to the right edge.
+ */
+export function CardCh({
+  title,
+  meta,
+}: {
+  title: string;
+  meta?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-baseline gap-[9px] px-[18px] pt-3 pb-[9px]">
+      <h2 className="text-[13.5px] font-semibold tracking-[-0.005em]">
+        {title}
+      </h2>
+      {meta != null && (
+        <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
+          {meta}
+        </span>
+      )}
+    </div>
+  );
+}

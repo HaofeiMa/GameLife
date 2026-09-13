@@ -51,6 +51,20 @@
   --gold-soft: 40.0 100.0% 94.7%;  /* #FFF6E4 */
   --dim2: 34.3 19.6% 64.9%;  /* #B7A894 */
   --switch-off: 36.4 34.1% 83.9%;  /* #E4D9C8 */
+  --warm: 18.4 36.2% 53.9%;  /* #B4795F */
+  --btn-line: 36.4 40.0% 86.3%;  /* #EADFCE */
+  --btn-ink: 31.9 17.6% 35.7%;  /* #6B5C4B */
+  --ink-dim: 32.9 14.4% 42.2%;  /* #7B6D5C */
+  --ink-slot: 30.0 15.0% 31.4%;  /* #5C5044 */
+  --ok-ink: 150.8 41.5% 36.9%;  /* #37855F */
+  --ok-soft: 147.7 39.4% 93.5%;  /* #E8F5EE */
+  --mid-soft: 36.8 100.0% 93.9%;  /* #FFF3E0 */
+  --idle-soft: 36.9 33.3% 92.4%;  /* #F2EDE5 */
+  --idle-ink: 33.7 15.7% 60.0%;  /* #A99B89 */
+  --hour-line: 37.5 42.1% 92.5%;  /* #F4EEE4 */
+  --heat-ink: 152.0 39.0% 30.2%;  /* #2F6B4F */
+  --track-rail: 36.0 40.0% 90.2%;  /* #F0E8DC */
+  --energy: 220.0 76.9% 61.0%;  /* #4F82E8 */
 
   --cat-mainline: 152.4 43.2% 46.3%;  /* #43A97A */
   --cat-support: 145.8 39.4% 67.6%;  /* #8CCDA8 */
@@ -108,6 +122,19 @@
   --gold-soft: 36.0 34.9% 16.9%;  /* #3A2E1C */
   --dim2: 34.0 13.8% 42.7%;  /* #7C6F5E */
   --switch-off: 30.0 16.0% 19.6%;  /* #3A322A */
+  --warm: 17.7 53.0% 67.5%;  /* #D89A80 */
+  --btn-line: 33.3 17.3% 20.4%;  /* #3D352B */
+  --btn-ink: 35.0 31.6% 77.6%;  /* #D8C9B4 */
+  --ink-dim: 36.3 17.0% 56.1%;  /* #A2937C */
+  --ink-slot: 35.4 27.3% 72.0%;  /* #CBBBA4 */
+  --ok-ink: 148.5 55.7% 63.7%;  /* #6FD6A0 */
+  --ok-soft: 153.0 25.0% 15.7%;  /* #1E3229 */
+  --mid-soft: 35.0 30.8% 15.3%;  /* #33291B */
+  --idle-soft: 32.3 18.3% 13.9%;  /* #2A241D */
+  --idle-ink: 34.5 13.6% 47.6%;  /* #8A7C69 */
+  --hour-line: 34.3 17.9% 15.3%;  /* #2E2820 */
+  --heat-ink: 147.4 56.6% 72.0%;  /* #8FE0B4 */
+  --track-rail: 32.0 17.2% 17.1%;  /* #332C24 */
 
   --cat-mainline: 152.4 46.1% 52.7%;  /* #4FBE8B */
   --cat-support: 146.9 38.3% 65.7%;  /* #86C9A4 */
@@ -171,6 +198,20 @@
   --color-gold-soft: hsl(var(--gold-soft));
   --color-dim2: hsl(var(--dim2));
   --color-switch-off: hsl(var(--switch-off));
+  --color-warm: hsl(var(--warm));
+  --color-btn-line: hsl(var(--btn-line));
+  --color-btn-ink: hsl(var(--btn-ink));
+  --color-ink-dim: hsl(var(--ink-dim));
+  --color-ink-slot: hsl(var(--ink-slot));
+  --color-ok-ink: hsl(var(--ok-ink));
+  --color-ok-soft: hsl(var(--ok-soft));
+  --color-mid-soft: hsl(var(--mid-soft));
+  --color-idle-soft: hsl(var(--idle-soft));
+  --color-idle-ink: hsl(var(--idle-ink));
+  --color-hour-line: hsl(var(--hour-line));
+  --color-heat-ink: hsl(var(--heat-ink));
+  --color-track-rail: hsl(var(--track-rail));
+  --color-energy: hsl(var(--energy));
 
   /* The mockup's radii: cards 18, hero 20, tiles 16, rows 14,
      controls 11, chips 9. */

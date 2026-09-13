@@ -49,7 +49,7 @@ type Segment = "week" | "month" | "rhythm" | "app";
 const SEGMENTS: { value: Segment; label: string }[] = [
   { value: "week", label: "周" },
   { value: "month", label: "月" },
-  { value: "rhythm", label: "习惯" },
+  { value: "rhythm", label: "节奏" },
   { value: "app", label: "应用" },
 ];
 
@@ -373,14 +373,14 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
           { label: "杂项", cat: "admin" },
         ]}
       />
-      <div className="flex items-end gap-2">
+      <div className="flex h-[150px] items-stretch gap-[9px]">
         {days.map((d, i) => {
           const weekend = isWeekendDay(d.day);
           const total = d.core + d.side + d.chore;
           return (
             <div key={d.day} className="flex min-w-0 flex-1 flex-col items-center gap-1.5">
               <div
-                className="flex h-36 w-full flex-col justify-end overflow-hidden rounded-md bg-muted/40"
+                className="flex w-full flex-1 flex-col justify-end overflow-hidden rounded-[8px] bg-ribbon-gap"
                 title={`${total} 分钟`}
               >
                 {total > 0 && (
@@ -442,7 +442,7 @@ function HeatPanel({ hours }: { hours: WeekHourRow[] }) {
       meta="工作日 8–21 点 · 主线分钟"
       caption="该小时主线秒 / 观测秒。没有观测的小时是米色，不是 0——两者含义不同。"
     >
-      <div className="grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1.5">
+      <div className="grid grid-cols-[repeat(14,minmax(0,1fr))] gap-[5px]">
         {HEAT_HOURS.map((hour) => {
           const row = byHour.get(hour) ?? { hour, core: 0, observed: 0 };
           const tone = heatTone(row.core, row.observed);
@@ -452,7 +452,7 @@ function HeatPanel({ hours }: { hours: WeekHourRow[] }) {
             <div key={hour} className="flex flex-col items-center gap-1">
               <div
                 className={cn(
-                  "flex h-12 w-full items-center justify-center rounded-md text-[11px] font-medium tabular-nums transition-all duration-200",
+                  "flex h-11 w-full items-center justify-center rounded-[8px] text-[11px] font-semibold tabular-nums transition-all duration-200",
                   observed && "hover:ring-2 hover:ring-primary/40",
                 )}
                 title={
@@ -529,7 +529,7 @@ function MonthCalendar({
       title="热力月历"
       caption="颜色按当天 credited 主线秒 / 28800（8h）钳制 0–1。周末同样着色。点格打开该日日报。"
     >
-      <div className="grid grid-cols-7 gap-1.5">
+      <div className="grid grid-cols-7 gap-[5px]">
         {WEEKDAYS.map((w) => (
           <div
             key={w}
@@ -554,7 +554,7 @@ function MonthCalendar({
               onClick={() => onPickDay(c.day!)}
               title={`${c.day} · ${monthCellNote(future, coreMin)}`}
               className={cn(
-                "flex aspect-square flex-col items-center justify-center rounded-md text-xs transition-all duration-200",
+                "flex aspect-square flex-col items-center justify-center rounded-[8px] text-[10.5px] transition-all duration-200",
                 !future && "hover:-translate-y-0.5 hover:shadow-md hover:shadow-primary/10",
                 future && "cursor-default opacity-50",
                 weekend && "ring-1 ring-inset ring-border",

@@ -1,4 +1,4 @@
-import { Check, Coins, Pencil, Plus, Timer, Zap } from "lucide-react";
+import { Coins, Pencil, Plus, Timer, Zap } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -8,12 +8,10 @@ import {
   type ReactNode,
 } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
+import { Card, CardCh } from "../components/ui/card";
 import { EmptyLine } from "../components/ui/empty-state";
 import { Input } from "../components/ui/input";
-import { Progress } from "../components/ui/progress";
 import { SkeletonPanel } from "../components/ui/skeleton";
 import {
   archiveWish,
@@ -34,7 +32,6 @@ import { minutesUntilShopUnlock } from "../lib/shopUnlock";
 import { splitWishes } from "../lib/shopSplit";
 import { cn } from "../lib/utils";
 
-const GOLD_DAY_MINUTES = 480;
 const HISTORY_LIMIT = 30;
 
 /** Module-level single-flight guard: a double click must not spend twice. */
@@ -538,33 +535,6 @@ function GiftSection({
   );
 }
 
-function HeaderStat({
-  icon,
-  label,
-  value,
-  emphasis,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: React.ReactNode;
-  emphasis?: boolean;
-}) {
-  return (
-    <span className="flex items-center gap-1.5">
-      {icon}
-      <span className="text-muted-foreground">{label}</span>
-      <span
-        className={cn(
-          "font-medium tabular-nums",
-          emphasis && "animate-pulse-soft text-primary",
-        )}
-      >
-        {value}
-      </span>
-    </span>
-  );
-}
-
 export function Shop() {
   const [week, setWeek] = useState<WeekView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -599,8 +569,6 @@ export function Shop() {
   const remainingMins = week ? minutesUntilShopUnlock(week.creditedTodayMinutes) : 0;
   const session = week?.activeEntertainment ?? null;
   const remainSecs = session ? session.endsAt - nowSecs : 0;
-  const goldDay = (week?.creditedTodayMinutes ?? 0) >= GOLD_DAY_MINUTES;
-  const have = Math.min(60, Math.max(0, week?.creditedTodayMinutes ?? 0));
   const history = (week?.redemptions ?? []).slice(0, HISTORY_LIMIT);
 
   const header = (
@@ -608,51 +576,15 @@ export function Shop() {
       title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">商店</h1>}
       actions={
         week ? (
-          <div className="flex items-center gap-3 text-xs">
-            <HeaderStat
-              icon={<Coins className="size-3.5 text-warning" aria-hidden />}
-              label="硬币"
-              value={week.coinBalance}
-            />
-            <span className="text-border">|</span>
-            {session ? (
-              <HeaderStat
-                icon={<Timer className="size-3.5 text-primary" aria-hidden />}
-                label={`${session.name} 剩余`}
-                value={formatMmSs(remainSecs)}
-                emphasis
-              />
-            ) : (
-              <HeaderStat
-                icon={<Zap className="size-3.5 text-primary" aria-hidden />}
-                label="今日能量"
-                value={week.xpToday}
-              />
-            )}
-            <span className="text-border">|</span>
-            {week.xpShopUnlocked ? (
-              <span className="flex items-center gap-1.5 text-success">
-                <Check className="size-3.5" aria-hidden />
-                商店已开
-              </span>
-            ) : (
-              <span className="flex items-center gap-2">
-                <span className="text-muted-foreground">解锁</span>
-                <span className="w-20">
-                  <Progress
-                    value={(have / 60) * 100}
-                    aria-label="商店解锁进度"
-                    barClassName="bg-gradient-to-r from-primary/70 to-primary"
-                  />
-                </span>
-                <span className="tabular-nums text-muted-foreground">
-                  {have}/60 分钟
-                </span>
-              </span>
-            )}
-            {goldDay && (
-              <span className="text-warning">黄金日 · 不再获得新币</span>
-            )}
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold tabular-nums text-btn-ink">
+              <Coins className="size-3.5 text-gold" aria-hidden />
+              {week.coinBalance}
+            </span>
+            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold tabular-nums text-energy">
+              <Zap className="size-3.5" aria-hidden />
+              {week.xpToday}
+            </span>
           </div>
         ) : undefined
       }
@@ -738,55 +670,52 @@ export function Shop() {
             onChanged={refresh}
           />
 
-          <section className="space-y-3">
-            <h2 className="text-sm font-medium">兑换记录</h2>
-            {history.length === 0 ? (
-              <EmptyLine>还没有兑换。</EmptyLine>
-            ) : (
-              <Card className="overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-left text-xs text-muted-foreground">
-                        <th className="h-10 px-4 font-medium">时间</th>
-                        <th className="h-10 px-4 font-medium">商品</th>
-                        <th className="h-10 px-4 font-medium">类型</th>
-                        <th className="h-10 px-4 text-right font-medium">扣额</th>
-                        <th className="h-10 px-4 font-medium">状态</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {history.map((r: RedemptionView) => (
-                        <tr
-                          key={r.id}
-                          className={cn(
-                            "border-b transition-colors last:border-0 hover:bg-muted/50",
-                            r.status === "进行中" && "bg-primary/5",
-                          )}
-                        >
-                          <td className="px-4 py-2.5 tabular-nums text-muted-foreground">
-                            {formatRedemptionTs(r.ts)}
-                          </td>
-                          <td className="px-4 py-2.5">{r.name}</td>
-                          <td className="px-4 py-2.5">{r.kind === "coin" ? "硬币" : "能量"}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums">{r.spent}</td>
-                          <td className="px-4 py-2.5">
-                            {r.status === "进行中" ? (
-                              <Badge tone="primary">进行中</Badge>
-                            ) : (
-                              <span className="text-muted-foreground">
-                                {redemptionStatusLabel(r.kind, r.status)}
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+          {/* The mockup's .hist — one card, flex rows, dashed dividers. */}
+          <Card className="flex flex-1 flex-col">
+            <CardCh title="兑换记录" meta="最近 30 条" />
+            <div className="flex-1 px-[18px] pt-0.5 pb-3.5">
+              {history.length === 0 ? (
+                <EmptyLine>还没有兑换。</EmptyLine>
+              ) : (
+                <div className="flex flex-col">
+                  <div className="flex items-center gap-[14px] border-b border-hairline pb-1.5 text-[11px] text-muted-foreground">
+                    <span className="flex-[0_0_118px]">时间</span>
+                    <span className="min-w-0 flex-1">商品</span>
+                    <span className="flex-[0_0_56px]">类型</span>
+                    <span className="flex-[0_0_62px] text-right">扣额</span>
+                    <span className="flex-[0_0_66px] text-right">状态</span>
+                  </div>
+                  {history.map((r: RedemptionView) => (
+                    <div
+                      key={r.id}
+                      className={cn(
+                        "flex items-center gap-[14px] border-b border-dashed border-hairline py-[7px] text-[12.5px] last:border-b-0",
+                        r.status === "进行中" && "text-primary",
+                      )}
+                    >
+                      <span className="flex-[0_0_118px] text-[11.5px] tabular-nums text-muted-foreground">
+                        {formatRedemptionTs(r.ts)}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                      <span className="flex-[0_0_56px] text-[11.5px] text-muted-foreground">
+                        {r.kind === "coin" ? "硬币" : "能量"}
+                      </span>
+                      <span className="flex-[0_0_62px] text-right font-semibold tabular-nums">
+                        {r.spent}
+                      </span>
+                      <span className="flex-[0_0_66px] text-right text-[11.5px] text-muted-foreground">
+                        {r.status === "进行中" ? (
+                          <span className="font-semibold text-ok-ink">进行中</span>
+                        ) : (
+                          redemptionStatusLabel(r.kind, r.status)
+                        )}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              </Card>
-            )}
-          </section>
+              )}
+            </div>
+          </Card>
         </div>
       </div>
     </>

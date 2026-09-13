@@ -15,7 +15,7 @@ import { PageHeader } from "../components/PageHeader";
 import { PermissionBanner } from "../components/PermissionBanner";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
+import { Card, CardCh } from "../components/ui/card";
 import { Dialog } from "../components/ui/dialog";
 import { EmptyLine } from "../components/ui/empty-state";
 import { Input } from "../components/ui/input";
@@ -47,12 +47,7 @@ import {
 } from "../lib/calendar";
 import { ticktickRoleLabel } from "../lib/ticktickBoard";
 import { compareDayTasks, COMPARE_STATE_LABEL, type DayComparison } from "../lib/taskCompare";
-import {
-  categoryColor,
-  categoryColorAt,
-  categoryOf,
-  type CategoryKey,
-} from "../lib/theme";
+import { categoryColor, categoryOf, type CategoryKey } from "../lib/theme";
 import { cn } from "../lib/utils";
 
 const GOLD_DAY_MSG = "黄金日已达成。继续记录，但不再获得硬币或能量。";
@@ -332,7 +327,7 @@ function Timeline({
           {HOURS.map((h) => (
             <div
               key={h}
-              className="absolute left-0 flex w-11 justify-end pr-2"
+              className="absolute left-[10px] flex items-center bg-card pr-1.5"
               style={{ top: h * HOUR_H + 2 }}
             >
               <span className="text-[10px] tabular-nums text-muted-foreground">
@@ -343,12 +338,12 @@ function Timeline({
           {HOURS.slice(1).map((h) => (
             <div
               key={`line-${h}`}
-              className="absolute left-11 right-3 border-t border-border/60"
+              className="absolute inset-x-0 border-t border-hour-line"
               style={{ top: h * HOUR_H }}
             />
           ))}
 
-          <div className="absolute inset-y-0 left-11 right-3">
+          <div className="absolute inset-y-0 left-[52px] right-3">
             {Array.from({ length: SLOT_COUNT }, (_, i) => {
               const start = dayStart + i * 900;
               const slot = slotsByStart.get(start);
@@ -358,7 +353,7 @@ function Timeline({
                 return (
                   <div
                     key={start}
-                    className="absolute inset-x-0 rounded-[3px] bg-muted/40"
+                    className="absolute inset-x-0 rounded-[5px] bg-slot-empty"
                     style={{ top: top + 1, height: SLOT_H - 2 }}
                   />
                 );
@@ -380,18 +375,15 @@ function Timeline({
                   onClick={() => onPick(slot)}
                   title={`${hm(start)} · ${dominantLabel(slot.dominant)} · 计入 ${slot.creditedMinutes} 分钟`}
                   className={cn(
-                    "absolute inset-x-0 flex items-center overflow-hidden rounded-[3px] px-1.5 text-left text-[10px] leading-none transition-colors",
+                    "absolute inset-x-0 flex items-center overflow-hidden rounded-[5px] pl-2 text-left text-[10px] leading-none text-ink-slot transition-colors",
                     "hover:brightness-[0.97] dark:hover:brightness-110",
                     live && "animate-pulse-soft",
                   )}
                   style={{
                     top: top + 1,
                     height: SLOT_H - 2,
-                    background: `linear-gradient(90deg, ${categoryColorAt(
-                      cat,
-                      slot.pending ? 32 : 28,
-                    )}, ${categoryColorAt(cat, 12)})`,
-                    borderLeft: `2px solid ${categoryColor(cat)}`,
+                    background: `color-mix(in srgb, ${categoryColor(cat)} ${slot.pending ? 32 : 22}%, hsl(var(--card)))`,
+                    borderLeft: `3px solid ${categoryColor(cat)}`,
                   }}
                 >
                   <span className="truncate text-foreground/80">{label}</span>
@@ -422,8 +414,8 @@ function Timeline({
                 style={{ top: nowTop }}
                 aria-hidden
               >
-                <span className="-ml-[3px] size-1.5 shrink-0 rounded-full bg-destructive shadow-sm shadow-destructive/50" />
-                <span className="h-px flex-1 bg-gradient-to-r from-destructive to-destructive/30" />
+                <span className="absolute -left-[9px] -top-[4px] size-[9px] rounded-full border-2 border-card bg-destructive" />
+                <span className="h-0 w-full border-t-2 border-destructive" />
               </div>
             )}
           </div>
@@ -569,13 +561,14 @@ function DayRibbon({
 }) {
   return (
     <div
-      className="flex h-6 gap-px overflow-hidden rounded-lg bg-muted"
+      className="flex h-[26px] gap-px overflow-hidden rounded-[9px] bg-track"
       role="img"
       aria-label="今天的时间分布"
     >
       {Array.from({ length: SLOT_COUNT }, (_, i) => {
         const slot = slotsByStart.get(dayStart + i * 900);
-        if (!slot) return <i key={i} className="h-full flex-1" />;
+        if (!slot)
+          return <i key={i} className="h-full flex-1 bg-ribbon-gap" />;
         const cat: CategoryKey = slot.pending
           ? "pending"
           : categoryOf(slot.dominant);
@@ -587,22 +580,6 @@ function DayRibbon({
           />
         );
       })}
-    </div>
-  );
-}
-
-/** The mockup's .ch — card header: title, then a right-aligned meta note. */
-function CardCh({ title, meta }: { title: string; meta?: ReactNode }) {
-  return (
-    <div className="flex items-baseline gap-[9px] px-[18px] pt-3 pb-[9px]">
-      <h2 className="text-[13.5px] font-semibold tracking-[-0.005em]">
-        {title}
-      </h2>
-      {meta != null && (
-        <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
-          {meta}
-        </span>
-      )}
     </div>
   );
 }
@@ -735,11 +712,10 @@ export function Today() {
       subtitle={data?.day}
       actions={
         <Button
-          variant="outline"
+          variant="warm"
           size="sm"
           disabled={busy || !data}
           onClick={() => setConfirmEnd(true)}
-          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
         >
           结束今天
         </Button>
