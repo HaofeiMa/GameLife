@@ -130,6 +130,20 @@
 
 钱包侧的表主键已是全局唯一的 TEXT（`wishes.id` / `redemptions.redemption_id` / `entertainment_sessions.redemption_id` / `freeze_uses.protected_date`），合并时直接 union。`wishes` 新增 `updated_at INTEGER`，两设备改同一条时取新。
 
+### 5.3 `merged.db` 怎么建
+
+`merged.db` 的建表语句**从快照派生**，不手写第二份 schema —— 手写第二份就等于把 §3.1 选择整库快照时省下的「双份 schema 维护」成本又请回来。
+
+1. 读 `devices.json`，按 `device_id` 升序逐个拉 `<dir>/latest.db`。拉不到或打不开的设备记入 `skipped` 并继续，不中断整个重建。
+2. 以**第一个**含该表的快照为模板：`CREATE TABLE <t> AS SELECT * FROM src.<t>`。`CREATE TABLE AS SELECT` 不保留约束，所以 §5.2 的主键由 `CREATE UNIQUE INDEX` 等价实现。
+3. 后续设备的同表数据直接 `INSERT INTO <t> SELECT * FROM src.<t>`，全部插完后再统一去重（见第 5 步）—— 不靠 `INSERT OR REPLACE` 的插入顺序表达「取新」，那种语义太隐晦。
+4. 老快照（T10 之前）缺 `device_id` 列时，先 `ALTER TABLE src.<t> ADD COLUMN device_id TEXT NOT NULL DEFAULT '<该目录的 id>'`。**不能拿 `db::migrate` 去升级别家快照** —— 它在 `app_meta` 缺失时会凭空铸一个新 id 并回填，等于把别人的数据改判给本机。
+5. 去重：按 §5.2 的键 `ROW_NUMBER() OVER (PARTITION BY <键> ORDER BY <序>)`，只留 `rn = 1`。键里含 `device_id` 的表天然无重复（窗口函数空跑）；键全局唯一的表在这里收敛成一行。排序规则：`wishes` 用 `updated_at DESC`（取新），其余用 `rowid ASC`（同一份数据无论怎么合并都得到同一个结果）。
+6. `slots` 再按 §7.2 过滤：每个 `(day, slot_start)` 只留 owner 那一行。归属**调用 Rust 侧的 `slot_owner`**，不用 SQL 窗口函数把 §3.3 的规则重写一遍 —— 两处实现必然漂移。
+7. 建 `UNIQUE INDEX`，`PRAGMA integrity_check`，然后原子 rename 覆盖 `merged.db`。
+
+一个可读快照都没有时：不建库，也不删旧库（宁可留着过期的合并视图，也不要把统计页清空）。
+
 ## 6. 传输层
 
 远端布局：
@@ -239,7 +253,7 @@
 
 ## 13. 未决与风险
 
-1. **双机时今日页的能量不再实时跳动**（§3.4）。这是为了让账本不可撤销而付的代价。若用户不接受，唯一替代是放弃跨设备共用钱包，退化为「每台设备各自结算、各自钱包」，本规格的 §3.3 / §3.4 / §5 大部分可以删掉。
+1. **双机时今日页的能量不再实时跳动**（§3.4）。**已确认（2026-09-14）：接受**。今日页显示「待结算预览」—— 活动时长实时，金币/能量等该日收齐或超过 `SETTLE_GRACE`（36h）后落账。备选方案（放弃跨设备共用钱包、各设备各自结算）被否决，因为「多台设备共用金币与能量」是本功能的前提。
 2. **`VACUUM INTO` 在大库上的耗时**未知。当前 688 KB 无感，需要确认库增长到几十 MB 时是否要挪到后台线程并限制频率。
 3. **WebDAV 服务端的 `PUT` 原子性**不统一。部分实现直接覆写，中断会留下半个文件。缓解方式：先 PUT 到 `latest.db.tmp` 再 `MOVE` 覆盖（若服务端不支持 `MOVE`，回退为直接覆写并在下载侧校验 SQLite 头与 `PRAGMA integrity_check`）。
 4. **`config.json` 的合并语义**未定。两台设备的规则表（`distraction_rules` 等）不同时，合并视图展示哪一份？当前倾向：合并视图用 owner 设备的规则，设置页只展示本机规则。

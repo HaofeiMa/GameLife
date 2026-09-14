@@ -1151,6 +1151,362 @@ pub fn day_is_ready(
     })
 }
 
+/// Where the read-only merged view lives. Beside the live database, so the
+/// atomic swap is a same-filesystem rename.
+pub fn merged_db_path() -> Option<std::path::PathBuf> {
+    crate::platform::app_support_dir().map(|dir| dir.join("merged.db"))
+}
+
+/// The tables the merged view carries, each with the key that makes it a
+/// *view* rather than a pile of rows (§5.2).
+///
+/// Tables keyed on `device_id` keep every machine's rows, because two machines
+/// observing the same fifteen minutes is two facts. Tables with a global key
+/// are shared resources — one wallet, one ledger — so duplicates collapse.
+const MERGED_TABLES: &[(&str, &[&str])] = &[
+    ("slots", &["device_id", "day", "slot_start"]),
+    ("samples", &["device_id", "ts"]),
+    ("app_day_stats", &["device_id", "day", "app", "bundle_id"]),
+    ("host_day_stats", &["device_id", "day", "host"]),
+    ("days", &["device_id", "day"]),
+    ("policy_versions", &["device_id", "id"]),
+    ("misclassification_reports", &["device_id", "id"]),
+    ("ledger", &["reward_event_key"]),
+    ("wishes", &["id"]),
+    ("redemptions", &["redemption_id"]),
+    ("entertainment_sessions", &["redemption_id"]),
+    ("freeze_uses", &["protected_date"]),
+];
+
+/// SQLite's variable limit is at least 999; stay well under it so one
+/// `DELETE … WHERE rowid IN (…)` per chunk always binds.
+const SLOT_DELETE_CHUNK: usize = 500;
+
+#[derive(Debug, Clone, Default)]
+pub struct MergedReport {
+    /// Devices whose snapshot went in.
+    pub merged: Vec<String>,
+    /// Devices that were registered but could not be read, with the reason.
+    /// A device being offline is normal and must not abort the rebuild.
+    pub skipped: Vec<(String, String)>,
+    pub slots_kept: i64,
+    pub slots_dropped: i64,
+    pub bytes: u64,
+}
+
+/// Read the device registry. A missing one is not an error — it means nobody
+/// has uploaded yet.
+pub fn fetch_registry(
+    target: &dyn RemoteTarget,
+    settings: &SyncSettings,
+) -> Result<Vec<DeviceEntry>, SyncError> {
+    let path = format!("{}/devices.json", base_dir(settings));
+    match target.get(&path) {
+        Ok(raw) => Ok(serde_json::from_slice(&raw).unwrap_or_default()),
+        Err(SyncError::Remote(404)) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+fn db_fail(what: &str, e: rusqlite::Error) -> SyncError {
+    SyncError::Db(format!("{what}: {e}"))
+}
+
+fn has_table(conn: &Connection, schema: &str, table: &str) -> Result<bool, SyncError> {
+    let n: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {schema}.sqlite_master WHERE type = 'table' AND name = ?1"),
+            params![table],
+            |r| r.get(0),
+        )
+        .map_err(|e| db_fail("table probe", e))?;
+    Ok(n > 0)
+}
+
+fn has_column(
+    conn: &Connection,
+    schema: &str,
+    table: &str,
+    column: &str,
+) -> Result<bool, SyncError> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA {schema}.table_info({table})"))
+        .map_err(|e| db_fail("table_info", e))?;
+    let names = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| db_fail("table_info", e))?;
+    for name in names {
+        if name.map_err(|e| db_fail("table_info", e))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Rebuild the read-only merged view at `dest` from every registered device's
+/// `latest.db`. Nothing in the judgment pipeline reads it.
+///
+/// The build is deliberately schema-deriving rather than schema-declaring: the
+/// merged tables are created with `CREATE TABLE … AS SELECT` from the first
+/// snapshot that has them, so there is no second set of `CREATE TABLE`
+/// statements to keep in step with `db.rs` — which is the whole reason §3.1
+/// chose whole-database snapshots over row-level sync.
+///
+/// `dest` is replaced only after the new database passes `integrity_check`, and
+/// a rebuild with nothing readable leaves the previous view alone rather than
+/// blanking the statistics page.
+pub fn rebuild_merged(
+    target: &dyn RemoteTarget,
+    settings: &SyncSettings,
+    dest: &Path,
+    scratch: &Path,
+) -> Result<MergedReport, SyncError> {
+    let mut devices = fetch_registry(target, settings)?;
+    devices.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+
+    let part = dest.with_extension("db.part");
+    let _ = std::fs::remove_file(&part);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| SyncError::Io(format!("mkdir: {e}")))?;
+    }
+
+    let mut report = MergedReport::default();
+    {
+        let mut conn = crate::db::open(&part).map_err(|e| SyncError::Db(format!("{e:?}")))?;
+        for d in &devices {
+            let remote = format!("{}/latest.db", remote_dir(settings, &d.device_id));
+            let bytes = match target.get(&remote) {
+                Ok(b) => b,
+                Err(e) => {
+                    report.skipped.push((d.device_id.clone(), e.to_string()));
+                    continue;
+                }
+            };
+            let src = scratch.join(format!("merged-src-{}.db", d.device_id));
+            if let Err(e) = std::fs::write(&src, &bytes) {
+                report.skipped.push((d.device_id.clone(), format!("write: {e}")));
+                continue;
+            }
+            let outcome = merge_one_snapshot(&mut conn, &src, &d.device_id);
+            let _ = std::fs::remove_file(&src);
+            match outcome {
+                Ok(()) => report.merged.push(d.device_id.clone()),
+                Err(e) => report.skipped.push((d.device_id.clone(), e.to_string())),
+            }
+        }
+
+        if !report.merged.is_empty() {
+            dedupe_merged(&conn)?;
+            let (kept, dropped) = filter_slot_owners(&conn)?;
+            report.slots_kept = kept;
+            report.slots_dropped = dropped;
+            index_merged(&conn)?;
+        }
+    }
+
+    if report.merged.is_empty() {
+        let _ = std::fs::remove_file(&part);
+        return Ok(report);
+    }
+
+    {
+        let check = crate::db::open(&part).map_err(|e| SyncError::Db(format!("{e:?}")))?;
+        let ok: String = check
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .map_err(|e| db_fail("integrity_check", e))?;
+        if ok != "ok" {
+            let _ = std::fs::remove_file(&part);
+            return Err(SyncError::Db(format!("merged integrity_check: {ok}")));
+        }
+    }
+
+    std::fs::rename(&part, dest).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        SyncError::Io(format!("rename merged: {e}"))
+    })?;
+    report.bytes = std::fs::metadata(dest)
+        .map_err(|e| SyncError::Io(format!("stat merged: {e}")))?
+        .len();
+    Ok(report)
+}
+
+/// Attach one device's snapshot, merge every table it has, and detach again.
+/// Each device is its own transaction, so a snapshot that fails halfway leaves
+/// no rows behind.
+fn merge_one_snapshot(
+    conn: &mut Connection,
+    src: &Path,
+    device_id: &str,
+) -> Result<(), SyncError> {
+    conn.execute(
+        "ATTACH DATABASE ?1 AS src",
+        params![src.to_string_lossy().to_string()],
+    )
+    .map_err(|e| db_fail("attach snapshot", e))?;
+
+    let outcome = (|| -> Result<(), SyncError> {
+        let tx = conn.transaction().map_err(|e| db_fail("begin merge", e))?;
+        merge_attached(&tx, device_id)?;
+        tx.commit().map_err(|e| db_fail("commit merge", e))
+    })();
+
+    // Detach whether or not the merge worked, so the next device can attach.
+    let _ = conn.execute("DETACH DATABASE src", []);
+    outcome
+}
+
+fn merge_attached(conn: &Connection, device_id: &str) -> Result<(), SyncError> {
+    for (table, _) in MERGED_TABLES {
+        if !has_table(conn, "src", table)? {
+            continue;
+        }
+        if !has_column(conn, "src", table, "device_id")? {
+            // A snapshot from before T10. Stamp it with the id its own remote
+            // directory already claims — never ours, and never via
+            // `db::migrate`, which would mint a fresh identity for someone
+            // else's database and silently re-attribute their history.
+            conn.execute(&format!("ALTER TABLE src.{table} ADD COLUMN device_id TEXT"), [])
+                .map_err(|e| db_fail("add device_id", e))?;
+            conn.execute(
+                &format!("UPDATE src.{table} SET device_id = ?1"),
+                params![device_id],
+            )
+            .map_err(|e| db_fail("stamp device_id", e))?;
+        }
+        if !has_table(conn, "main", table)? {
+            conn.execute(
+                &format!("CREATE TABLE main.{table} AS SELECT * FROM src.{table}"),
+                [],
+            )
+            .map_err(|e| db_fail("create merged table", e))?;
+        } else {
+            conn.execute(&format!("INSERT INTO main.{table} SELECT * FROM src.{table}"), [])
+                .map_err(|e| db_fail("insert merged rows", e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Collapse each table onto its §5.2 key.
+///
+/// Device-keyed tables have nothing to collapse — the key contains
+/// `device_id`, so the window function is a no-op pass. Globally keyed tables
+/// converge on one row. `wishes` takes the newest edit; everything else takes
+/// the lowest `rowid`, which keeps the result independent of the order devices
+/// happened to merge in.
+fn dedupe_merged(conn: &Connection) -> Result<(), SyncError> {
+    for (table, key) in MERGED_TABLES {
+        if !has_table(conn, "main", table)? {
+            continue;
+        }
+        let order = if *table == "wishes" {
+            "COALESCE(updated_at, 0) DESC, rowid ASC"
+        } else {
+            "rowid ASC"
+        };
+        conn.execute(
+            &format!(
+                "DELETE FROM main.{table} WHERE rowid NOT IN (
+                   SELECT rowid FROM (
+                     SELECT rowid,
+                            ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {order}) AS rn
+                       FROM main.{table}
+                   ) WHERE rn = 1
+                 )",
+                key.join(", ")
+            ),
+            [],
+        )
+        .map_err(|e| db_fail("dedupe merged", e))?;
+    }
+    Ok(())
+}
+
+/// §7.2: for each `(day, slot_start)` only the owner's row survives.
+///
+/// Ownership is decided by `slot_owner` — the same function the settlement path
+/// uses. Writing the rule again as a SQL window function would be two
+/// implementations of one rule, and they would drift.
+fn filter_slot_owners(conn: &Connection) -> Result<(i64, i64), SyncError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT rowid, day, slot_start, device_id, COALESCE(observed_seconds, 0)
+               FROM main.slots ORDER BY day, slot_start",
+        )
+        .map_err(|e| db_fail("read merged slots", e))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|e| db_fail("read merged slots", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| db_fail("read merged slots", e))?;
+    drop(stmt);
+
+    let mut groups: BTreeMap<(String, i64), Vec<(i64, String, i64)>> = BTreeMap::new();
+    for (rowid, day, slot_start, device, observed) in rows {
+        groups
+            .entry((day, slot_start))
+            .or_default()
+            .push((rowid, device, observed));
+    }
+
+    let mut doomed: Vec<i64> = Vec::new();
+    let mut kept = 0i64;
+    for rows in groups.values() {
+        let claims: Vec<(String, i64)> = rows.iter().map(|(_, d, o)| (d.clone(), *o)).collect();
+        let owner = slot_owner(&claims);
+        for (rowid, device, _) in rows {
+            if *device == owner {
+                kept += 1;
+            } else {
+                doomed.push(*rowid);
+            }
+        }
+    }
+
+    for chunk in doomed.chunks(SLOT_DELETE_CHUNK) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let bindings: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
+        conn.execute(
+            &format!("DELETE FROM main.slots WHERE rowid IN ({placeholders})"),
+            bindings.as_slice(),
+        )
+        .map_err(|e| db_fail("drop non-owner slots", e))?;
+    }
+
+    Ok((kept, doomed.len() as i64))
+}
+
+fn index_merged(conn: &Connection) -> Result<(), SyncError> {
+    for (table, key) in MERGED_TABLES {
+        if !has_table(conn, "main", table)? {
+            continue;
+        }
+        // The schema qualifier goes on the *index* name, not the table name —
+        // `CREATE INDEX … ON main.slots` is a syntax error in SQLite.
+        conn.execute(
+            &format!(
+                "CREATE UNIQUE INDEX IF NOT EXISTS main.merged_{table}_key ON {table}({})",
+                key.join(", ")
+            ),
+            [],
+        )
+        .map_err(|e| db_fail("merged index", e))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2393,5 +2749,315 @@ mod tests {
         let devices = [device("a"), device("b")];
         assert!(!day_is_ready(D, &devices, &[], end - 1, 0));
         assert!(day_is_ready(D, &devices, &[], end, 0));
+    }
+
+    // -- T11: the merged view -----------------------------------------------
+
+    fn slot(day: &str, start: i64, observed: i64) -> String {
+        format!(
+            "INSERT INTO slots (day, slot_start, status, observed_seconds, credited_core_seconds)
+             VALUES ('{day}', {start}, 'final', {observed}, 0);"
+        )
+    }
+
+    /// A device's uploaded snapshot: the real schema, this device's id, and the
+    /// rows the test needs. Built through `db::migrate`, so it has the same
+    /// shape the live app uploads — including the tagging trigger.
+    fn device_snapshot(dir: &Path, device: &str, rows: &[String]) -> std::path::PathBuf {
+        let path = dir.join(format!("snap-{device}.db"));
+        let conn = crate::db::open(&path).unwrap();
+        crate::db::migrate(&conn).unwrap();
+        crate::db::meta_set(&conn, crate::db::DEVICE_ID_KEY, device).unwrap();
+        for sql in rows {
+            conn.execute_batch(sql).unwrap();
+        }
+        drop(conn);
+        path
+    }
+
+    struct MergeFixture {
+        _dir: tempfile::TempDir,
+        target: FakeTarget,
+        settings: SyncSettings,
+        dest: std::path::PathBuf,
+        scratch: std::path::PathBuf,
+    }
+
+    impl MergeFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("merged.db");
+            let scratch = dir.path().join("scratch");
+            std::fs::create_dir_all(&scratch).unwrap();
+            Self {
+                _dir: dir,
+                target: FakeTarget::default(),
+                settings: ctx_settings(),
+                dest,
+                scratch,
+            }
+        }
+
+        fn register(&self, device: &str) {
+            let mut reg: Vec<DeviceEntry> = match self.target.get("gamelife/devices.json") {
+                Ok(raw) => serde_json::from_slice(&raw).unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            update_registry(
+                &mut reg,
+                &DeviceEntry {
+                    device_id: device.into(),
+                    label: device.into(),
+                    platform: "macos".into(),
+                    last_seen: 1_789_000_000,
+                },
+            );
+            self.target
+                .put("gamelife/devices.json", &serde_json::to_vec(&reg).unwrap())
+                .unwrap();
+        }
+
+        /// Register a device and upload its snapshot, the way `sync_now` would.
+        fn upload(&self, device: &str, rows: &[String]) {
+            let path = device_snapshot(&self.scratch, device, rows);
+            let bytes = std::fs::read(&path).unwrap();
+            let dir = remote_dir(&self.settings, device);
+            self.target.put(&format!("{dir}/latest.db"), &bytes).unwrap();
+            self.register(device);
+        }
+
+        fn rebuild(&self) -> MergedReport {
+            rebuild_merged(&self.target, &self.settings, &self.dest, &self.scratch).unwrap()
+        }
+
+        fn open(&self) -> Connection {
+            crate::db::open(&self.dest).unwrap()
+        }
+    }
+
+    fn row_counts(conn: &Connection) -> Vec<(String, i64)> {
+        MERGED_TABLES
+            .iter()
+            .map(|(t, _)| {
+                let n: i64 = conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
+                    .unwrap();
+                ((*t).to_string(), n)
+            })
+            .collect()
+    }
+
+    /// Rebuilding must be a pure function of the snapshots: the merge runs on
+    /// every device that has one, so a rebuild that drifted would make the
+    /// statistics page change for no reason.
+    #[test]
+    fn rebuilding_the_merged_view_twice_gives_the_same_view() {
+        let f = MergeFixture::new();
+        f.upload("aaa", &[slot("2026-09-13", 1789353000, 900)]);
+        f.upload("bbb", &[slot("2026-09-13", 1789353000, 300)]);
+
+        let first = f.rebuild();
+        assert_eq!(first.merged, vec!["aaa", "bbb"]);
+        assert_eq!(first.slots_kept, 1);
+        assert_eq!(first.slots_dropped, 1);
+        assert!(first.bytes > 0);
+        let before = row_counts(&f.open());
+
+        let second = f.rebuild();
+        assert_eq!(second.slots_kept, first.slots_kept);
+        assert_eq!(second.slots_dropped, first.slots_dropped);
+        assert_eq!(row_counts(&f.open()), before);
+    }
+
+    /// §7.2: two machines observing the same fifteen minutes is one slot, and
+    /// the one who observed more owns it.
+    #[test]
+    fn the_merged_view_keeps_only_the_owners_slot_row() {
+        let f = MergeFixture::new();
+        f.upload("aaa", &[slot("2026-09-13", 1789353000, 900)]);
+        f.upload("bbb", &[slot("2026-09-13", 1789353000, 300)]);
+
+        f.rebuild();
+
+        let conn = f.open();
+        let owners: Vec<String> = conn
+            .prepare("SELECT device_id FROM slots")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(owners, vec!["aaa"]);
+    }
+
+    /// A tie goes to the smaller id — and both machines must reach the same
+    /// conclusion, which is what stops them settling the same slot twice.
+    #[test]
+    fn a_tied_slot_is_owned_by_the_smaller_device_id() {
+        let f = MergeFixture::new();
+        f.upload("bbb", &[slot("2026-09-13", 1789353000, 900)]);
+        f.upload("aaa", &[slot("2026-09-13", 1789353000, 900)]);
+
+        f.rebuild();
+
+        let conn = f.open();
+        let owner: String = conn
+            .query_row("SELECT device_id FROM slots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(owner, "aaa");
+    }
+
+    #[test]
+    fn device_keyed_tables_keep_both_machines_rows() {
+        let f = MergeFixture::new();
+        let stats = "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected) VALUES ('2026-09-13','Cursor','',1,0,15,0,0,0,0,0,0,0);";
+        f.upload("aaa", &[stats.to_string()]);
+        f.upload("bbb", &[stats.to_string()]);
+
+        f.rebuild();
+
+        let n: i64 = f
+            .open()
+            .query_row("SELECT COUNT(*) FROM app_day_stats", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "two machines observing the same app is two facts");
+    }
+
+    /// The ledger is one shared ledger, not two. A key both devices uploaded is
+    /// one payment, and it must not be summed twice.
+    #[test]
+    fn the_shared_wallet_collapses_what_both_devices_uploaded() {
+        let f = MergeFixture::new();
+        let payment = "INSERT INTO ledger (reward_event_key, day, ts, coin_delta, xp_delta) VALUES ('slot:2026-09-13:1', '2026-09-13', 1, 5, 3);";
+        f.upload("aaa", &[payment.to_string()]);
+        f.upload("bbb", &[payment.to_string()]);
+
+        f.rebuild();
+
+        let conn = f.open();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ledger", [], |r| r.get(0))
+            .unwrap();
+        let coins: i64 = conn
+            .query_row("SELECT COALESCE(SUM(coin_delta), 0) FROM ledger", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(coins, 5, "the same payment must not be counted twice");
+    }
+
+    /// §5.2: two devices editing one wish converge on the newer edit.
+    #[test]
+    fn wishes_take_the_newer_edit() {
+        let f = MergeFixture::new();
+        f.upload("aaa", &["INSERT INTO wishes (id, name, kind, price, archived, updated_at) VALUES ('w1','旧名','coin',10,0,100);".to_string()]);
+        f.upload("bbb", &["INSERT INTO wishes (id, name, kind, price, archived, updated_at) VALUES ('w1','新名','coin',20,0,200);".to_string()]);
+
+        f.rebuild();
+
+        let (name, price): (String, i64) = f
+            .open()
+            .query_row("SELECT name, price FROM wishes WHERE id = 'w1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(name, "新名");
+        assert_eq!(price, 20);
+    }
+
+    /// A snapshot from before T10 has no `device_id` column. It must be
+    /// attributed to the device whose directory it came from — never to
+    /// whoever happened to run the merge.
+    #[test]
+    fn a_snapshot_without_device_id_is_attributed_to_its_own_directory() {
+        let f = MergeFixture::new();
+        let path = f.scratch.join("pre-t10.db");
+        {
+            let conn = crate::db::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE slots (
+                   day TEXT NOT NULL, slot_start INTEGER NOT NULL, category TEXT,
+                   status TEXT, activity_json TEXT, credited_core_seconds INTEGER,
+                   credited_side_seconds INTEGER, credited_chore_seconds INTEGER,
+                   observed_seconds INTEGER, used_vision INTEGER, screenshot_path TEXT,
+                   captured_at INTEGER, capture_context_json TEXT,
+                   quest_version_id INTEGER, policy_version_id INTEGER,
+                   capture_scheduled_at INTEGER, capture_status TEXT,
+                   task_snapshot_json TEXT,
+                   PRIMARY KEY (day, slot_start)
+                 );
+                 INSERT INTO slots (day, slot_start, status, observed_seconds)
+                 VALUES ('2026-09-13', 1789353000, 'final', 900);",
+            )
+            .unwrap();
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        f.target.put("gamelife/aaa/latest.db", &bytes).unwrap();
+        f.register("aaa");
+
+        let report = f.rebuild();
+        assert_eq!(report.merged, vec!["aaa"]);
+
+        let id: String = f
+            .open()
+            .query_row("SELECT device_id FROM slots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(id, "aaa");
+    }
+
+    /// A registered device that is simply offline is normal. It must be
+    /// recorded and skipped, not allowed to abort everyone else's view.
+    #[test]
+    fn an_unreadable_device_is_skipped_without_aborting_the_rebuild() {
+        let f = MergeFixture::new();
+        f.upload("aaa", &[slot("2026-09-13", 1789353000, 900)]);
+        f.register("bbb");
+
+        let report = f.rebuild();
+
+        assert_eq!(report.merged, vec!["aaa"]);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].0, "bbb");
+        assert!(!report.skipped[0].1.is_empty());
+        let n: i64 = f
+            .open()
+            .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    /// Nothing readable: keep the previous view rather than blanking the
+    /// statistics page.
+    #[test]
+    fn nothing_to_merge_leaves_the_previous_view_alone() {
+        let f = MergeFixture::new();
+        f.upload("aaa", &[slot("2026-09-13", 1789353000, 900)]);
+        f.rebuild();
+        let before = std::fs::read(&f.dest).unwrap();
+
+        f.target.put("gamelife/devices.json", b"[]").unwrap();
+        let report = f.rebuild();
+
+        assert!(report.merged.is_empty());
+        assert_eq!(report.bytes, 0);
+        assert_eq!(std::fs::read(&f.dest).unwrap(), before);
+    }
+
+    /// The merged view is derived data. Building it must not touch the live
+    /// database, and the scratch snapshots must not be left behind.
+    #[test]
+    fn rebuilding_leaves_no_scratch_behind() {
+        let f = MergeFixture::new();
+        f.upload("aaa", &[slot("2026-09-13", 1789353000, 900)]);
+
+        f.rebuild();
+
+        let leftovers: Vec<String> = std::fs::read_dir(&f.scratch)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("merged-src-"))
+            .collect();
+        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
     }
 }

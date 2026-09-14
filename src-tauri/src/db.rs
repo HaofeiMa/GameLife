@@ -239,6 +239,10 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
             .map_err(map_rusqlite)?;
     }
     add_column_if_missing(conn, "wishes", "archived", "INTEGER NOT NULL DEFAULT 0")?;
+    // Phase two needs to know which device edited a wish last, because the two
+    // databases' `wishes.id` values are global and two devices editing the same
+    // wish must converge on the newer row (§5.2).
+    add_column_if_missing(conn, "wishes", "updated_at", "INTEGER")?;
     add_column_if_missing(conn, "redemptions", "name", "TEXT")?;
     add_column_if_missing(conn, "redemptions", "duration_minutes", "INTEGER")?;
     conn.execute_batch(
@@ -414,6 +418,13 @@ fn add_column_if_missing(
     Err(last_err.unwrap_or_else(|| DbOpError::Busy))
 }
 
+pub fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 pub fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>, DbOpError> {
     conn.query_row(
         "SELECT value FROM app_meta WHERE key = ?1",
@@ -497,10 +508,7 @@ pub fn app_db_path() -> Option<std::path::PathBuf> {
 
 pub fn write_heartbeat(conn: &Connection) -> Result<(), DbOpError> {
     migrate(conn)?;
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let ts = now_unix();
     conn.execute(
         "INSERT INTO heartbeat (id, ts) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET ts = excluded.ts",
         params![ts],
@@ -526,10 +534,7 @@ pub fn insert_ledger(
     coin: i64,
     xp: i64,
 ) -> Result<(), DbOpError> {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let ts = now_unix();
     conn.execute(
         "INSERT INTO ledger (reward_event_key, day, ts, coin_delta, xp_delta) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![key, day, ts, coin, xp],
@@ -587,8 +592,9 @@ pub fn insert_wish(
         WishKind::Xp { duration_minutes } => *duration_minutes,
     };
     conn.execute(
-        "INSERT INTO wishes (id, name, kind, price, duration_minutes, archived) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-        params![wish_id, name.trim(), kind_str, price, duration_minutes],
+        "INSERT INTO wishes (id, name, kind, price, duration_minutes, archived, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+        params![wish_id, name.trim(), kind_str, price, duration_minutes, now_unix()],
     )
     .map_err(map_rusqlite)?;
     Ok(())
@@ -632,9 +638,9 @@ pub fn update_wish(
     };
     let n = conn
         .execute(
-            "UPDATE wishes SET name = ?1, price = ?2, duration_minutes = ?3
+            "UPDATE wishes SET name = ?1, price = ?2, duration_minutes = ?3, updated_at = ?5
              WHERE id = ?4 AND COALESCE(archived, 0) = 0",
-            params![name.trim(), price, duration_minutes, wish_id],
+            params![name.trim(), price, duration_minutes, wish_id, now_unix()],
         )
         .map_err(map_rusqlite)?;
     if n == 0 {
@@ -647,8 +653,8 @@ pub fn archive_wish(conn: &Connection, wish_id: &str) -> Result<(), DbOpError> {
     migrate(conn)?;
     let n = conn
         .execute(
-            "UPDATE wishes SET archived = 1 WHERE id = ?1",
-            [wish_id],
+            "UPDATE wishes SET archived = 1, updated_at = ?2 WHERE id = ?1",
+            params![wish_id, now_unix()],
         )
         .map_err(map_rusqlite)?;
     if n == 0 {
