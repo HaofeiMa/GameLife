@@ -111,6 +111,8 @@ export interface TodayView {
   activity: SlotActivityMinutes;
   appTop: AppTopRow[];
   pendingCount: number;
+  /** Deferred settlement: coinsToday/xpToday are a preview, not ledger. */
+  rewardsPending: boolean;
 }
 
 export interface AppTopRow {

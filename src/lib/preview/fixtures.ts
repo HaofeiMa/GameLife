@@ -206,6 +206,7 @@ export const PREVIEW_TODAY: TodayView = {
   activity: ACTIVITY,
   appTop: APP_TOP,
   pendingCount: 0,
+  rewardsPending: false,
 };
 
 export function previewDayView(day: string): DayView {

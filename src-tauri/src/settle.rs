@@ -152,6 +152,13 @@ pub fn read_canonical_day(
     }
     let conn = Connection::open_with_flags(merged, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(map_rusqlite)?;
+    Ok(Some(canonical_slots_on(&conn, day)?))
+}
+
+pub fn canonical_slots_on(
+    conn: &Connection,
+    day: &str,
+) -> Result<Vec<CanonicalSlot>, DbOpError> {
     // `final` only, mirroring `credited_before_slot`: a slot still awaiting
     // review, or one the day's close converted to `unknown`, contributes
     // nothing to the day and pays nothing.
@@ -177,8 +184,7 @@ pub fn read_canonical_day(
             })
         })
         .map_err(map_rusqlite)?;
-    let slots = rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)?;
-    Ok(Some(slots))
+    rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

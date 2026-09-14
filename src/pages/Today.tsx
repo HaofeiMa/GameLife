@@ -898,10 +898,23 @@ export function Today() {
                 <CardCh title="攒到了" meta={calDay} />
                 <div className="flex flex-1 flex-col gap-3 px-[18px] pt-0.5 pb-3.5">
                   <div className="grid grid-cols-3 gap-2.5">
-                    <LootTile label="◉ 硬币" value={`+${data.coinsToday}`} />
-                    <LootTile label="⚡ 能量" value={data.xpToday} />
+                    <LootTile
+                      label="◉ 硬币"
+                      value={`+${data.coinsToday}`}
+                      sub={data.rewardsPending ? "待结算" : undefined}
+                    />
+                    <LootTile
+                      label="⚡ 能量"
+                      value={data.xpToday}
+                      sub={data.rewardsPending ? "待结算" : undefined}
+                    />
                     <LootTile label="▲ 连胜" value={data.streak} sub="天" />
                   </div>
+                  {data.rewardsPending && (
+                    <p className="text-[11px] leading-relaxed text-warning">
+                      活动时长已实时计入。硬币与能量等各设备收齐、或超过结算宽限期后再落账。
+                    </p>
+                  )}
 
                   <div className="space-y-1.5">
                     <p className="text-[11px] text-muted-foreground">

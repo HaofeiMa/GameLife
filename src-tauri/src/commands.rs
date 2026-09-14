@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -212,6 +212,9 @@ pub struct TodayView {
     pub activity: SlotActivityMinutes,
     pub app_top: Vec<AppTopRow>,
     pub pending_count: i64,
+    /// True when settlement is deferred: `coins_today` / `xp_today` are a
+    /// preview of what this machine's final slots would pay, not ledger rows.
+    pub rewards_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -1146,20 +1149,31 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
         )
         .map_err(crate::db_error::map_rusqlite)?;
     let credited_minutes = secs_to_minutes(credited_seconds);
-    let coins_today: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(coin_delta), 0) FROM ledger WHERE day = ?1",
-            params![day],
-            |r| r.get(0),
-        )
-        .map_err(crate::db_error::map_rusqlite)?;
-    let xp_today: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(xp_delta), 0) FROM ledger WHERE day = ?1",
-            params![day],
-            |r| r.get(0),
-        )
-        .map_err(crate::db_error::map_rusqlite)?;
+    let coins_today: i64;
+    let xp_today: i64;
+    let rewards_pending: bool;
+    if crate::db::settlement_mode(conn) == crate::db::SettlementMode::Deferred {
+        let events = crate::settle::day_events(day, &crate::settle::canonical_slots_on(conn, day)?);
+        coins_today = events.iter().map(|e| e.coin).sum();
+        xp_today = events.iter().map(|e| e.xp).sum();
+        rewards_pending = true;
+    } else {
+        coins_today = conn
+            .query_row(
+                "SELECT COALESCE(SUM(coin_delta), 0) FROM ledger WHERE day = ?1",
+                params![day],
+                |r| r.get(0),
+            )
+            .map_err(crate::db_error::map_rusqlite)?;
+        xp_today = conn
+            .query_row(
+                "SELECT COALESCE(SUM(xp_delta), 0) FROM ledger WHERE day = ?1",
+                params![day],
+                |r| r.get(0),
+            )
+            .map_err(crate::db_error::map_rusqlite)?;
+        rewards_pending = false;
+    }
     let chest_need = secs_to_minutes(i64::try_from(CHEST_SECS).unwrap_or(21600));
     let gold_need = secs_to_minutes(i64::try_from(GOLD_DAY_SECS).unwrap_or(28800));
     let streak = streak_from_db(conn)?;
@@ -1239,6 +1253,7 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
         activity,
         app_top,
         pending_count,
+        rewards_pending,
     })
 }
 
@@ -1434,14 +1449,43 @@ fn local_hour(ts: i64) -> i32 {
         .unwrap_or(0)
 }
 
+/// When settlement is deferred, activity reports read the owner-filtered
+/// merged view. Wallet fields (balance, today's ledger, live sessions) stay
+/// on the live database, where the settler writes them.
+fn open_merged_stats(live: &Connection) -> Option<Connection> {
+    if crate::db::settlement_mode(live) != crate::db::SettlementMode::Deferred {
+        return None;
+    }
+    let path = crate::sync::merged_db_path()?;
+    if !path.is_file() {
+        return None;
+    }
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+}
+
+fn stats_db<'a>(live: &'a Connection, merged: Option<&'a Connection>) -> &'a Connection {
+    merged.unwrap_or(live)
+}
+
 /// `anchor` picks which week to report; `today` stays the anchor for the
 /// wallet fields (credited today, XP today, shop unlock, live sessions),
 /// which are always "now" regardless of the week being looked at.
+#[cfg(test)]
 fn build_week(
     conn: &Connection,
     anchor: &str,
     today: &str,
     now: i64,
+) -> Result<WeekView, DbOpError> {
+    build_week_from(conn, anchor, today, now, None)
+}
+
+fn build_week_from(
+    conn: &Connection,
+    anchor: &str,
+    today: &str,
+    now: i64,
+    stats: Option<&Connection>,
 ) -> Result<WeekView, DbOpError> {
     let today_date =
         NaiveDate::parse_from_str(today, "%Y-%m-%d").map_err(|e| DbOpError::Fatal(e.to_string()))?;
@@ -1465,7 +1509,7 @@ fn build_week(
             }
         })
         .collect();
-    let slots = load_slots_in_range(conn, &week_start_str, &range_end_str)?;
+    let slots = load_slots_in_range(stats_db(conn, stats), &week_start_str, &range_end_str)?;
     let by_hour = fill_hour_rows(&slots);
     let mut activities = Vec::new();
     let mut pending_review_secs = 0i64;
@@ -1527,7 +1571,8 @@ fn build_week(
         .sum();
     let last_start = week_start - chrono::Duration::days(7);
     let last_end = week_start - chrono::Duration::days(1);
-    let (last_credited, last_count) = range_credited_and_count(conn, last_start, last_end)?;
+    let (last_credited, last_count) =
+        range_credited_and_count(stats_db(conn, stats), last_start, last_end)?;
     let wow_core_delta_minutes = if last_count == 0 {
         None
     } else {
@@ -1575,11 +1620,22 @@ fn month_start(year: i32, month: u32) -> Result<NaiveDate, DbOpError> {
     NaiveDate::from_ymd_opt(year, month, 1).ok_or_else(|| DbOpError::Rejected("bad_month".into()))
 }
 
+#[cfg(test)]
 fn build_month_report(
     conn: &Connection,
     year: i32,
     month: i32,
     today: &str,
+) -> Result<MonthReportView, DbOpError> {
+    build_month_report_from(conn, year, month, today, None)
+}
+
+fn build_month_report_from(
+    conn: &Connection,
+    year: i32,
+    month: i32,
+    today: &str,
+    stats: Option<&Connection>,
 ) -> Result<MonthReportView, DbOpError> {
     if !(1..=12).contains(&month) {
         return Err(DbOpError::Rejected("bad_month".into()));
@@ -1588,7 +1644,7 @@ fn build_month_report(
     let (span_start, end) = span_bounds(ReportSpan::Month, start);
     let start_s = day_str(span_start);
     let end_s = day_str(end);
-    let slots = load_slots_in_range(conn, &start_s, &end_s)?;
+    let slots = load_slots_in_range(stats_db(conn, stats), &start_s, &end_s)?;
     let total = sum_activity(&resolved_activities(&slots));
     let credited_map = credited_by_day(&slots);
     let mut days = Vec::new();
@@ -1655,11 +1711,22 @@ fn build_month_report(
     })
 }
 
+#[cfg(test)]
 fn build_rhythm_report(
     conn: &Connection,
     kind: &str,
     anchor: &str,
     today: &str,
+) -> Result<RhythmReportView, DbOpError> {
+    build_rhythm_report_from(conn, kind, anchor, today, None)
+}
+
+fn build_rhythm_report_from(
+    conn: &Connection,
+    kind: &str,
+    anchor: &str,
+    today: &str,
+    stats: Option<&Connection>,
 ) -> Result<RhythmReportView, DbOpError> {
     let kind = parse_report_kind(kind)?;
     let anchor_date = parse_anchor(anchor)?;
@@ -1667,7 +1734,7 @@ fn build_rhythm_report(
     let (start, end) = span_bounds(kind, anchor_date);
     let start_s = day_str(start);
     let end_s = day_str(end);
-    let slots = load_slots_in_range(conn, &start_s, &end_s)?;
+    let slots = load_slots_in_range(stats_db(conn, stats), &start_s, &end_s)?;
     let credited_map = credited_by_day(&slots);
     let mut starts_by_day: BTreeMap<String, Vec<i64>> = BTreeMap::new();
     for slot in &slots {
@@ -1711,10 +1778,20 @@ fn build_rhythm_report(
     })
 }
 
+#[cfg(test)]
 fn build_app_report(
     conn: &Connection,
     kind: &str,
     anchor: &str,
+) -> Result<AppReportView, DbOpError> {
+    build_app_report_from(conn, kind, anchor, None)
+}
+
+fn build_app_report_from(
+    conn: &Connection,
+    kind: &str,
+    anchor: &str,
+    stats: Option<&Connection>,
 ) -> Result<AppReportView, DbOpError> {
     let kind = parse_report_kind(kind)?;
     let anchor_date = parse_anchor(anchor)?;
@@ -1722,7 +1799,8 @@ fn build_app_report(
     let start_s = day_str(start);
     let end_s = day_str(end);
     let policy = load_policy(conn)?;
-    let (apps, protected_total) = load_app_aggregates(conn, &start_s, &end_s, &policy)?;
+    let stats = stats_db(conn, stats);
+    let (apps, protected_total) = load_app_aggregates(stats, &start_s, &end_s, &policy)?;
     let newcomers: Vec<String> = apps
         .iter()
         .filter(|a| a.unruled)
@@ -1741,7 +1819,7 @@ fn build_app_report(
     Ok(AppReportView {
         apps: rows,
         newcomers,
-        hosts: load_host_rows(conn, &start_s, &end_s)?,
+        hosts: load_host_rows(stats, &start_s, &end_s)?,
         protected_minutes: secs_to_minutes(protected_total),
     })
 }
@@ -1766,7 +1844,8 @@ pub fn get_week(anchor: Option<String>) -> Result<WeekView, String> {
         let now = now_secs();
         let today = day_str_for_ts(now);
         let anchor = anchor.as_deref().unwrap_or(&today);
-        build_week(conn, anchor, &today, now)
+        let merged = open_merged_stats(conn);
+        build_week_from(conn, anchor, &today, now, merged.as_ref())
     })
 }
 
@@ -1774,7 +1853,8 @@ pub fn get_week(anchor: Option<String>) -> Result<WeekView, String> {
 pub fn get_month_report(year: i32, month: i32) -> Result<MonthReportView, String> {
     with_db_err(|conn| {
         let today = day_str_for_ts(now_secs());
-        build_month_report(conn, year, month, &today)
+        let merged = open_merged_stats(conn);
+        build_month_report_from(conn, year, month, &today, merged.as_ref())
     })
 }
 
@@ -1782,13 +1862,17 @@ pub fn get_month_report(year: i32, month: i32) -> Result<MonthReportView, String
 pub fn get_rhythm_report(kind: String, anchor: String) -> Result<RhythmReportView, String> {
     with_db_err(|conn| {
         let today = day_str_for_ts(now_secs());
-        build_rhythm_report(conn, &kind, &anchor, &today)
+        let merged = open_merged_stats(conn);
+        build_rhythm_report_from(conn, &kind, &anchor, &today, merged.as_ref())
     })
 }
 
 #[tauri::command]
 pub fn get_app_report(kind: String, anchor: String) -> Result<AppReportView, String> {
-    with_db_err(|conn| build_app_report(conn, &kind, &anchor))
+    with_db_err(|conn| {
+        let merged = open_merged_stats(conn);
+        build_app_report_from(conn, &kind, &anchor, merged.as_ref())
+    })
 }
 
 fn task_list_views(conn: &Connection) -> Result<Vec<TaskListView>, DbOpError> {
@@ -2725,6 +2809,67 @@ mod tests {
         assert_eq!(view.slots.len(), 1);
         assert_eq!(view.slots[0].credited_minutes, 0);
         assert!(!view.slots[0].is_final);
+        assert!(!view.rewards_pending);
+    }
+
+    #[test]
+    fn build_today_deferred_previews_unpaid_rewards() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        crate::db::set_settlement_mode(&conn, crate::db::SettlementMode::Deferred).unwrap();
+        let day = "2026-09-11";
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, credited_core_seconds, category)
+             VALUES (?1, 1789091100, 'final', 900, 'core_research')",
+            params![day],
+        )
+        .unwrap();
+        let view = build_today(&conn, day, 1_789_091_100).unwrap();
+        assert!(view.rewards_pending);
+        assert_eq!(view.coins_today, 1);
+        assert_eq!(view.xp_today, 10);
+        assert_eq!(view.coin_balance, 0);
+    }
+
+    #[test]
+    fn build_today_immediate_reads_ledger_not_a_preview() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, credited_core_seconds, category)
+             VALUES (?1, 1789091100, 'final', 900, 'core_research')",
+            params![day],
+        )
+        .unwrap();
+        insert_ledger(&conn, "validated_coin:2026-09-11:1", day, 1, 0).unwrap();
+        let view = build_today(&conn, day, 1_789_091_100).unwrap();
+        assert!(!view.rewards_pending);
+        assert_eq!(view.coins_today, 1);
+        assert_eq!(view.xp_today, 0);
+    }
+
+    #[test]
+    fn build_week_reads_activity_from_the_stats_conn() {
+        let live = Connection::open_in_memory().unwrap();
+        migrate(&live).unwrap();
+        let stats = Connection::open_in_memory().unwrap();
+        migrate(&stats).unwrap();
+        let day = "2026-09-11";
+        let day_start = start_of_named_day(day).unwrap();
+        let json =
+            r#"{"core":1800,"support":0,"admin":0,"side":0,"distraction":0,"away":0,"unobserved":0}"#;
+        stats
+            .execute(
+                "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json)
+                 VALUES (?1, ?2, 'final', 1800, ?3)",
+                params![day, day_start + 10 * 3600, json],
+            )
+            .unwrap();
+        let view = build_week_from(&live, day, day, day_start + 10 * 3600, Some(&stats)).unwrap();
+        assert_eq!(view.core, 30);
+        let empty = build_week(&live, day, day, day_start + 10 * 3600).unwrap();
+        assert_eq!(empty.core, 0);
     }
 
     #[test]
