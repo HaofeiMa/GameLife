@@ -33,6 +33,8 @@ The gates every spec repeats, and that must hold before a plan task is committed
 - Any change under `src-tauri/` — `cargo test --offline -p gamelife` must **run**, not just compile. `--no-run` is not sufficient.
 - Any change under `crates/gamelife-core/` — `cargo test --offline -p gamelife-core`.
 - Any change under `src/` — `npx vitest run --dir src`.
+- Any change under `src-tauri/src/{windows,linux,observe}/` or `tools/platform-check/` — from `tools/platform-check`, rustup toolchain on `PATH`, own `CARGO_TARGET_DIR`:
+  `cargo check --target x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu`. Never from the repo root. Update `contract()` if a backend gains a method.
 
 `--offline` is the README's convention (all deps are in `Cargo.lock` + the local registry cache); drop it only if you actually need to fetch. Unscoped `npx vitest run` also collects the test copies inside `.worktrees/` and inflates the counts, so always pass `--dir src`.
 
@@ -43,7 +45,7 @@ The checkout lives on an external volume at `/Volumes/MobileSSD/Program/My/GameL
 A two-crate Cargo workspace with a hard layering rule:
 
 - **`crates/gamelife-core`** — pure domain logic, no I/O. Dependencies are only `chrono`/`serde`/`serde_json`: no `rusqlite`, no `tauri`, no filesystem. Holds classification (`hint`), span arithmetic (`observe`), the slot decision (`judge`), reward keys (`ledger`), `policy`, `vision_ctx`, `quest`, the TickTick side (`task`, `task_parse`, `task_ai`), and the report aggregates (`app_stats`, `reports`, `feel`, `streak`, `shop`, `early_start`, `document`, `url`). Everything here is unit-testable in-process; keep it that way.
-- **`src-tauri`** — the app shell. `db.rs` (schema + `PRAGMA user_version` migrations, target `user_version = 3`), `macos/` (all OS observation), `sampler.rs` (the 15s loop behind a `SampleSource` trait so tests inject a fake), `scheduler.rs` (~3.7k lines: slot lifecycle, random capture scheduling, policy seeding, gray-zone AI, finalize, settle, midnight, TickTick cache refresh), `resolve.rs` (one transaction writing `JudgeOutput` into `slots` + `ledger` + the daily app/host rollups), `commands.rs` (the 38 Tauri commands), `vision.rs` / `text_ai.rs` (HTTP to OpenAI-compatible providers), `ticktick.rs` (OAuth PKCE + read-only sync), `config.rs` (`config.json`), `keychain.rs` (`secrets.json`).
+- **`src-tauri`** — the app shell. `db.rs` (schema + `PRAGMA user_version` migrations, target `user_version = 3`), `observe/` (platform seam: `imp` is `macos/` / `windows/` / `linux/`), `sampler.rs` (the 15s loop behind a `SampleSource` trait so tests inject a fake), `scheduler.rs` (~3.7k lines: slot lifecycle, random capture scheduling, policy seeding, gray-zone AI, finalize, settle, midnight, TickTick cache refresh), `resolve.rs` (one transaction writing `JudgeOutput` into `slots` + `ledger` + the daily app/host rollups), `commands.rs` (the 38 Tauri commands), `vision.rs` / `text_ai.rs` (HTTP to OpenAI-compatible providers), `ticktick.rs` (OAuth PKCE + read-only sync), `config.rs` (`config.json`), `keychain.rs` (`secrets.json`), `platform.rs` (per-OS data dir and default-browser opener).
 
 `macos/` is in-process native API, not shelling out, with one exception:
 
@@ -85,6 +87,8 @@ These come from the specs and are enforced by tests — read the relevant spec s
 
 - **No extrapolation across gaps.** Adjacent samples more than `2 × 15s` apart leave the middle `unobserved`; never fill it from the endpoints. Always `credited ≤ observed ≤ actual slot duration`.
 - **Process death is `unobserved`, never `away`.** Exit / crash / force-quit / reboot gaps become `unobserved` with credited 0. Pause while the process lives is `break_away`. A cross-midnight restart only backfills to 24:00 of the heartbeat's own day. Long idle is never itself `away`.
+- **The macOS data directory must not move.** `platform.rs` resolves `~/Library/Application Support/GameLife` on macOS, `%APPDATA%\GameLife` on Windows and `$XDG_DATA_HOME/GameLife` (else `~/.local/share/GameLife`) on Linux. Repointing the macOS branch orphans existing data.
+- **Linux observes only an Xorg session.** Wayland has no "which window is focused" query; `observation_status` reports `supported=false`. Windows and X11 backends exist; they have not been run on real machines. Identity aliases (`chrome` → `Google Chrome`) are specified in `2026-09-14-cross-platform-observation-design.md` and are not in `known_app_identities` yet.
 - **Final/unknown slots are immutable.** Reporting a misclassification writes a record only — no retroactive economic correction.
 - **Ledger writes are idempotent** via `UNIQUE reward_event_key`. Only `DbOpError::AlreadyApplied` may be swallowed; IO/FULL/CORRUPT must surface, not mark the slot as paid.
 - **Reporting totals sum `activity_seconds`** across slots (or `SUM` the daily rollup tables), never `dominant × 15`. An 8m core + 7m side slot reports both.
@@ -115,3 +119,4 @@ Later specs override earlier ones only where they say so; read the "本文覆盖
 - `2026-09-11-judgment-grounded-core-design.md` — supersedes the idle-based `away` rule and the metadata-only auto-Core threshold (`grounded_strong_core`, not `strong_core`).
 - `2026-09-11-planner-shell-design.md` — supersedes the Quest contract and page presentation; `2026-09-13-activity-monitor-design.md` then supersedes its planner-style 今日 page, its "no task today ⇒ credited = 0" rule, and the use of the local `tasks` table as the judgment set. The economy rules it introduced (discounts, slot-pinned snapshots, text AI → vision fallback, four-page rail) still stand.
 - `2026-09-13-activity-monitor-design.md`, `2026-09-13-analytics-design.md`, `2026-09-13-shop-desire-design.md` — one delivery in three parts (judgment + TickTick + shell / statistics page / shop visual). They are marked 待用户审阅 but are what `main` already implements.
+- `2026-09-14-cross-platform-observation-design.md` — Windows and Linux **Xorg** observation. Overrides 2026-09-10 §2's "no Windows". Identity aliases for `chrome` / `Code` / `WM_CLASS` still to land in `known_app_identities`. Wayland is out of scope.

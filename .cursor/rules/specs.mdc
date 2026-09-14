@@ -16,5 +16,6 @@ Later specs override earlier ones **only** where they say so. Read the 「本文
 - `2026-09-11-judgment-grounded-core-design.md` — `grounded_strong_core`; idle is not `away`.
 - `2026-09-11-planner-shell-design.md` — discounts, slot-pinned snapshots, text AI → vision, four-page rail. Its planner Today page and “no task ⇒ credited = 0” are superseded.
 - `2026-09-13-activity-monitor-design.md` + analytics + shop-desire — current shell / judgment / TickTick / 统计 / shop. Marked 待用户审阅; this is what `main` implements.
+- `2026-09-14-cross-platform-observation-design.md` — Windows / Linux Xorg observation; identity aliases in `known_app_identities`; Wayland out of scope. Overrides 2026-09-10's "no Windows".
 
 UI copy and spec/plan prose stay Chinese. Do not reintroduce a local task CRUD UI or a drawn calendar.
