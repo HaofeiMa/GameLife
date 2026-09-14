@@ -189,6 +189,26 @@
 
 `days.settled_at` / `outcome` 由「该日拥有槽数最多的设备」写（平局取 `device_id` 最小者），同样是确定性规则。
 
+### 7.5 延迟结算怎么落地
+
+§3.4 要求「≥2 台设备时按日收齐再结算」，但 `resolve_slot` 现在是**逐槽即时**把奖励写进 `ledger`。改动的关键是：**只改落账的时机，不改奖励的计算**。
+
+奖励事件的键全部是 `(day, 累计 credited 秒数, 类别)` 的函数（`validated_coin:<day>:<i>`、`ladder:<label>:<day>`、`xp_admin:<day>:<slot_start>` …），其中累计秒数依赖**当天规范化后的槽序列**。所以只要序列一致，每台设备算出的键与金额就一致 —— 这是 §7.3 的前提。
+
+落地方式：
+
+1. **新增 `pending_rewards` 表**（`reward_event_key` 主键，与 `ledger` 同构，另存 `day` / `slot_start` / `ts` / `coin_delta` / `xp_delta`）。
+2. `resolve_slot` 按模式分流：`Immediate` 照旧写 `ledger`；`Deferred` 把**完全相同的事件**写进 `pending_rewards`。奖励计算代码一行不动，两种模式共用同一个 `record_reward`，都只吞 `AlreadyApplied`。
+   - 这样「延迟」是纯粹的时间平移，可以被测试直接证明：同一输入两种模式产出的事件集合必须逐条相等。
+   - `pending_rewards` 的主键与 `ledger` 一致，所以记录的幂等性与落账的幂等性来自同一机制，不需要第二套去重逻辑。
+3. **模式存在 `app_meta['settle_mode']`**，由同步流程读 `devices.json` 后写入（≥2 台写 `deferred`，≤1 台写回 `immediate`）。`resolve_slot` 只读这个本地值 —— 判定链路绝不能因为网络失败而改变行为。读不到或值非法时按 `immediate` 处理（= 今天的行为），**失败方向永远是「照常发币」**。
+4. **结算器（settler）**：对每个有 `pending_rewards` 的日期 D，若 `day_is_ready(D)`，则从 `merged.db` 取 D 的 owner 映射（`slot_start -> device_id`），**只落账本机拥有的槽**的待定事件，然后删掉这些待定行。
+   - §7.3 的「两台设备都插、键唯一仲裁」是**安全网**，不是主机制：主机制是归属过滤。因为两台设备对同一槽的判定金额可能不同（观测秒数不同），只有 owner 那一份是规范的。安全网覆盖的是本机视图过期、误以为自己拥有某槽的情况。
+   - 顺序：按 `slot_start` 升序落账，使 `admin_xp` 的「每日最多 4 个槽」截断是确定性的。
+5. **`admin_xp` 的每日 4 槽上限**需要日级视图。逐槽即时模式下它由 `ledger` 里的当日计数天然保证；延迟模式下 `ledger` 是空的，所以结算器必须按 `slot_start` 顺序只落前 4 个 `xp_admin:*` 事件。这条规则属于日级，就该由日级的执行者负责。
+6. 归属判定需要完整视图，所以 `day_is_ready` 不成立时**不结算**，待定事件继续攒着。宽限期过后照常结算 —— 迟到的设备数据只进统计视图，不改账本（§3.4 已显式接受）。
+7. `pending_rewards` **进快照**（不含用户文本、不含密钥，体积可忽略），这样从远端恢复后未落账的奖励还在；但它**不参与合并**（不进 `MERGED_TABLES`），因为它是每台设备各自的待办。
+
 ## 8. 触发点
 
 - 定时器：复用 `scheduler` 的 tick，间隔 `sync.interval_minutes`（默认 60）。

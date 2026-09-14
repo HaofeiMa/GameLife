@@ -44,7 +44,7 @@
 | T11 `merged.db` rebuild | **done** — `sync.rs` + `db.rs`, 10 new tests; spec §5.3 added |
 | T12 Owner rule | **done** — `sync.rs`, 5 new tests |
 | T13 Readiness gate | **done** — `sync.rs`, 7 new tests; `scheduler::local_day_end` → `pub(crate)` |
-| T14 Settlement | not started — §13.1 decided 2026-09-14 (accept 待结算预览) |
+| T14 Settlement | **T14a done**; T14b (settler) and T14c (mode plumbing) not started |
 | T15 统计 / 商店 merged view | not started |
 | T16 Settings card | not started |
 
@@ -52,7 +52,7 @@ Phase one is complete.
 
 ```
 cargo test --offline -p gamelife-core   165 passed
-cargo test --offline -p gamelife        290 passed / 1 ignored   (was 217 before Task 1)
+cargo test --offline -p gamelife        295 passed / 1 ignored   (was 217 before Task 1)
 npx vitest run --dir src                 94 passed               (was 85)
 npm run build                            ok
 ```
@@ -66,6 +66,14 @@ npm run build                            ok
 5. **The AWS SigV4 expected signature was recomputed independently** with Python's `hmac`/`hashlib` from the same canonical request before the Rust test was written, so the test pins the implementation rather than restating it. RFC 4231 cases 2 and 6 pin the hand-rolled HMAC the same way.
 6. **The sampler checks for a due sync every 20 ticks (5 minutes)**, not every 15-second tick, and re-reads settings each time so toggling 云端备份 takes effect without a restart.
 7. **§4's「永不」tables were not actually being trimmed** (found while implementing T10). `VACUUM INTO` copies the whole database; the phase-one trim only deleted `samples`, so `heartbeat`, `ticktick_cache`, `task_lists`, `tasks` and the whole of `app_meta` were riding along in every uploaded snapshot — including TickTick task titles, which contradicts the `aggregate` scope's promise that user text stays local. Fixed by deleting `NEVER_SYNCED_TABLES` from the copy and trimming `app_meta` to `device_id` alone (the id is already public as the remote directory name, and keeping it lets a restored snapshot stamp its own rows). `SYNCED_TABLES` never controlled the file contents, only the reported counts — its doc comment now says so.
+
+## Discovered, not yet fixed
+
+**`cargo test -p gamelife` is intermittently flaky, and the cause is a documented-rule violation.** `purge_expired_screenshots_removes_old_files` failed once in four full runs with `assert!(path.is_none())` — the slot's `screenshot_path` had not been cleared.
+
+Root cause: three tests call `std::env::set_var("HOME", …)` (`scheduler.rs` ~2556, ~2684, ~3408), which `AGENTS.md` forbids precisely because parallel tests clobber each other. `platform::screenshots_dir()` is derived from `HOME`, and `purge_expired_screenshots` resolves it *internally*. So a test that creates its file at directory `T1` can call purge which resolves directory `T2`, not find the file, skip the `UPDATE … WHERE screenshot_path = ?1`, and leave the row uncleared. It is not a race in the code under test — it is unsynchronised process-global state.
+
+Recommended fix (its own change, not part of T14): inject the directory the way `SyncContext.scratch` already is — add `purge_expired_screenshots_in(conn, dir, retention, now)` and `screenshot_path_for_in(dir, …)`, have the existing functions delegate with `screenshots_dir()`, thread an optional override through `finalize_slot_end`, and delete the three `set_var("HOME")` calls. Serialising the three tests against each other would *not* fix it: any other test reaching `finalize_slot_end` reads the same ambient directory concurrently.
 
 ---
 
@@ -837,7 +845,10 @@ Outline, in dependency order:
   - **Not done:** uploading `merged.db` to `<remote>/gamelife/merged/latest.db` (§6 lists it as optional). Local only for now.
 - [x] **T12 Owner rule** — **done**. `sync::slot_owner(&[(device_id, observed_seconds)])`: max `observed_seconds`, tie → smallest `device_id`, reversed-id comparison inside `max_by` so it stays a total order. `""` for an empty slice. 5 tests, including order-independence (the property that actually matters: every device must derive the same owner from the same merged rows) and the all-zero `unobserved` case — a slot nobody observed still gets a deterministic owner, who then finds it `unobserved` and pays nothing, rather than "no owner", which would be indistinguishable from "not settled yet".
 - [x] **T13 Readiness gate** — **done**. `sync::day_is_ready(day, devices, snapshots, now, grace_hours)` with `SnapshotCoverage { device_id, taken_at }` and `SETTLE_GRACE_HOURS = 36`. Coverage is a **timestamp**, not a day: a snapshot taken mid-day may still be missing that evening, so it only answers for D once taken after D ended. `≤1` registered device short-circuits to `true`, which is what keeps phase two invisible until a second device exists. `scheduler::local_day_end` became `pub(crate)` so there is one definition of when a local day ends. 7 tests.
-- [ ] **T14 Settlement** — settle a ready day from the merged view, writing only the slots this device owns; `AlreadyApplied` is the expected outcome when another device won the race. Test: two devices settling the same day concurrently produce exactly one ledger row per slot, with the owner's amount.
+- [ ] **T14 Settlement** — split into three, because the risky part (touching the ledger) is much smaller than it first looked. Design recorded as spec **§7.5**.
+  - [x] **T14a Deferred destination** — **done**. `SettlementMode { Immediate, Deferred }` stored in `app_meta['settle_mode']`; a new `pending_rewards` table with the *same* primary key as `ledger`; `resolve.rs` routes all six reward writes through one `record_reward` helper. The reward computation is untouched — deferral is a pure change of destination, which is exactly the property the tests state. `admin_xp_slots_today` counts whichever destination the mode writes to, so the four-a-day cap still behaves per device. Unrecognised or absent mode reads as `Immediate`: the failure direction is always "pay as usual". 5 tests, including a direct assertion that the two modes produce identical event sets.
+  - [ ] **T14b Settler** — for each day with pending rewards, if `day_is_ready`, take the owner map for that day from `merged.db`, pay **only this device's owned slots** in `slot_start` order, then delete those pending rows. Apply the day-level four-slot cap on `xp_admin` here. §7.3's "both insert, the unique key arbitrates" is the safety net; ownership filtering is the mechanism.
+  - [ ] **T14c Mode plumbing** — the sync flow writes `settle_mode` from the registry it already reads (≥2 devices → `deferred`, ≤1 → `immediate`), and `days.settled_at` / `outcome` follow §7.4.
 - [ ] **T15 统计 / 商店 read the merged view** — and 今日 shows 待结算预览 when more than one device is registered.
 - [ ] **T16 Settings card** — device list, 结算宽限期, per-device last-seen.
 

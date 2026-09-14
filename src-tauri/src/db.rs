@@ -56,6 +56,18 @@ CREATE TABLE IF NOT EXISTS ledger (
   coin_delta INTEGER NOT NULL,
   xp_delta INTEGER NOT NULL
 );
+-- Rewards earned while more than one device is registered, held until the day
+-- is ready to settle (§3.4). Same primary key as `ledger`, so recording an
+-- event is idempotent by exactly the mechanism that makes paying it idempotent.
+CREATE TABLE IF NOT EXISTS pending_rewards (
+  reward_event_key TEXT PRIMARY KEY,
+  day TEXT NOT NULL,
+  slot_start INTEGER NOT NULL,
+  ts INTEGER NOT NULL,
+  coin_delta INTEGER NOT NULL,
+  xp_delta INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pending_rewards_day ON pending_rewards(day, slot_start);
 CREATE TABLE IF NOT EXISTS wishes (
   id TEXT PRIMARY KEY, name TEXT, kind TEXT, price INTEGER, duration_minutes INTEGER, notes TEXT,
   archived INTEGER NOT NULL DEFAULT 0
@@ -423,6 +435,49 @@ pub fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+pub const SETTLE_MODE_KEY: &str = "settle_mode";
+
+/// Where a slot's rewards go the moment the slot is judged.
+///
+/// `Immediate` is what the app has always done: the ledger is written as each
+/// slot finalises, and 今日 updates live. `Deferred` records the identical
+/// events in `pending_rewards` and pays them once the day is ready (§3.4) —
+/// which is what lets several devices share one wallet without two of them
+/// paying the same slot.
+///
+/// The reward *computation* is the same in both modes; only the destination
+/// differs. That is deliberate: it is what makes "deferring does not change
+/// what is eventually paid" a property a test can state directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettlementMode {
+    Immediate,
+    Deferred,
+}
+
+impl SettlementMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SettlementMode::Immediate => "immediate",
+            SettlementMode::Deferred => "deferred",
+        }
+    }
+}
+
+/// Anything unrecognised — including no value at all, which is every install
+/// that predates this — reads as `Immediate`. The failure direction is always
+/// "pay as usual": a lost or corrupted mode must never silently stop the
+/// ledger.
+pub fn settlement_mode(conn: &Connection) -> SettlementMode {
+    match meta_get(conn, SETTLE_MODE_KEY).ok().flatten().as_deref() {
+        Some("deferred") => SettlementMode::Deferred,
+        _ => SettlementMode::Immediate,
+    }
+}
+
+pub fn set_settlement_mode(conn: &Connection, mode: SettlementMode) -> Result<(), DbOpError> {
+    meta_set(conn, SETTLE_MODE_KEY, mode.as_str())
 }
 
 pub fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>, DbOpError> {
@@ -1413,5 +1468,38 @@ mod tests {
             })
             .unwrap();
         assert_eq!(again, id);
+    }
+
+    /// Every install that predates multi-device settlement has no mode stored,
+    /// and must keep paying as it always has.
+    #[test]
+    fn settlement_mode_defaults_to_immediate() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        assert_eq!(settlement_mode(&conn), SettlementMode::Immediate);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_rewards'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the deferred destination must exist");
+
+        set_settlement_mode(&conn, SettlementMode::Deferred).unwrap();
+        assert_eq!(settlement_mode(&conn), SettlementMode::Deferred);
+        set_settlement_mode(&conn, SettlementMode::Immediate).unwrap();
+        assert_eq!(settlement_mode(&conn), SettlementMode::Immediate);
+    }
+
+    /// A hand-edited or corrupted value must not silently stop the ledger. The
+    /// failure direction is always "pay as usual".
+    #[test]
+    fn an_unrecognised_settlement_mode_reads_as_immediate() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        meta_set(&conn, SETTLE_MODE_KEY, "defered").unwrap();
+        assert_eq!(settlement_mode(&conn), SettlementMode::Immediate);
     }
 }
