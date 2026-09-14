@@ -2,10 +2,9 @@ use crate::capture::CaptureStatus;
 use crate::hint::{hint_sample, is_grounded_core_sample};
 use crate::observe::{observed_seconds, spans_for_slot, Span, SpanKind};
 use crate::policy::Policy;
-use crate::r#const::READING_BRIDGE_SECS;
+use crate::r#const::{LOW_INPUT_IDLE_SECS, READING_BRIDGE_SECS};
 use crate::types::{ActivitySeconds, Hint, Quest, Sample};
 
-const LOW_INPUT_IDLE_SECS: i64 = 180;
 const AWAY_DOMINANT_SECS: i64 = 600;
 const STRONG_CORE_AUTO_SECS: i64 = 780;
 const SIDE_DISTRACTION_DOMINANT_SECS: i64 = 300;
@@ -140,14 +139,9 @@ pub fn analyze_slot_evidence(
     let mut merged = quests.to_vec();
     merged.extend(crate::task::snapshot_evidence_quests(snapshots));
     let quests = merged.as_slice();
-    let mut last_core_interaction_ts: Option<i64> = None;
     let mut hints = Vec::with_capacity(samples.len());
     for sample in samples {
-        let hint = hint_sample(sample, policy, quests, last_core_interaction_ts);
-        if sample.idle_seconds < LOW_INPUT_IDLE_SECS && hint == Hint::CoreCandidate {
-            last_core_interaction_ts = Some(sample.ts);
-        }
-        hints.push(hint);
+        hints.push(hint_sample(sample, policy, quests));
     }
 
     let spans = spans_for_slot(samples, &hints, slot_start, slot_end);
@@ -761,7 +755,13 @@ mod tests {
     #[test]
     fn vision_context_mismatch_with_strong_core_is_pending() {
         let mut samples = grid("Cursor", "main.tex", 0, 20, 15, 2);
-        samples.extend(grid("WeChat", "chat", 300, 20, 15, 2));
+        // `grid` hands every sample a work-file path; clear it here so the WeChat half
+        // is genuinely *not* a candidate, which is what "context mismatch" means now
+        // that candidacy no longer depends on the app being on the mainline list.
+        samples.extend(grid("WeChat", "chat", 300, 20, 15, 2).into_iter().map(|mut s| {
+            s.document_path = None;
+            s
+        }));
         let out = judge_slot(JudgeInput {
             slot_start: 0,
             slot_end: 900,
@@ -1329,8 +1329,10 @@ mod tests {
         assert_eq!(out.credited_core_seconds, 0);
     }
 
+    /// Two grounded minutes then ten idle ones: the idle run is `away`, which is
+    /// enough to dominate (>= 600s with under 300s of strong core) without any AI.
     #[test]
-    fn two_min_grounded_plus_ten_min_idle_not_auto_core() {
+    fn two_min_grounded_plus_ten_min_idle_is_break_away() {
         let mut samples = grid("Cursor", "main.tex", 0, 8, 15, 2);
         samples.extend(grid("Cursor", "main.tex", 120, 40, 15, 400));
         let out = judge_slot(JudgeInput {
@@ -1345,7 +1347,8 @@ mod tests {
             manual_core: None,
         });
         assert_eq!(out.credited_core_seconds, 0);
-        assert!(out.pending);
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::BreakAway);
     }
 
     #[test]

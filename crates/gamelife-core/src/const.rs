@@ -9,3 +9,5 @@ pub const XP_TICK_SECS: u64 = 90;
 pub const MAX_COIN_TICKS: u64 = 32;
 pub const MAX_XP_TICKS: u64 = 320;
 pub const READING_BRIDGE_SECS: u64 = 300;
+/// Sample idle at or above this counts as `away`.
+pub const LOW_INPUT_IDLE_SECS: i64 = 180;

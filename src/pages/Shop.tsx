@@ -1,4 +1,4 @@
-import { Coins, Pencil, Plus, Timer, Zap } from "lucide-react";
+import { Pencil, Plus, Timer } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -29,6 +29,7 @@ import {
   wishRejectedMessage,
 } from "../lib/feel";
 import { minutesUntilShopUnlock } from "../lib/shopUnlock";
+import { giftTone } from "../lib/theme";
 import { splitWishes } from "../lib/shopSplit";
 import { cn } from "../lib/utils";
 
@@ -105,7 +106,7 @@ function parseWishFields(
 function GlyphSvg({ children, label }: { children: ReactNode; label: string }) {
   return (
     <svg
-      className="size-7"
+      className="size-[18px]"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -168,7 +169,7 @@ function WishGlyph({ name }: { name: string }) {
   }
   const glyph = name.trim().slice(0, 1) || "礼";
   return (
-    <span className="text-xl font-semibold" aria-hidden="true">
+    <span className="text-[18px] font-semibold" aria-hidden="true">
       {glyph}
     </span>
   );
@@ -178,12 +179,15 @@ function WishGlyph({ name }: { name: string }) {
 
 function GiftCard({
   wish,
+  index,
   week,
   nowSecs,
   remainingMins,
   onChanged,
 }: {
   wish: WishView;
+  /** Position inside its shelf — the mockup tints each tile by position. */
+  index: number;
   week: WeekView;
   nowSecs: number;
   remainingMins: number;
@@ -200,11 +204,25 @@ function GiftCard({
     wish.durationMinutes != null ? String(wish.durationMinutes) : "30",
   );
   const isEnergy = wish.kind !== "coin";
+  const kind = isEnergy ? "xp" : "coin";
+  const tone = giftTone(kind, index);
   const locked = !week.xpShopUnlocked;
-  const entertainmentBlocked =
-    hasTimedXp(wish) &&
+  const balance = isEnergy ? week.xpToday : week.coinBalance;
+  const short = Math.max(0, wish.price - balance);
+  // Only meaningful once the shelf is open at all: while the shop is locked
+  // the design keeps every card flat white and puts the blocker in the
+  // button, so dimming them here would double up on it.
+  const unaffordable = !locked && short > 0;
+  const running =
     week.activeEntertainment != null &&
-    entertainmentStillActive(week.activeEntertainment.endsAt, nowSecs);
+    entertainmentStillActive(week.activeEntertainment.endsAt, nowSecs)
+      ? week.activeEntertainment
+      : null;
+  // The mockup gives the card that *is* the running session a gold button
+  // with its countdown; the others just say 进行中.
+  const isRunning = running != null && running.name === wish.name;
+  const entertainmentBlocked =
+    hasTimedXp(wish) && running != null && !isRunning;
 
   useEffect(() => {
     return () => {
@@ -271,6 +289,8 @@ function GiftCard({
   let redeemLabel = "兑换";
   if (justRedeemed) redeemLabel = "已兑";
   else if (locked) redeemLabel = `差 ${remainingMins} 分钟`;
+  else if (isRunning) redeemLabel = `进行中 · ${formatMmSs(running.endsAt - nowSecs)}`;
+  else if (unaffordable) redeemLabel = `还差 ${short} ${isEnergy ? "能量" : "硬币"}`;
   else if (entertainmentBlocked) redeemLabel = "进行中";
   else if (busy) redeemLabel = "…";
 
@@ -335,9 +355,11 @@ function GiftCard({
   return (
     <article
       className={cn(
-        "group relative flex flex-col gap-1.5 rounded-2xl p-2.5 transition-all duration-200",
+        "group relative flex flex-col gap-1.5 rounded-2xl p-[11px] transition-all duration-200",
         "hover:-translate-y-0.5 hover:shadow-[0_10px_22px_-14px_rgba(120,95,60,0.55)]",
-        locked
+        // .gift / .gift.locked — only an *out-of-reach* item goes flat and
+        // warm. A locked shop leaves the cards alone on purpose.
+        unaffordable
           ? "bg-loot shadow-none"
           : "bg-card shadow-[0_4px_14px_-10px_rgba(120,95,60,0.6)]",
         justRedeemed && "animate-pop bg-success/5",
@@ -358,10 +380,8 @@ function GiftCard({
       </button>
 
       <div
-        className={cn(
-          "flex size-8 items-center justify-center rounded-[10px] text-[16px]",
-          isEnergy ? "bg-primary/12 text-primary" : "bg-gold-soft text-gold",
-        )}
+        className="flex size-8 items-center justify-center rounded-[10px]"
+        style={tone}
       >
         <WishGlyph name={wish.name} />
       </div>
@@ -385,13 +405,18 @@ function GiftCard({
 
       <button
         type="button"
-        disabled={busy || locked || entertainmentBlocked || justRedeemed}
+        disabled={
+          busy || locked || isRunning || unaffordable || entertainmentBlocked || justRedeemed
+        }
         onClick={() => void handleRedeem()}
         className={cn(
+          // .gbtn — green, gold while its own session runs, warm grey off.
           "mt-auto w-full rounded-[10px] py-[5px] text-center text-xs font-semibold transition-colors",
-          locked || entertainmentBlocked || justRedeemed
-            ? "bg-pip font-medium text-off-ink"
-            : "bg-primary text-primary-foreground hover:brightness-[1.04]",
+          isRunning
+            ? "bg-gold text-white"
+            : locked || unaffordable || entertainmentBlocked || justRedeemed
+              ? "bg-pip font-medium text-off-ink"
+              : "bg-primary text-primary-foreground hover:brightness-[1.04]",
         )}
       >
         {redeemLabel}
@@ -519,10 +544,11 @@ function GiftSection({
         </span>
       </div>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(148px,1fr))] gap-3">
-        {wishes.map((w) => (
+        {wishes.map((w, i) => (
           <GiftCard
             key={w.id}
             wish={w}
+            index={i}
             week={week}
             nowSecs={nowSecs}
             remainingMins={remainingMins}
@@ -576,14 +602,12 @@ export function Shop() {
       title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">商店</h1>}
       actions={
         week ? (
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold tabular-nums text-btn-ink">
-              <Coins className="size-3.5 text-gold" aria-hidden />
-              {week.coinBalance}
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-[6px] text-[12.5px] font-semibold tabular-nums text-btn-ink">
+              ◉ {week.coinBalance}
             </span>
-            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold tabular-nums text-energy">
-              <Zap className="size-3.5" aria-hidden />
-              {week.xpToday}
+            <span className="flex items-center gap-[6px] text-[12.5px] font-semibold tabular-nums text-energy">
+              ⚡ {week.xpToday}
             </span>
           </div>
         ) : undefined
@@ -596,7 +620,7 @@ export function Shop() {
       <>
         {header}
         <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-5xl px-6 py-5">
+          <div className="flex flex-col gap-3 px-[22px] pb-4">
             <Card className="flex flex-col items-center gap-3 p-8 text-center">
               <p className="text-sm text-destructive">{error}</p>
               <Button variant="outline" size="sm" onClick={() => refresh()}>
@@ -614,7 +638,7 @@ export function Shop() {
       <>
         {header}
         <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-5xl space-y-4 px-6 py-5">
+          <div className="flex flex-col gap-3 px-[22px] pb-4">
             <SkeletonPanel rows={3} />
           </div>
         </div>
@@ -627,10 +651,10 @@ export function Shop() {
     <>
       {header}
       <div className="flex-1 overflow-y-auto">
-        <div className="flex flex-1 flex-col gap-3 px-[22px] pt-3 pb-4">
+        <div className="flex flex-1 flex-col gap-3 px-[22px] pb-4">
           {/* The mockup's .session — the one saturated block in the app. */}
           {session && (
-            <Card className="flex items-center gap-5 rounded-[18px] border-transparent bg-[linear-gradient(120deg,#5FBE8C,#43A97A_55%,#3E9A70)] px-[18px] py-3 text-white shadow-[0_16px_34px_-22px_rgba(67,169,122,0.95)]">
+            <Card className="surface-session flex items-center gap-5 rounded-[18px] border-transparent px-[18px] py-2 text-white shadow-[0_16px_34px_-22px_rgba(67,169,122,0.95)]">
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-semibold tracking-[0.08em] opacity-85">
                   进行中 · 剩余
@@ -661,7 +685,7 @@ export function Shop() {
 
           <GiftSection
             title="能量兑换"
-            hint="有时长。同时只能一段娱乐。"
+            hint="有时长。同时只能有一段娱乐。"
             wishes={energy}
             kind="xp"
             week={week}
@@ -688,10 +712,7 @@ export function Shop() {
                   {history.map((r: RedemptionView) => (
                     <div
                       key={r.id}
-                      className={cn(
-                        "flex items-center gap-[14px] border-b border-dashed border-hairline py-[7px] text-[12.5px] last:border-b-0",
-                        r.status === "进行中" && "text-primary",
-                      )}
+                      className="flex items-center gap-[14px] border-b border-dashed border-hairline py-[7px] text-[12.5px] last:border-b-0"
                     >
                       <span className="flex-[0_0_118px] text-[11.5px] tabular-nums text-muted-foreground">
                         {formatRedemptionTs(r.ts)}

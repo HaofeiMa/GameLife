@@ -28,7 +28,6 @@ use crate::resolve::resolve_slot;
 use crate::text_ai::{build_text_ai_prompt, call_text_json, sample_summary_lines, SampleLine};
 use crate::vision;
 
-const LOW_INPUT_IDLE_SECS: i64 = 180;
 const AWAY_DOMINANT_SECS: i64 = 600;
 const STRONG_CORE_AUTO_SECS: i64 = 780;
 const SIDE_DISTRACTION_DOMINANT_SECS: i64 = 300;
@@ -1306,16 +1305,10 @@ fn load_slot_task_snapshots(
 }
 
 fn hints_for_slot(samples: &[Sample], policy: &Policy, quests: &[Quest]) -> Vec<Hint> {
-    let mut last_core_interaction_ts: Option<i64> = None;
-    let mut hints = Vec::with_capacity(samples.len());
-    for sample in samples {
-        let hint = hint_sample(sample, policy, quests, last_core_interaction_ts);
-        if sample.idle_seconds < LOW_INPUT_IDLE_SECS && hint == Hint::CoreCandidate {
-            last_core_interaction_ts = Some(sample.ts);
-        }
-        hints.push(hint);
-    }
-    hints
+    samples
+        .iter()
+        .map(|sample| hint_sample(sample, policy, quests))
+        .collect()
 }
 
 fn credited_spans_for_final_slot(
@@ -1681,6 +1674,8 @@ fn now_secs() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
+
+
 
 pub fn yesterday_str_for_ts(now: i64) -> String {
     let today_start = start_of_local_day(now);

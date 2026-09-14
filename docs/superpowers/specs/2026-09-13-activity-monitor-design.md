@@ -72,16 +72,21 @@ GameLife（监测器）
 
 1. 锁屏或暂停 → `Away`
 2. `distraction_rules`（娱乐应用名或 host 子串，含默认 B 站 / YouTube 等）→ `Distraction`
-3. 新字段 `admin_apps` 命中应用身份 → `Admin`（**本波新增 `Hint::Admin`**，计入 `activity.admin`）
-4. `all_side_project_rules`（内置 GameLife + 使用者支线名单）→ `Side`
-5. 阅读应用空闲 → 现有 `CoreReading` / `UnsureReading`
-6. 主线应用（`trusted_apps`）且为 Core 候选 → `CoreCandidate`
+3. 空闲 ≥ `LOW_INPUT_IDLE_SECS`（180 秒）→ `Away`
+4. `admin_apps` 命中应用身份**或** haystack（标题 / URL / 文档路径）→ `Admin`（**本波新增 `Hint::Admin`**，计入 `activity.admin`）
+5. `all_side_project_rules`（内置 GameLife + 使用者支线名单）→ `Side`
+6. Core 候选 → `CoreCandidate`（**不再要求 app 在主线名单里**，见下）
 7. 否则 `Unsure`
+
+**第 3 条的两个位置都是刻意的。** 放在娱乐之后：挂着视频不动鼠标仍然是娱乐，不会变成幽灵缺席。放在杂项与支线之前：人走开时留在前台的窗口不再继续记账 —— 否则把微信或 GameLife 窗口留在最前面，每个槽都会算杂项，人不在也能拿满每天的杂项能量。
+
+**这一条取代了「阅读应用空闲 → `CoreReading` / `UnsureReading`」。** 那条的触发条件是 `idle_seconds >= 180`，正好是第 3 条抢先的全部样本；实现里已删除该分支，`reading_apps` 与 `reading_bridge_seconds` 现在是死配置（恒为 0），`Hint::CoreReading` / `UnsureReading` 枚举值保留但没有生产者。
 
 Core 候选（与落地判定同一精神，**不**只靠窗口标题）：
 
-- 主线应用；且
 - 下列之一：H2 科研 host、`document_path` 非空且像工作路径、窗口标题/路径/URL 命中 **本槽快照里主线任务标题的证据词**（按空白和标点切开，长度 ≥ 2 的片段；快照为空则不做标题子串）。
+
+**`trusted_apps` 不再参与判定。** 它曾经是这道门的准入条件 —— 结果是「按标题判定」只对名单里的 app 成立，名单外的 app 标题里写什么都不看。现在任何 app 只要过了前面的硬规则都可以成为候选，把窗口挡在外面的责任交给娱乐 / 杂项 / 支线这三张表（它们都读 app 名）。副作用：名单字段仍在 `Policy` 与设置页里往返，但已经不影响任何判定；`/day` 的「当日应用」卡片仍用它渲染 listed_as 标签，那个标签因此不再代表实际判定。
 
 标题-only、无路径无 URL 无 H2：仍是候选但不进 `grounded_strong_core`，不能自动 Core。
 
@@ -133,18 +138,23 @@ Policy {
 
 旧政策 JSON 缺新字段时按空默认反序列化，**禁止**因缺字段丢弃整份政策。新政策行在使用者保存设置时插入（与现网 `policy_versions` 相同：已开始的槽仍用开槽时的版本）。
 
-`admin_apps` 用现有 `matches_app_identity`（显示名或已知 bundle）。`distraction_rules` 仍是 haystack 子串，可写 `Slack` 也可写 `youtube.com`。
+**保存时机**：是否插入新的 `policy_versions` 行，由「判定读到的字段有没有变」决定（前端 `policySignature` 对 `distractionRules` / `sideProjectRules` / `adminApps` / `neverCaptureApps` / `categoryGuides` 取指纹，保存前后比对）。不要再用「当前在哪个页签」来判断 —— 那样在别的页签保存名单编辑会只写 config.json、判定读到旧政策，而在名单页签反复保存会不断产生内容相同的新版本（2026-09-13 一次就产生了 9 个空版本）。
+
+`admin_apps` 先试 `matches_app_identity`（显示名或已知 bundle），再退回 haystack 子串 —— 所以 Chrome 里标题含 `GameLife` 的标签页、iTerm2 里名为 `gamelife-ui-redesign` 的会话、以及 `~/Desktop/GameLife-UI方案2.html` 这类路径都会进杂项，而身份匹配只看得到名为 `gamelife` 的那个 app。`distraction_rules` 仍是 haystack 子串，可写 `Slack` 也可写 `youtube.com`。
+
+**代价**：haystack 条目比身份条目宽得多。`Mail` 会命中任何标题含 "mail" 的窗口（`Gmail - Chrome` 也算），短词要收紧。`distraction_rules` 与 `side_project_rules` 一直如此。
 
 ### 6.2 设置 UI（名单 + 规则）
 
-「名单」板块改为四张名单 + 阅读 + 永不截屏（内置只读 + 额外）：
+「名单」板块只留**三张名单** + 永不截屏（内置只读 + 额外）：
 
 | UI 名称 | 含义 | 样例占位 |
 | --- | --- | --- |
-| 主线应用 | 通常在做科研时用的 App | `Cursor` |
 | 支线应用 | 工具、个人项目、打磨本应用 | `GameLife` 内置不可当主线 |
-| 杂项应用 | 邮件、日历、报销、行政 | `Mail`、`日历` |
+| 杂项应用 / 网站 | 邮件、日历、报销、行政 | `Mail`、`日历` |
 | 娱乐应用 / 网站 | 先于计划生效 | `bilibili.com` |
+
+**主线应用与阅读两张名单已删除。** 主线应用曾是 Core 候选的准入条件，删掉之后任何 app 都能成为候选（见 5.1 第 6 步）；阅读的编辑器随 `CoreReading` 分支一起消失（见 5.1 第 3 条）。两者的 JSON 字段（`trusted_apps` / `reading_apps`）保留在 `Policy` 与 `AppSettings` 里继续往返，但没有编辑器、也不影响任何判定，纯属兼容。统计页「当日应用」的名单下拉与 `listed_as_for` 也只报告仍在生效的三张名单，`trusted_apps` 与 `reading_apps` 不再产生标签。
 
 其下四条「类别说明」，各限 500 字。输入框灰字样稿（未保存进 Policy，空字符串表示不用）：
 

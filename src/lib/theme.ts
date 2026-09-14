@@ -30,6 +30,45 @@ export function categoryColorAt(key: CategoryKey, pct: number): string {
   return `color-mix(in srgb, hsl(var(--cat-${key})) ${clamped}%, transparent)`;
 }
 
+/**
+ * The mockup's stacked-bar fill: the category colour under a hand-picked
+ * lighter top (`.bars .bstack i`). Only the three stackable categories have
+ * one — everything else falls back to the flat colour.
+ */
+const BAR_TOPS: Partial<Record<CategoryKey, string>> = {
+  mainline: "--bar-mainline",
+  side: "--bar-side",
+  admin: "--bar-admin",
+};
+
+export function categoryBarFill(key: CategoryKey): string {
+  const top = BAR_TOPS[key];
+  if (!top) return categoryColor(key);
+  return `linear-gradient(180deg, hsl(var(${top})), ${categoryColor(key)})`;
+}
+
+/**
+ * The shop's tile palette. The mockup paints `.gicon` from a per-item pastel
+ * in its own SHELF data, so a shelf is a mix of tints rather than one colour
+ * per kind; the position of a wish inside its shelf picks the entry.
+ */
+const GIFT_TONES: Record<"coin" | "xp", readonly string[]> = {
+  coin: ["1", "2", "3", "4", "5"],
+  xp: ["x1", "x2", "x3"],
+};
+
+export function giftTone(
+  kind: "coin" | "xp",
+  index: number,
+): { background: string; color: string } {
+  const keys = GIFT_TONES[kind];
+  const key = keys[((index % keys.length) + keys.length) % keys.length]!;
+  return {
+    background: `hsl(var(--gift-${key}-bg))`,
+    color: `hsl(var(--gift-${key}-ink))`,
+  };
+}
+
 export const CATEGORY_LABELS: Record<CategoryKey, string> = {
   mainline: "主线",
   support: "辅助",

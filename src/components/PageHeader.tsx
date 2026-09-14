@@ -3,8 +3,8 @@ import { IS_MACOS } from "../lib/platform";
 
 /**
  * Enough room under the macOS traffic lights that the rail's mark is not
- * covered. The design asks for no reserved space at all; this is the
- * smallest strip that keeps the window controls usable.
+ * covered. The design asks for no reserved space at all; this is the smallest
+ * strip that keeps the window controls usable.
  *
  * Zero off macOS: Windows and Linux draw their own title bar above the webview
  * and have no traffic lights to clear, so the strip would be a dead band across
@@ -12,10 +12,14 @@ import { IS_MACOS } from "../lib/platform";
  */
 export const TRAFFIC_LIGHT_STRIP = IS_MACOS ? 28 : 0;
 /**
- * The mockup's .hd height. The header sits to the right of the rail, so it
- * carries no traffic lights and keeps the design's flat 58px.
+ * The mockup's .hd height. The design gives the header and the rail's brand
+ * row their own heights and reserves nothing for window controls; keeping
+ * the traffic lights means paying for them once, above both, so the design's
+ * own 58px survives intact.
  */
 export const TOOLBAR_ROW = 58;
+/** The mockup's .brand row — deliberately 4px shorter than .hd. */
+export const BRAND_ROW = 54;
 /** Breathing room under the brand row, above the shared border. */
 export const TOOLBAR_PAD_BOTTOM = 0;
 /**
@@ -46,8 +50,8 @@ export interface PageHeaderProps {
  * in that full height — the right column has no traffic lights, so using the
  * strip as padding-top left a blank band above the title.
  *
- * `center` is positioned against the bar itself, not the leftover gap between
- * `title` and `actions`.
+ * `center` is the mockup's .hcenter: it follows the title block directly, 16px
+ * behind it, rather than floating in the space between title and actions.
  */
 export function PageHeader({
   title,
@@ -59,9 +63,9 @@ export function PageHeader({
     <header
       data-tauri-drag-region="deep"
       className="relative flex shrink-0 items-center bg-background px-[22px]"
-      style={{ height: TOOLBAR_HEIGHT }}
+      style={{ height: TOOLBAR_HEIGHT, paddingTop: TRAFFIC_LIGHT_STRIP }}
     >
-      <div className="no-drag relative z-10 flex min-w-0 shrink-0 items-center">
+      <div className="relative z-10 flex min-w-0 shrink-0 items-center">
         {title}
         {subtitle && (
           <>
@@ -76,12 +80,10 @@ export function PageHeader({
         )}
       </div>
       {center && (
-        <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center">
-          <div className="no-drag pointer-events-auto">{center}</div>
-        </div>
+        <div className="relative z-10 ml-4 shrink-0">{center}</div>
       )}
       {actions && (
-        <div className="no-drag relative z-10 ml-auto flex shrink-0 items-center gap-2">
+        <div className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
           {actions}
         </div>
       )}

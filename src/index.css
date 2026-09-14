@@ -68,6 +68,32 @@
   --cal-future: 37.5 50.0% 96.9%;  /* #FBF8F3 */
   --cal-future-ink: 34.6 25.0% 79.6%;  /* #D8CDBE */
   --energy: 220.0 76.9% 61.0%;  /* #4F82E8 */
+  --cbar: 35.0 40.9% 93.1%;  /* #F5EFE6 */
+  --grad-track: 148.0 46.9% 61.6%;  /* #6FCB9A */
+  --bar-mainline: 149.4 43.0% 55.3%;  /* #5CBE8C */
+  --bar-side: 218.2 79.0% 72.0%;  /* #7FA8F0 */
+  --bar-admin: 36.2 80.8% 69.4%;  /* #F0BE72 */
+  --session-1: 148.4 42.2% 55.9%;  /* #5FBE8C */
+  --session-2: 152.6 42.6% 42.4%;  /* #3E9A70 */
+
+  /* The shop's tile palette: .gicon's hand-picked pastels, one per shelf
+     position, taken straight from the mockup's SHELF data. */
+  --gift-1-bg: 34.2 54.7% 89.6%;  /* #F3E7D6 */
+  --gift-1-ink: 29.7 52.5% 35.5%;  /* #8A5A2B */
+  --gift-2-bg: 213.3 55.8% 93.9%;  /* #E7EEF8 */
+  --gift-2-ink: 219.0 53.7% 50.0%;  /* #3B6BC4 */
+  --gift-3-bg: 269.0 48.0% 93.7%;  /* #EFE7F7 */
+  --gift-3-ink: 258.9 36.0% 48.4%;  /* #6B4FA8 */
+  --gift-4-bg: 140.0 24.0% 92.2%;  /* #E6F0EA */
+  --gift-4-ink: 154.2 42.4% 33.3%;  /* #31795A */
+  --gift-5-bg: 20.0 50.6% 92.5%;  /* #F6E9E2 */
+  --gift-5-ink: 14.1 45.9% 43.5%;  /* #A2543C */
+  --gift-x1-bg: 143.7 25.3% 93.5%;  /* #EAF3EE */
+  --gift-x1-ink: 153.8 45.3% 33.7%;  /* #2F7D5B */
+  --gift-x2-bg: 265.7 41.8% 94.3%;  /* #F0EAF7 */
+  --gift-x2-ink: 258.9 36.0% 48.4%;  /* #6B4FA8 */
+  --gift-x3-bg: 31.3 37.4% 93.5%;  /* #F5EFE8 */
+  --gift-x3-ink: 33.5 14.4% 53.7%;  /* #9A8B78 */
 
   --cat-mainline: 152.4 43.2% 46.3%;  /* #43A97A */
   --cat-support: 145.8 39.4% 67.6%;  /* #8CCDA8 */
@@ -141,6 +167,32 @@
   --hour-line: 34.3 17.9% 15.3%;  /* #2E2820 */
   --heat-ink: 147.4 56.6% 72.0%;  /* #8FE0B4 */
   --track-rail: 32.0 17.2% 17.1%;  /* #332C24 */
+  --cbar: 30.3 15.5% 15.5%;  /* #2E2821 */
+  --grad-track: 150.9 55.7% 63.7%;  /* #6FD6A4 */
+  --bar-mainline: 150.0 51.0% 61.6%;  /* #6BCF9D */
+  --bar-side: 219.4 85.7% 78.0%;  /* #97B8F7 */
+  --bar-admin: 37.9 82.4% 71.0%;  /* #F2C578 */
+  --session-1: 152.4 48.6% 58.8%;  /* #63C99A */
+  --session-2: 152.6 42.6% 42.4%;  /* #3E9A70 */
+
+  /* The mockup ships light only. Dark keeps each tile's hue as a deep
+     tint with a lifted ink, the same move the rest of this block makes. */
+  --gift-1-bg: 30.9 39.7% 15.9%;  /* #392918 */
+  --gift-1-ink: 29.6 52.4% 72.0%;  /* #DDB792 */
+  --gift-2-bg: 217.2 41.7% 15.9%;  /* #182439 */
+  --gift-2-ink: 219.0 53.8% 72.0%;  /* #91ACDE */
+  --gift-3-bg: 257.6 34.8% 15.9%;  /* #231A37 */
+  --gift-3-ink: 259.4 45.5% 72.0%;  /* #AC97D8 */
+  --gift-4-bg: 153.5 41.7% 15.9%;  /* #18392B */
+  --gift-4-ink: 154.2 45.5% 72.0%;  /* #97D8BC */
+  --gift-5-bg: 13.5 39.7% 15.9%;  /* #392018 */
+  --gift-5-ink: 13.8 45.5% 72.0%;  /* #D8A697 */
+  --gift-x1-bg: 153.5 41.7% 15.9%;  /* #18392B */
+  --gift-x1-ink: 154.2 45.5% 72.0%;  /* #97D8BC */
+  --gift-x2-bg: 257.6 34.8% 15.9%;  /* #231A37 */
+  --gift-x2-ink: 259.4 45.5% 72.0%;  /* #AC97D8 */
+  --gift-x3-bg: 32.3 21.0% 16.1%;  /* #322A20 */
+  --gift-x3-ink: 33.2 45.5% 72.0%;  /* #D8BB97 */
 
   --cat-mainline: 152.4 46.1% 52.7%;  /* #4FBE8B */
   --cat-support: 146.9 38.3% 65.7%;  /* #86C9A4 */
@@ -221,6 +273,11 @@
   --color-cal-future: hsl(var(--cal-future));
   --color-cal-future-ink: hsl(var(--cal-future-ink));
   --color-energy: hsl(var(--energy));
+  --color-cbar: hsl(var(--cbar));
+  --color-grad-track: hsl(var(--grad-track));
+  --color-bar-mainline: hsl(var(--bar-mainline));
+  --color-bar-side: hsl(var(--bar-side));
+  --color-bar-admin: hsl(var(--bar-admin));
 
   /* The mockup's radii: cards 18, hero 20, tiles 16, rows 14,
      controls 11, chips 9. */
@@ -326,6 +383,7 @@
      The `-webkit-app-region` rules that used to live here were inert and made
      the missing permission look like it was already handled. */
 
+
   input[type="password"]::-ms-reveal,
   input[type="password"]::-ms-clear {
     display: none;
@@ -343,6 +401,25 @@
     background-color: hsl(var(--background) / 0.72);
     backdrop-filter: blur(12px) saturate(1.6);
     -webkit-backdrop-filter: blur(12px) saturate(1.6);
+  }
+
+  /* The mockup names two gradients as surfaces rather than colours:
+     every horizontal green track, and the shop's session banner. */
+  .surface-track {
+    background-image: linear-gradient(
+      90deg,
+      hsl(var(--grad-track)),
+      hsl(var(--primary))
+    );
+  }
+
+  .surface-session {
+    background-image: linear-gradient(
+      120deg,
+      hsl(var(--session-1)),
+      hsl(var(--primary)) 55%,
+      hsl(var(--session-2))
+    );
   }
 
   /* A slow highlight sweeping across a surface — used on the live

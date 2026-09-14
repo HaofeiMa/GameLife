@@ -1,12 +1,4 @@
-import {
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Coins,
-  Shield,
-  Target,
-  Zap,
-} from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Shield } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmEndDay } from "../components/ConfirmEndDay";
@@ -547,7 +539,7 @@ function DayRibbon({
 }) {
   return (
     <div
-      className="flex h-[26px] gap-px overflow-hidden rounded-[9px] bg-track"
+      className="flex h-[26px] overflow-hidden rounded-[9px] bg-track"
       role="img"
       aria-label="今天的时间分布"
     >
@@ -582,8 +574,8 @@ function LootTile({
   icon?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1.5 rounded-[13px] bg-loot px-2.5 py-2">
-      <p className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+    <div className="flex flex-col gap-[5px] rounded-[13px] bg-loot px-2.5 py-2">
+      <p className="flex items-center gap-[5px] text-[10.5px] text-muted-foreground">
         {icon}
         {label}
       </p>
@@ -704,6 +696,7 @@ export function Today() {
             <Button
               variant="outline"
               size="icon"
+              className="text-ink-dim"
               aria-label="前一天"
               disabled={!calDay}
               onClick={() => calDay && setCalDay(addDays(calDay, -1))}
@@ -721,6 +714,7 @@ export function Today() {
             <Button
               variant="outline"
               size="icon"
+              className="text-ink-dim"
               aria-label="后一天"
               disabled={!calDay}
               onClick={() => calDay && setCalDay(addDays(calDay, 1))}
@@ -746,7 +740,7 @@ export function Today() {
       <>
         {header}
         <div className="flex-1 overflow-y-auto">
-          <div className="flex flex-col gap-3 px-[22px] pt-3 pb-4">
+          <div className="flex flex-col gap-3 px-[22px] pb-4">
             <Card className="flex flex-col items-center gap-3 p-8 text-center">
               <p className="text-sm text-destructive">{error}</p>
               <Button variant="outline" size="sm" onClick={() => void refresh()}>
@@ -764,7 +758,7 @@ export function Today() {
       <>
         {header}
         <div className="flex-1 overflow-y-auto">
-          <div className="flex flex-col gap-3 px-[22px] pt-3 pb-4">
+          <div className="flex flex-col gap-3 px-[22px] pb-4">
             <div className="grid grid-cols-3 gap-3">
               {[0, 1, 2].map((i) => (
                 <div key={i} className="h-[76px] animate-shimmer rounded-xl bg-muted" />
@@ -800,7 +794,7 @@ export function Today() {
     <>
       {header}
       <div className="flex-1 overflow-y-auto">
-        <div className="flex flex-col gap-3 px-[22px] pt-3 pb-4">
+        <div className="flex flex-col gap-3 px-[22px] pb-4">
           <PermissionBanner />
           <PlatformNotice />
           <EntertainmentBanner
@@ -835,7 +829,7 @@ export function Today() {
                   per category. It deliberately is not its own card. */}
               <Card className="flex flex-col">
                 <CardCh title="时间去哪了" meta={`观测 ${minutesLabel(observedMinutes)}`} />
-                <div className="flex flex-1 flex-col gap-3 px-[18px] pt-0.5 pb-3.5">
+                <div className="flex flex-1 flex-col px-[18px] pt-0.5 pb-3.5">
                   {emptyDay ? (
                     <EmptyLine>这一天没有监测记录</EmptyLine>
                   ) : (
@@ -844,12 +838,12 @@ export function Today() {
                         dayStart={dayView.dayStart}
                         slotsByStart={slotsByStart}
                       />
-                      <div className="-mt-1 flex justify-between px-px text-[10px] tabular-nums text-dim2">
+                      <div className="mt-[5px] flex justify-between px-px text-[10px] tabular-nums text-muted-foreground">
                         {[0, 4, 8, 12, 16, 20, 24].map((h) => (
                           <span key={h}>{pad2(h)}</span>
                         ))}
                       </div>
-                      <p className="flex flex-wrap items-baseline gap-x-[7px] text-[12.5px]">
+                      <p className="mt-[11px] flex flex-wrap items-baseline gap-x-[7px] text-[12.5px]">
                         推进主线
                         <strong className="font-bold tabular-nums text-mainline">
                           {minutesLabel(activity.core)}
@@ -863,30 +857,23 @@ export function Today() {
                           </>
                         )}
                       </p>
-                      <div className="flex flex-wrap gap-1.5">
+                      {/* The mockup's .lg: a warm chip, the label, then the
+                          value in bold. Its <i> swatch has no size rule, so
+                          the design renders the chips as text alone. */}
+                      <div className="mt-[9px] flex flex-wrap gap-[6px]">
                         {CAT_ROWS.map((row) => (
                           <span
                             key={row.key}
-                            className="flex items-center gap-1.5 rounded-lg bg-legend px-2 py-[3px] text-[11px]"
+                            className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[11px]"
                           >
-                            <i
-                              className="size-2.5 shrink-0 rounded-[3px]"
-                              style={{ background: categoryColor(row.cat) }}
-                            />
-                            <span className="text-muted-foreground">
-                              {row.label}
-                            </span>
+                            {row.label}
                             <b className="font-semibold tabular-nums">
                               {activity[row.key]}
                             </b>
                           </span>
                         ))}
-                        <span className="flex items-center gap-1.5 rounded-lg bg-legend px-2 py-[3px] text-[11px]">
-                          <i
-                            className="size-2.5 shrink-0 rounded-[3px]"
-                            style={{ background: categoryColor("pending") }}
-                          />
-                          <span className="text-muted-foreground">待复核</span>
+                        <span className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[11px]">
+                          待复核
                           <b className="font-semibold tabular-nums">
                             {pendingMinutes}
                           </b>
@@ -911,22 +898,9 @@ export function Today() {
                 <CardCh title="攒到了" meta={calDay} />
                 <div className="flex flex-1 flex-col gap-3 px-[18px] pt-0.5 pb-3.5">
                   <div className="grid grid-cols-3 gap-2.5">
-                    <LootTile
-                      label="硬币"
-                      icon={<Coins className="size-3" aria-hidden />}
-                      value={`+${data.coinsToday}`}
-                    />
-                    <LootTile
-                      label="能量"
-                      icon={<Zap className="size-3" aria-hidden />}
-                      value={data.xpToday}
-                    />
-                    <LootTile
-                      label="连胜"
-                      icon={<Target className="size-3" aria-hidden />}
-                      value={data.streak}
-                      sub="天"
-                    />
+                    <LootTile label="◉ 硬币" value={`+${data.coinsToday}`} />
+                    <LootTile label="⚡ 能量" value={data.xpToday} />
+                    <LootTile label="▲ 连胜" value={data.streak} sub="天" />
                   </div>
 
                   <div className="space-y-1.5">

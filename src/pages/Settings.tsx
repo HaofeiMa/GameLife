@@ -1,5 +1,5 @@
 import { ChevronRight, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import appIcon from "../../src-tauri/icons/128x128@2x.png";
 import { PageHeader } from "../components/PageHeader";
 import { PermissionPanel } from "../components/PermissionBanner";
@@ -40,7 +40,7 @@ import {
   oauthErrorMessage,
   oauthWaitingHint,
   primaryProviderHasKey,
-  saveTouchesPolicy,
+  policySignature,
   SECRET_MASK,
   secretToPersist,
   showSecretMask,
@@ -114,10 +114,35 @@ function Field({
   children: ReactNode;
 }) {
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-[6px]">
       <Label>{label}</Label>
       {children}
       {hint && <p className="text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+/** The mockup's .frow — an inset card per setting, one per line. */
+function Row({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-[14px] rounded-[14px] bg-loot px-[13px] py-2.5">
+      <div className="min-w-0 flex-1">
+        <p className="text-[12.5px] font-semibold">{title}</p>
+        {description && (
+          <p className="mt-0.5 text-[11px] leading-[1.5] text-muted-foreground">
+            {description}
+          </p>
+        )}
+      </div>
+      {children}
     </div>
   );
 }
@@ -136,23 +161,14 @@ function ToggleRow({
   onChange: (next: boolean) => void;
 }) {
   return (
-    /* The mockup's .frow — an inset card per setting, one per line. */
-    <div className="flex items-center gap-[14px] rounded-[14px] bg-loot px-[13px] py-2.5">
-      <div className="min-w-0 flex-1">
-        <p className="text-[12.5px] font-semibold">{title}</p>
-        {description && (
-          <p className="mt-0.5 text-[11px] leading-[1.5] text-muted-foreground">
-            {description}
-          </p>
-        )}
-      </div>
+    <Row title={title} description={description}>
       <Switch
         checked={checked}
         disabled={disabled}
         onCheckedChange={onChange}
         aria-label={title}
       />
-    </div>
+    </Row>
   );
 }
 
@@ -390,11 +406,14 @@ export function Settings() {
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const formLocked = saving;
+  /** The policy fingerprint as the backend last saw it. */
+  const lastPolicySig = useRef<string | null>(null);
 
   useEffect(() => {
     getSettings()
       .then((s) => {
         setSettings(s);
+        lastPolicySig.current = policySignature(s);
         setLoadError(null);
       })
       .catch((e) => setLoadError(String(e)));
@@ -460,8 +479,8 @@ export function Settings() {
     return (
       <>
         {header}
-        <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-[728px] max-w-full flex-col gap-3 px-4 pt-3 pb-4">
+        <div className="flex-1 overflow-y-auto px-[22px]">
+          <div className="mx-auto flex w-[728px] max-w-full flex-col gap-3 pb-4">
             <Card className="flex flex-col items-center gap-3 p-8 text-center">
               <p className="text-sm text-destructive">{loadError}</p>
               <Button
@@ -487,8 +506,8 @@ export function Settings() {
     return (
       <>
         {header}
-        <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-[728px] max-w-full flex-col gap-3 px-4 pt-3 pb-4">
+        <div className="flex-1 overflow-y-auto px-[22px]">
+          <div className="mx-auto flex w-[728px] max-w-full flex-col gap-3 pb-4">
             {[0, 1, 2].map((i) => (
               <div key={i} className="h-32 animate-shimmer rounded-xl bg-muted" />
             ))}
@@ -558,7 +577,11 @@ export function Settings() {
         await ticktickSetClientSecret(tt);
         setTicktickSecret("");
       }
-      await persistSettings(settings, saveTouchesPolicy(tab));
+      const trimmed = await persistSettings(
+        settings,
+        policySignature(settings) !== lastPolicySig.current,
+      );
+      lastPolicySig.current = policySignature(trimmed);
       notifySettingsChanged();
       const confirmed = await providerKeyStatus();
       setKeyStatus(confirmed);
@@ -795,8 +818,8 @@ export function Settings() {
   return (
     <>
       {header}
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-[728px] max-w-full flex-col gap-3 px-4 pt-3 pb-4">
+      <div className="flex-1 overflow-y-auto px-[22px]">
+        <div className="mx-auto flex w-[728px] max-w-full flex-col gap-3 pb-4">
           {msg && (
             <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
               {msg}
@@ -804,10 +827,12 @@ export function Settings() {
           )}
 
           {tab === "basic" && (
-            <div className="space-y-4">
+            <div className="flex flex-col gap-3">
               <Section title="外观">
-                <div className="flex items-center gap-6">
-                  <Label className="w-12 shrink-0">主题</Label>
+                <Row
+                  title="主题"
+                  description="跟随系统时，会跟着 macOS / Windows 的深色模式切换。"
+                >
                   <Segmented
                     aria-label="主题"
                     size="sm"
@@ -819,17 +844,17 @@ export function Settings() {
                     onChange={(theme) => void persistBasic({ ...settings, theme })}
                     options={[
                       { value: "system", label: "跟随系统" },
-                      { value: "light", label: "亮色" },
-                      { value: "dark", label: "暗色" },
+                      { value: "light", label: "浅色" },
+                      { value: "dark", label: "深色" },
                     ]}
                   />
-                </div>
+                </Row>
               </Section>
 
               <Section title="启动与导航">
                 <ToggleRow
                   title="登录时启动"
-                  description="默认开启。"
+                  description="开机后自动在托盘常驻，不弹窗。"
                   checked={settings.loginAtStartup}
                   disabled={formLocked}
                   onChange={(v) =>
@@ -838,14 +863,14 @@ export function Settings() {
                 />
                 <ToggleRow
                   title="静默启动"
-                  description="启动时不显示窗口，只挂菜单栏。"
+                  description="启动时不打开窗口，只在菜单栏出现图标。"
                   checked={settings.silentStart !== false}
                   disabled={formLocked}
                   onChange={(v) => void persistBasic({ ...settings, silentStart: v })}
                 />
                 <ToggleRow
                   title="导航显示文字"
-                  description="关闭后侧栏只留图标。"
+                  description="关掉后侧栏只剩图标，窗口可以更窄。"
                   checked={settings.showRailLabels}
                   disabled={formLocked}
                   onChange={(v) =>
@@ -854,8 +879,11 @@ export function Settings() {
                 />
               </Section>
 
-              <Section title="保留与清理">
-                <Field label="截图保留" hint="过期截图由采样器按此策略自动清理。">
+              <Section
+                title="保留与清理"
+                caption="原始样本会被定期删除；日汇总表会一直留着，所以月度统计不会因为清理而消失。"
+              >
+                <Field label="截图保留">
                   <Select
                     value={settings.screenshotRetention}
                     disabled={formLocked}
@@ -863,21 +891,17 @@ export function Settings() {
                       setSettings({ ...settings, screenshotRetention: e.target.value })
                     }
                   >
-                    <option value="none">不保留</option>
+                    <option value="none">不保留截图</option>
                     <option value="24h">24 小时</option>
                     <option value="3d">3 天</option>
                     <option value="14d">14 天</option>
                   </Select>
                 </Field>
-                <Field
-                  label="样本保留天数"
-                  hint="超过保留天数的样本行在启动时清理（默认 7 天）。采样间隔固定 15 秒。"
-                >
+                <Field label="样本保留天数">
                   <Input
                     type="number"
                     min={3}
                     max={14}
-                    className="w-32"
                     value={settings.sampleKeepDays}
                     disabled={formLocked}
                     onChange={(e) =>
@@ -890,7 +914,7 @@ export function Settings() {
           )}
 
           {tab === "api" && (
-            <div className="space-y-4">
+            <div className="flex flex-col gap-3">
               <Section
                 title="判定与视觉"
                 caption="Key 只保存在本机 secrets.json（权限 600），不进 config.json。主用失败仅在超时、网络错误或 HTTP 5xx 时改走 fallback。"
@@ -963,16 +987,10 @@ export function Settings() {
           )}
 
           {tab === "lists" && (
-            <div className="space-y-4">
+            <div className="flex flex-col gap-3">
               <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
                 Chrome / Safari / Arc 的当前标签 URL 需要「自动化」权限；拒绝则 URL 为空，不影响采样与截图。
               </p>
-              <ListEditor
-                label="主线应用"
-                items={settings.trustedApps}
-                disabled={formLocked}
-                onChange={(trustedApps) => setSettings({ ...settings, trustedApps })}
-              />
               <ListEditor
                 label="支线应用"
                 items={settings.sideProjectRules}
@@ -982,7 +1000,7 @@ export function Settings() {
                 }
               />
               <ListEditor
-                label="杂项应用"
+                label="杂项应用 / 网站"
                 items={settings.adminApps}
                 disabled={formLocked}
                 onChange={(adminApps) => setSettings({ ...settings, adminApps })}
@@ -994,12 +1012,6 @@ export function Settings() {
                 onChange={(distractionRules) =>
                   setSettings({ ...settings, distractionRules })
                 }
-              />
-              <ListEditor
-                label="阅读"
-                items={settings.readingApps}
-                disabled={formLocked}
-                onChange={(readingApps) => setSettings({ ...settings, readingApps })}
               />
 
               <Section
@@ -1062,7 +1074,7 @@ export function Settings() {
           )}
 
           {tab === "ticktick" && (
-            <div className="space-y-4">
+            <div className="flex flex-col gap-3">
               <Section
                 title="连接"
                 caption={
@@ -1394,7 +1406,7 @@ export function Settings() {
           )}
 
           {tab === "permissions" && (
-            <div className="space-y-4">
+            <div className="flex flex-col gap-3">
               {/* The macOS permission report would read "已允许" on every other
                   platform, because the stubs report the grants as true. */}
               {IS_MACOS ? <PermissionPanel /> : <PlatformNotice />}
@@ -1402,7 +1414,7 @@ export function Settings() {
           )}
 
           {tab === "about" && (
-            <div className="space-y-4">
+            <div className="flex flex-col gap-3">
               <Section title="关于">
                 <div className="flex items-center gap-4">
                   <img src={appIcon} alt="" className="size-12 shrink-0" />

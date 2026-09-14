@@ -1,7 +1,7 @@
-import { Coins, Flame, Target, Zap } from "lucide-react";
+import { Coins, Target, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import appIcon from "../src-tauri/icons/128x128@2x.png";
-import { TRAFFIC_LIGHT_STRIP } from "./components/PageHeader";
+import { BRAND_ROW, TRAFFIC_LIGHT_STRIP } from "./components/PageHeader";
 import { Toaster, type ToastItem } from "./components/ui/toaster";
 import { Progress } from "./components/ui/progress";
 import {
@@ -45,8 +45,18 @@ function CollapsedStat({
   );
 }
 
+function initialTab(): RailTabId {
+  if (import.meta.env.VITE_PREVIEW === "1") {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab === "today" || tab === "week" || tab === "shop" || tab === "settings") {
+      return tab;
+    }
+  }
+  return "today";
+}
+
 export function App() {
-  const [tab, setTab] = useState<RailTabId>("today");
+  const [tab, setTab] = useState<RailTabId>(initialTab);
   const [showRailLabels, setShowRailLabels] = useState(true);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [today, setToday] = useState<TodayView | null>(null);
@@ -131,10 +141,10 @@ export function App() {
           !dragging && "transition-[width] duration-200",
         )}
       >
-        {/* Clears the traffic lights, then the design's own brand row. */}
+        {/* Clears the traffic lights, then the design's own 54px brand row. */}
         <div
           data-tauri-drag-region="deep"
-          style={{ height: 58 - TRAFFIC_LIGHT_STRIP }}
+          style={{ height: BRAND_ROW }}
           className={cn(
             "flex shrink-0 items-center gap-2.5",
             !expanded && "justify-center",
@@ -175,7 +185,7 @@ export function App() {
                   expanded ? "justify-start px-3" : "justify-center px-0",
                   active
                     ? "bg-card font-semibold text-foreground shadow-[0_2px_8px_-3px_rgba(120,95,60,0.28)]"
-                    : "text-[hsl(30_16%_42%)] hover:bg-card/60 hover:text-foreground",
+                    : "text-ink-dim hover:bg-card/60 hover:text-foreground",
                 )}
               >
                 <Icon className="size-[17px] shrink-0" aria-hidden />
@@ -206,9 +216,9 @@ export function App() {
         )}
 
         {expanded && today && (
-          <div className="mt-auto rounded-2xl bg-card px-3.5 py-3 shadow-[0_4px_14px_-10px_rgba(120,95,60,0.6)]">
+          <div className="mt-auto rounded-2xl bg-card px-3.5 py-[13px] shadow-[0_4px_14px_-10px_rgba(120,95,60,0.6)]">
             <div className="text-[11px] text-muted-foreground">今日主线</div>
-            <div className="my-1 mb-2 text-[23px] font-bold leading-none tracking-[-0.03em] tabular-nums">
+            <div className="mt-[3px] mb-2 text-[23px] font-bold leading-none tracking-[-0.03em] tabular-nums">
               {today.creditedLabel}
               <small className="ml-1.5 text-[11.5px] font-medium text-muted-foreground">
                 / 8h
@@ -217,18 +227,12 @@ export function App() {
             <Progress
               value={(today.creditedSeconds / GOAL_SECONDS) * 100}
               aria-label="今日主线进度"
-              className="h-[7px] rounded"
-              barClassName="rounded bg-gradient-to-r from-[#6FCB9A] to-primary"
+              className="h-[7px] rounded bg-track-rail"
+              barClassName="rounded surface-track"
             />
-            <div className="mt-2.5 flex justify-between text-[11.5px] text-muted-foreground">
-              <span className="flex items-center gap-1 tabular-nums">
-                <Coins className="size-3 text-gold" aria-hidden />
-                {today.coinBalance}
-              </span>
-              <span className="flex items-center gap-1 tabular-nums">
-                <Flame className="size-3 text-gold" aria-hidden />
-                {today.streak} 天
-              </span>
+            <div className="mt-[9px] flex justify-between text-[11.5px] tabular-nums text-muted-foreground">
+              <span>◉ {today.coinBalance}</span>
+              <span>▲ {today.streak} 天</span>
             </div>
           </div>
         )}

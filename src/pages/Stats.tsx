@@ -37,8 +37,8 @@ import {
   weekRangeLabel,
 } from "../lib/statsView";
 import {
+  categoryBarFill,
   categoryColor,
-  categoryColorAt,
   type CategoryKey,
 } from "../lib/theme";
 import { cn } from "../lib/utils";
@@ -81,26 +81,24 @@ const MONTH_CATEGORIES: { key: keyof SlotActivityMinutes; cat: CategoryKey; labe
  * it means the app matches no rule, so the slot stays gray and the text /
  * vision AI decides from the window title and screenshot.
  */
+// Only the lists the judge still reads. 主线 and 阅读 are gone: candidacy is decided
+// from the window, not from an app being pre-approved.
 const APP_LISTS = [
   { value: "unlisted", label: "待定（交给 AI）" },
-  { value: "mainline", label: "主线" },
   { value: "side", label: "支线" },
   { value: "admin", label: "杂项" },
   { value: "entertainment", label: "娱乐" },
-  { value: "reading", label: "阅读" },
 ] as const;
 
 type AppListTarget = (typeof APP_LISTS)[number]["value"];
 
 const LIST_FIELD: Record<
   Exclude<AppListTarget, "unlisted">,
-  "trustedApps" | "sideProjectRules" | "adminApps" | "distractionRules" | "readingApps"
+  "sideProjectRules" | "adminApps" | "distractionRules"
 > = {
-  mainline: "trustedApps",
   side: "sideProjectRules",
   admin: "adminApps",
   entertainment: "distractionRules",
-  reading: "readingApps",
 };
 
 const LIST_FIELDS = Object.values(LIST_FIELD);
@@ -158,11 +156,6 @@ function observedMinutes(view: {
   );
 }
 
-function shareLabel(mins: number, observed: number): string {
-  if (observed <= 0) return "无观测";
-  return `${Math.round((mins / observed) * 100)}%`;
-}
-
 function minutesOfWeek(view: WeekView): number {
   return WEEK_CATEGORIES.reduce((sum, c) => sum + (view[c.key] as number), 0);
 }
@@ -198,16 +191,12 @@ function hintLabel(dominant: string): string {
 
 function listedLabel(listed: string): string {
   switch (listed) {
-    case "mainline":
-      return "主线";
     case "side":
       return "支线";
     case "admin":
       return "杂项";
     case "entertainment":
       return "娱乐";
-    case "reading":
-      return "阅读";
     case "never_capture":
       return "永不截屏";
     default:
@@ -249,16 +238,21 @@ function PanelCard({
   title,
   meta,
   caption,
+  captionRule,
   children,
   wide,
   className,
+  bodyClassName,
 }: {
   title: string;
   meta?: ReactNode;
   caption?: string;
+  /** The mockup draws a dashed rule over the note in 按类别 only. */
+  captionRule?: boolean;
   children: ReactNode;
   wide?: boolean;
   className?: string;
+  bodyClassName?: string;
 }) {
   return (
     <Card className={cn("flex flex-col", wide && "lg:col-span-2", className)}>
@@ -272,10 +266,22 @@ function PanelCard({
           </span>
         )}
       </div>
-      <div className="flex flex-1 flex-col gap-3 px-[18px] pt-0.5 pb-3.5">
+      <div
+        className={cn(
+          "flex flex-1 flex-col gap-3 px-[18px] pt-0.5 pb-3.5",
+          bodyClassName,
+        )}
+      >
         {children}
         {caption && (
-          <p className="mt-auto border-t border-dashed border-hairline pt-2.5 text-[11px] leading-relaxed text-muted-foreground">
+          <p
+            className={cn(
+              "text-[11px] leading-relaxed text-muted-foreground",
+              captionRule
+                ? "mt-[14px] border-t border-dashed border-hairline pt-[10px]"
+                : "mt-[12px]",
+            )}
+          >
             {caption}
           </p>
         )}
@@ -284,15 +290,14 @@ function PanelCard({
   );
 }
 
-function Legend({ items }: { items: { label: string; cat?: CategoryKey; dot?: string }[] }) {
+function Legend({ items }: { items: { label: string }[] }) {
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
+    <div className="flex flex-wrap gap-[6px]">
       {items.map((item) => (
-        <span key={item.label} className="inline-flex items-center gap-1.5">
-          <i
-            className="size-2.5 shrink-0 rounded-full"
-            style={{ background: item.dot ?? categoryColor(item.cat ?? "away") }}
-          />
+        <span
+          key={item.label}
+          className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[11px] whitespace-nowrap"
+        >
           {item.label}
         </span>
       ))}
@@ -300,11 +305,22 @@ function Legend({ items }: { items: { label: string; cat?: CategoryKey; dot?: st
   );
 }
 
+/** The design's `.mini .v small` — the unit inside a value. */
+function Unit({ children }: { children: ReactNode }) {
+  return (
+    <small className="ml-[3px] text-[11px] font-medium tracking-normal text-muted-foreground">
+      {children}
+    </small>
+  );
+}
+
 function MiniStat({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="space-y-0.5">
       <p className="text-[11px] text-muted-foreground">{label}</p>
-      <p className="text-base font-semibold tabular-nums tracking-tight">{value}</p>
+      <p className="text-[17px] font-bold tabular-nums tracking-[-0.025em]">
+        {value}
+      </p>
     </div>
   );
 }
@@ -320,39 +336,39 @@ function CategoryPanel({
   return (
     <PanelCard
       title="按类别"
-      meta={`跨槽求和 · 观测 ${Math.floor(observed / 3600)}h ${Math.round((observed % 3600) / 60)}m`}
+      meta={`跨槽求和 · 观测 ${Math.floor(observed / 60)}h ${observed % 60}m`}
       caption="跨槽求和 activity 秒数 / 60 取整；占观测比不含未观测。条长按最大值归一，不是按 8 小时——这一段最长的那一类占满。"
+      captionRule
+      bodyClassName="gap-0"
     >
-      <div className="space-y-3">
-        {rows.map((c) => (
-          <div key={c.key} className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2 text-xs">
-              <span className="flex items-center gap-2">
-                <i
-                  className="size-2.5 shrink-0 rounded-full"
-                  style={{ background: categoryColor(c.cat) }}
-                />
-                {c.label}
-              </span>
-              <span className="tabular-nums text-muted-foreground">
-                {c.mins} 分钟 ·{" "}
-                {c.key === "unobserved" ? "—" : shareLabel(c.mins, observed)}
-              </span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full transition-[width] duration-500 ease-out"
-                style={{
-                  width: `${(c.mins / max) * 100}%`,
-                  background: `linear-gradient(90deg, ${categoryColor(
-                    c.cat,
-                  )}, ${categoryColorAt(c.cat, 55)})`,
-                }}
-              />
-            </div>
+      {/* .cat blocks stack with no gap of their own. */}
+      {rows.map((c) => (
+        <div key={c.key} className="flex flex-col gap-[3px]">
+          <div className="flex items-center gap-[7px] text-[11.5px]">
+            <i
+              className="size-[9px] shrink-0 rounded-[3px]"
+              style={{ background: categoryColor(c.cat) }}
+            />
+            {c.label}
+            <b className="ml-auto font-semibold tabular-nums text-muted-foreground">
+              {c.mins} 分钟
+            </b>
           </div>
-        ))}
-      </div>
+          <div className="h-2 w-full overflow-hidden rounded-[5px] bg-cbar">
+            <div
+              className={cn(
+                "h-full rounded-[5px] transition-[width] duration-500 ease-out",
+                // Only 主线 runs the green gradient; the rest are flat.
+                c.cat === "mainline" && "surface-track",
+              )}
+              style={{
+                width: `${Math.max(c.mins ? 3 : 0, (c.mins / max) * 100)}%`,
+                background: c.cat === "mainline" ? undefined : categoryColor(c.cat),
+              }}
+            />
+          </div>
+        </div>
+      ))}
     </PanelCard>
   );
 }
@@ -363,15 +379,9 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
     <PanelCard
       title="按天"
       meta="主线 / 支线 / 杂项堆叠"
-      caption="无堆叠分钟标 —，不是假 0。周末照常记录，未达标不惩罚。"
+      bodyClassName="gap-[10px]"
     >
-      <Legend
-        items={[
-          { label: "主线", cat: "mainline" },
-          { label: "支线", cat: "side" },
-          { label: "杂项", cat: "admin" },
-        ]}
-      />
+      <Legend items={[{ label: "主线" }, { label: "支线" }, { label: "杂项" }]} />
       <div className="flex h-[150px] items-stretch gap-[9px]">
         {days.map((d, i) => {
           const weekend = isWeekendDay(d.day);
@@ -391,7 +401,7 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
                       <div
                         style={{
                           height: `${(d.core / max) * 100}%`,
-                          background: `linear-gradient(180deg, ${categoryColor("mainline")}, ${categoryColorAt("mainline", 70)})`,
+                          background: categoryBarFill("mainline"),
                         }}
                       />
                     )}
@@ -399,7 +409,7 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
                       <div
                         style={{
                           height: `${(d.side / max) * 100}%`,
-                          background: `linear-gradient(180deg, ${categoryColor("side")}, ${categoryColorAt("side", 70)})`,
+                          background: categoryBarFill("side"),
                         }}
                       />
                     )}
@@ -407,7 +417,7 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
                       <div
                         style={{
                           height: `${(d.chore / max) * 100}%`,
-                          background: `linear-gradient(180deg, ${categoryColor("admin")}, ${categoryColorAt("admin", 70)})`,
+                          background: categoryBarFill("admin"),
                         }}
                       />
                     )}
@@ -465,10 +475,15 @@ function HeatPanel({ hours }: { hours: WeekHourRow[] }) {
               >
                 {observed ? mins : null}
               </div>
-              <span className="text-[10px] tabular-nums text-muted-foreground">{hour}</span>
             </div>
           );
         })}
+      </div>
+      {/* The mockup's .hfoot: five labels spread across the whole grid. */}
+      <div className="mt-[5px] flex justify-between text-[10px] tabular-nums text-dim2">
+        {["08", "11", "14", "17", "21"].map((h) => (
+          <span key={h}>{h}</span>
+        ))}
       </div>
     </PanelCard>
   );
@@ -485,18 +500,42 @@ function WeekNumbers({
 }) {
   const playShare = observed <= 0 ? "无观测" : pct(data.distractionObservedRatio);
   return (
-    <PanelCard
-      title="本周数字"
-      meta="达标只计工作日"
-      caption="主线小时来自 credited 秒 / 3600。环比无上周槽则为 —。"
-    >
-      <div className="grid grid-cols-2 gap-x-4 gap-y-5 sm:grid-cols-3 lg:grid-cols-6">
-        <MiniStat label="主线" value={`${data.coreHours.toFixed(1)} 小时`} />
+    <PanelCard title="本周数字" meta="达标只计工作日">
+      <div className="grid grid-cols-3 gap-x-[18px] gap-y-[14px]">
+        <MiniStat
+          label="主线"
+          value={
+            <>
+              {data.coreHours.toFixed(1)}
+              <Unit> 小时</Unit>
+            </>
+          }
+        />
         <MiniStat label="较上周" value={wowLabel(data.wowCoreDeltaMinutes)} />
         <MiniStat label="娱乐占观测" value={playShare} />
         <MiniStat label="待复核率" value={pct(data.pendingOverResolved)} />
-        <MiniStat label="≥6h / ≥8h" value={`${data.daysGe6h} / ${data.daysGe8h} 日`} />
-        <MiniStat label="连胜" value={streak == null ? "—" : `${streak} 天`} />
+        <MiniStat
+          label="≥6h / ≥8h"
+          value={
+            <>
+              {data.daysGe6h} / {data.daysGe8h}
+              <Unit> 日</Unit>
+            </>
+          }
+        />
+        <MiniStat
+          label="连胜"
+          value={
+            streak == null ? (
+              "—"
+            ) : (
+              <>
+                {streak}
+                <Unit> 天</Unit>
+              </>
+            )
+          }
+        />
       </div>
     </PanelCard>
   );
@@ -730,7 +769,7 @@ function AppPanel({
       <PanelCard
         wide
         title="应用"
-        caption="范围内 app_day_stats 按 hint 秒 / 60 取整。主类别取秒最大者。右侧可直接把应用归到某个名单；选「待定」则不进任何规则，留给 AI 按标题与截图判断。改动从下一个还没开始的槽生效。"
+        caption="范围内 app_day_stats 按 hint 秒 / 60 取整。主类别取秒最大者。名单一列取该应用今天真的被算成的那个类别；如果它是被标题或网址规则判出来的（比如 Chrome 上的 B 站），这里只读显示「按标题/网址」——把整个 app 归进娱乐会让所有 Chrome 窗口都变娱乐，要那样做得去设置里改。没被任何规则判到的应用才给菜单，选「待定」则不进任何名单，交给 AI 按标题与截图判断。改动从下一个还没开始的槽生效。"
       >
         {data.newcomers.length > 0 && (
           <p className="mb-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
@@ -774,6 +813,16 @@ function AppPanel({
                     <td className="py-2">
                       {row.listedAs === "never_capture" ? (
                         <Badge tone="neutral">{listedLabel(row.listedAs)}</Badge>
+                      ) : row.listedAs !== "" && !row.filed ? (
+                        <span
+                          className="flex items-center gap-1.5"
+                          title="这一类来自按窗口标题 / 网址匹配的规则，不是把整个 app 归进名单。要让整个 app 都算这一类，请在设置 → 名单里加它。"
+                        >
+                          <Badge tone="neutral">{listedLabel(row.listedAs)}</Badge>
+                          <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+                            按标题/网址
+                          </span>
+                        </span>
                       ) : (
                         <Select
                           size="sm"
@@ -1019,7 +1068,6 @@ export function Stats({ onPickDay }: { onPickDay: (day: string) => void }) {
         <div className="flex items-center gap-2">
           <Segmented
             aria-label="统计分段"
-            size="sm"
             value={segment}
             onChange={pickSegment}
             options={SEGMENTS}
@@ -1027,7 +1075,6 @@ export function Stats({ onPickDay }: { onPickDay: (day: string) => void }) {
           {(segment === "rhythm" || segment === "app") && (
             <Segmented
               aria-label="范围种类"
-              size="sm"
               value={rangeKind}
               onChange={setRangeKind}
               options={[
@@ -1039,16 +1086,24 @@ export function Stats({ onPickDay }: { onPickDay: (day: string) => void }) {
         </div>
       }
       actions={
-        <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon-sm" aria-label="上一段" onClick={goPrev}>
+        // The mockup's .hact: two .iconbtn either side of a .btn.
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            className="text-ink-dim"
+            aria-label="上一段"
+            onClick={goPrev}
+          >
             <ChevronLeft className="size-4" />
           </Button>
-          <Button variant="outline" size="sm" onClick={goHere}>
+          <Button variant="outline" onClick={goHere}>
             {effectiveKind === "week" ? "本周" : "本月"}
           </Button>
           <Button
-            variant="ghost"
-            size="icon-sm"
+            variant="outline"
+            size="icon"
+            className="text-ink-dim"
             aria-label="下一段"
             onClick={goNext}
             disabled={effectiveKind === "week" ? atCurrentWeek : atCurrentMonth}
@@ -1064,7 +1119,7 @@ export function Stats({ onPickDay }: { onPickDay: (day: string) => void }) {
     <>
       {header}
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-5xl space-y-4 px-6 py-4">
+        <div className="flex flex-col gap-3 px-[22px] pb-4">
           {error && (
             <Card className="flex flex-col items-center gap-3 p-8 text-center">
               <p className="text-sm text-destructive">{error}</p>

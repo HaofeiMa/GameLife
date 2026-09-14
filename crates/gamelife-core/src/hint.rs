@@ -1,19 +1,12 @@
 use crate::document::looks_like_work_path;
+use crate::r#const::LOW_INPUT_IDLE_SECS;
 use crate::policy::{
     all_side_project_rules, matches_any_rule, matches_app_identity, matches_rule_fields, Policy,
 };
-use crate::r#const::READING_BRIDGE_SECS;
 use crate::types::{Hint, Quest, Sample};
 use crate::url::{host_is_research, strip_url_query_fragment, url_host};
 
-const LOW_INPUT_IDLE_SECS: i64 = 180;
-
-pub fn hint_sample(
-    sample: &Sample,
-    policy: &Policy,
-    quests: &[Quest],
-    last_core_interaction_ts: Option<i64>,
-) -> Hint {
+pub fn hint_sample(sample: &Sample, policy: &Policy, quests: &[Quest]) -> Hint {
     if sample.screen_locked || sample.paused {
         return Hint::Away;
     }
@@ -24,7 +17,26 @@ pub fn hint_sample(
         return Hint::Distraction;
     }
 
-    if matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.admin_apps) {
+    // Long idle is away — above everything that reads the window rather than the
+    // clock, but below distraction, so a video left playing is still entertainment
+    // rather than a phantom absence. Lower down, an unattended 杂项 or 支线 window
+    // would keep earning for as long as it was left in front.
+    //
+    // This takes the place of the reading bridge (`reading_apps` -> `CoreReading`),
+    // which only ever fired on `idle_seconds >= LOW_INPUT_IDLE_SECS` samples — exactly
+    // the ones this rule now claims first. Those variants still exist in `Hint`, but
+    // nothing produces them any more, so `reading_bridge_seconds` is always 0.
+    if sample.idle_seconds >= LOW_INPUT_IDLE_SECS {
+        return Hint::Away;
+    }
+
+    // Admin reads the whole haystack, not just the app identity: a GameLife tab in
+    // Chrome, or a Claude Code session named after it, is the same work as the app
+    // itself, and identity alone cannot see either. Identity is still tried first so
+    // the known-bundle table keeps resolving localized app names.
+    if matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.admin_apps)
+        || matches_any_rule(&haystacks, &policy.admin_apps)
+    {
         return Hint::Admin;
     }
 
@@ -32,32 +44,12 @@ pub fn hint_sample(
         return Hint::Side;
     }
 
-    let is_reading = matches_app_identity(
-        &sample.app,
-        sample.bundle_id.as_deref(),
-        &policy.reading_apps,
-    );
-
-    if is_reading {
-        if let Some(last) = last_core_interaction_ts {
-            let since_core = sample.ts - last;
-            if sample.idle_seconds >= LOW_INPUT_IDLE_SECS {
-                if since_core <= READING_BRIDGE_SECS as i64 {
-                    return Hint::CoreReading;
-                }
-                return Hint::UnsureReading;
-            }
-        }
-    }
-
-    if !matches_app_identity(
-        &sample.app,
-        sample.bundle_id.as_deref(),
-        &policy.trusted_apps,
-    ) {
-        return Hint::Unsure;
-    }
-
+    // No app whitelist: every window that has survived the rules above is judged on
+    // what it shows — the window title against this slot's mainline evidence, plus a
+    // work file path or research host. `trusted_apps` used to gate this, which meant a
+    // title could only ever matter for an app already on the list; the list is now
+    // inert and the rules above (entertainment / admin / side, all of which do read the
+    // app name) are what keep a window out of here.
     if is_core_candidate(sample, quests) {
         return Hint::CoreCandidate;
     }
@@ -160,7 +152,7 @@ mod tests {
             admin_apps: vec![],
             category_guides: CategoryGuides::default(),
         };
-        let h = hint_sample(&sample("GameLife", "Today", 10), &p, &[], None);
+        let h = hint_sample(&sample("GameLife", "Today", 10), &p, &[]);
         assert_eq!(h, Hint::Side);
         assert!(!never_capture_removable("1Password", &p.never_capture_apps));
     }
@@ -179,12 +171,12 @@ mod tests {
         let q = [Quest::fixture("HDP", "HDP")];
         let mut s = sample("Cursor", "README.md", 5);
         s.document_path = Some("/proj/HDP/README.md".into());
-        assert_eq!(hint_sample(&s, &p, &q, None), Hint::CoreCandidate);
+        assert_eq!(hint_sample(&s, &p, &q), Hint::CoreCandidate);
         assert!(is_grounded_core_sample(&s, &q));
     }
 
     #[test]
-    fn reading_bridge_then_unsure_reading() {
+    fn long_idle_is_away() {
         let p = Policy {
             trusted_apps: vec!["Preview".into()],
             distraction_rules: vec![],
@@ -195,12 +187,70 @@ mod tests {
             category_guides: CategoryGuides::default(),
         };
         let q = [Quest::fixture("paper", "paper")];
-        let mut s = sample("Preview", "paper.pdf", 200);
-        s.ts = 1_000 + 200;
-        assert_eq!(hint_sample(&s, &p, &q, Some(1_000)), Hint::CoreReading);
-        s.ts = 1_000 + 400;
-        s.idle_seconds = 400;
-        assert_eq!(hint_sample(&s, &p, &q, Some(1_000)), Hint::UnsureReading);
+        assert_eq!(
+            hint_sample(&sample("Preview", "paper.pdf", 200), &p, &q),
+            Hint::Away
+        );
+        assert_eq!(
+            hint_sample(&sample("Preview", "paper.pdf", 179), &p, &q),
+            Hint::CoreCandidate
+        );
+    }
+
+    fn mixed_policy() -> Policy {
+        Policy {
+            trusted_apps: vec!["Google Chrome".into()],
+            distraction_rules: vec!["bilibili.com".into()],
+            side_project_rules: vec!["haofei.ma".into(), "滴答清单".into()],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+            admin_apps: vec!["微信".into(), "GameLife".into()],
+            category_guides: CategoryGuides::default(),
+        }
+    }
+
+    /// A video left running has no input either, and must stay entertainment.
+    #[test]
+    fn distraction_beats_long_idle() {
+        let p = mixed_policy();
+        let mut video = sample("Google Chrome", "bilibili", 600);
+        video.url = Some("https://www.bilibili.com/video/BV1".into());
+        assert_eq!(hint_sample(&video, &p, &[]), Hint::Distraction);
+    }
+
+    /// Walking away from an open 杂项 or 支线 window is absence, not that category —
+    /// otherwise leaving WeChat in front would earn every slot until you came back.
+    #[test]
+    fn long_idle_beats_admin_and_side() {
+        let p = mixed_policy();
+        assert_eq!(
+            hint_sample(&sample("微信", "文件传输助手", 600), &p, &[]),
+            Hint::Away
+        );
+        let mut idle_side = sample("Google Chrome", "个人网站", 600);
+        idle_side.url = Some("https://haofei.ma/".into());
+        assert_eq!(hint_sample(&idle_side, &p, &[]), Hint::Away);
+
+        let mut side = sample("Google Chrome", "个人网站", 5);
+        side.url = Some("https://haofei.ma/".into());
+        assert_eq!(hint_sample(&side, &p, &[]), Hint::Side);
+
+    }
+
+    /// 杂项 matches the window, not just the app: this is what makes a GameLife tab
+    /// admin (step 3) instead of side (step 4) despite the unremovable builtin rule.
+    #[test]
+    fn admin_matches_haystack_not_only_app_identity() {
+        let p = mixed_policy();
+        let by_title = sample("Google Chrome", "GameLife 三种组织方式", 5);
+        assert_eq!(hint_sample(&by_title, &p, &[]), Hint::Admin);
+
+        let mut by_path = sample("iTerm2", "✳ gamelife-ui-redesign", 5);
+        by_path.document_path = Some("/Volumes/MobileSSD/Program/My/GameLife".into());
+        assert_eq!(hint_sample(&by_path, &p, &[]), Hint::Admin);
+
+        let unrelated = sample("Google Chrome", "新闻", 5);
+        assert_eq!(hint_sample(&unrelated, &p, &[]), Hint::Unsure);
     }
 
     #[test]
@@ -216,7 +266,7 @@ mod tests {
         };
         let mut s = sample("Safari", "home", 5);
         s.url = Some("https://haofei.ma/".into());
-        assert_eq!(hint_sample(&s, &p, &[], None), Hint::Side);
+        assert_eq!(hint_sample(&s, &p, &[]), Hint::Side);
     }
 
     fn hdp_policy() -> Policy {
@@ -240,7 +290,7 @@ mod tests {
         let mut s = sample("Cursor", "train.py — HDP", 5);
         s.document_path = Some("/Users/me/Projects/HDP/train.py".into());
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            hint_sample(&s, &hdp_policy(), &hdp_quest()),
             Hint::CoreCandidate
         );
     }
@@ -250,7 +300,7 @@ mod tests {
         let mut s = sample("Cursor", "App.tsx", 5);
         s.document_path = Some("/Users/me/Projects/GameLife/src/App.tsx".into());
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            hint_sample(&s, &hdp_policy(), &hdp_quest()),
             Hint::Side
         );
     }
@@ -260,7 +310,7 @@ mod tests {
         let s = sample("Cursor", "train.py — HDP", 5);
         assert_eq!(s.document_path, None);
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            hint_sample(&s, &hdp_policy(), &hdp_quest()),
             Hint::CoreCandidate
         );
     }
@@ -270,21 +320,26 @@ mod tests {
         let mut s = sample("光标", "train.py — HDP", 5);
         s.bundle_id = Some("com.todesktop.230313mzl4w4u92".into());
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            hint_sample(&s, &hdp_policy(), &hdp_quest()),
             Hint::CoreCandidate
         );
     }
 
+    /// A title-token match is a candidate, not grounded evidence — and being idle
+    /// outranks it, because the away gate sits above the trusted gate.
     #[test]
-    fn idle_title_match_is_core_candidate_not_away_and_not_grounded() {
-        let s = sample("Cursor", "train.py — HDP", 700);
+    fn title_match_is_core_candidate_but_not_grounded_unless_active() {
+        let mut s = sample("Cursor", "train.py — HDP", 5);
         assert_eq!(s.document_path, None);
         assert_eq!(s.url, None);
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            hint_sample(&s, &hdp_policy(), &hdp_quest()),
             Hint::CoreCandidate
         );
         assert!(!is_grounded_core_sample(&s, &hdp_quest()));
+
+        s.idle_seconds = 700;
+        assert_eq!(hint_sample(&s, &hdp_policy(), &hdp_quest()), Hint::Away);
     }
 
     #[test]
@@ -292,7 +347,7 @@ mod tests {
         let mut s = sample("Cursor", "train.py", 10);
         s.document_path = Some("/Users/me/HDP/train.py".into());
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            hint_sample(&s, &hdp_policy(), &hdp_quest()),
             Hint::CoreCandidate
         );
         assert!(is_grounded_core_sample(&s, &hdp_quest()));
@@ -303,7 +358,7 @@ mod tests {
         let mut s = sample("Cursor", "main.tex", 10);
         s.document_path = Some("/paper/main.tex".into());
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &[], None),
+            hint_sample(&s, &hdp_policy(), &[]),
             Hint::CoreCandidate
         );
         assert!(is_grounded_core_sample(&s, &[]));
@@ -329,13 +384,15 @@ mod tests {
         };
         let mut s = sample("Safari", "Overleaf", 10);
         s.url = Some("https://www.overleaf.com/project/abc123".into());
-        assert_eq!(hint_sample(&s, &p, &hdp_quest(), None), Hint::CoreCandidate);
+        assert_eq!(hint_sample(&s, &p, &hdp_quest()), Hint::CoreCandidate);
         assert!(is_grounded_core_sample(&s, &hdp_quest()));
         assert!(is_grounded_core_sample(&s, &[]));
     }
 
+    /// The whitelist no longer gates candidacy: the same Overleaf window is a
+    /// candidate whether or not its browser is on the mainline-app list.
     #[test]
-    fn overleaf_without_trusted_is_unsure() {
+    fn overleaf_cores_without_being_on_the_list() {
         let p = Policy {
             trusted_apps: vec!["Cursor".into()],
             distraction_rules: vec![],
@@ -347,7 +404,7 @@ mod tests {
         };
         let mut s = sample("Safari", "Overleaf", 10);
         s.url = Some("https://www.overleaf.com/project/abc123".into());
-        assert_eq!(hint_sample(&s, &p, &hdp_quest(), None), Hint::Unsure);
+        assert_eq!(hint_sample(&s, &p, &hdp_quest()), Hint::CoreCandidate);
     }
 
     #[test]
@@ -363,7 +420,7 @@ mod tests {
         };
         let mut s = sample("Safari", "HDP lecture", 5);
         s.url = Some("https://www.youtube.com/watch?v=1".into());
-        assert_eq!(hint_sample(&s, &p, &hdp_quest(), None), Hint::Distraction);
+        assert_eq!(hint_sample(&s, &p, &hdp_quest()), Hint::Distraction);
     }
 
     #[test]
@@ -379,7 +436,7 @@ mod tests {
         };
         let mut s = sample("Safari", "README", 5);
         s.url = Some("https://overleaf.com/project/x".into());
-        assert_eq!(hint_sample(&s, &p, &hdp_quest(), None), Hint::CoreCandidate);
+        assert_eq!(hint_sample(&s, &p, &hdp_quest()), Hint::CoreCandidate);
         assert!(is_grounded_core_sample(&s, &hdp_quest()));
     }
 
@@ -391,7 +448,7 @@ mod tests {
             hero: true,
         }];
         let s = sample("Cursor", "Finish notes", 5);
-        assert_eq!(hint_sample(&s, &hdp_policy(), &q, None), Hint::Unsure);
+        assert_eq!(hint_sample(&s, &hdp_policy(), &q), Hint::Unsure);
     }
 
     #[test]
@@ -408,16 +465,30 @@ mod tests {
         let q = [Quest::fixture("overleaf", "overleaf.com")];
         let mut s = sample("Google Chrome", "Overleaf", 5);
         s.url = Some("https://overleaf.com/project/abc".into());
-        assert_eq!(hint_sample(&s, &p, &q, None), Hint::CoreCandidate);
+        assert_eq!(hint_sample(&s, &p, &q), Hint::CoreCandidate);
     }
 
+    /// The app does not matter any more — only what the window shows does.
     #[test]
-    fn untrusted_app_with_evidence_in_title_is_not_core() {
+    fn evidence_in_title_cores_in_any_app() {
         let s = sample("WeChat", "HDP chat", 5);
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest(), None),
+            hint_sample(&s, &hdp_policy(), &hdp_quest()),
+            Hint::CoreCandidate
+        );
+        assert_eq!(
+            hint_sample(&sample("WeChat", "chat", 5), &hdp_policy(), &hdp_quest()),
             Hint::Unsure
         );
+    }
+
+    /// A work file is a candidate no matter which app opens it.
+    #[test]
+    fn work_file_is_a_candidate_in_any_app() {
+        let mut s = sample("Isaac Sim", "scene", 5);
+        s.document_path = Some("/paper/main.tex".into());
+        assert_eq!(hint_sample(&s, &hdp_policy(), &[]), Hint::CoreCandidate);
+        assert!(is_grounded_core_sample(&s, &[]));
     }
 
     #[test]
@@ -432,12 +503,12 @@ mod tests {
             category_guides: CategoryGuides::default(),
         };
         assert_eq!(
-            hint_sample(&sample("Mail", "Inbox", 5), &p, &[], None),
+            hint_sample(&sample("Mail", "Inbox", 5), &p, &[]),
             Hint::Admin
         );
         let mut yt = sample("Google Chrome", "YouTube", 5);
         yt.url = Some("https://www.youtube.com/watch?v=1".into());
-        assert_eq!(hint_sample(&yt, &p, &[], None), Hint::Distraction);
+        assert_eq!(hint_sample(&yt, &p, &[]), Hint::Distraction);
     }
 
     #[test]
@@ -452,7 +523,7 @@ mod tests {
             category_guides: CategoryGuides::default(),
         };
         assert_eq!(
-            hint_sample(&sample("GameLife", "Today", 5), &p, &[], None),
+            hint_sample(&sample("GameLife", "Today", 5), &p, &[]),
             Hint::Side
         );
     }

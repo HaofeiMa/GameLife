@@ -5,7 +5,7 @@ import {
   oauthErrorMessage,
   oauthWaitingHint,
   primaryProviderHasKey,
-  saveTouchesPolicy,
+  policySignature,
   SECRET_MASK,
   secretToPersist,
   showSecretMask,
@@ -78,12 +78,35 @@ describe("oauthErrorMessage", () => {
   });
 });
 
-describe("saveTouchesPolicy", () => {
-  it("only writes policy when editing lists, so API/TickTick save skips the DB", () => {
-    expect(saveTouchesPolicy("lists")).toBe(true);
-    expect(saveTouchesPolicy("api")).toBe(false);
-    expect(saveTouchesPolicy("ticktick")).toBe(false);
-    expect(saveTouchesPolicy("basic")).toBe(false);
+describe("policySignature", () => {
+  const base = {
+    distractionRules: ["bilibili.com"],
+    sideProjectRules: ["滴答清单"],
+    adminApps: ["微信"],
+    neverCaptureApps: [],
+    categoryGuides: { mainline: "", side: "", admin: "", entertainment: "" },
+  };
+
+  it("changes when a list the judge reads changes", () => {
+    expect(policySignature({ ...base, adminApps: ["微信", "Zoom"] })).not.toBe(
+      policySignature(base),
+    );
+  });
+
+  it("ignores whitespace around the guides, because saving trims them", () => {
+    const spaced = {
+      ...base,
+      categoryGuides: { ...base.categoryGuides, mainline: "  主线说明  " },
+    };
+    const tight = {
+      ...base,
+      categoryGuides: { ...base.categoryGuides, mainline: "主线说明" },
+    };
+    expect(policySignature(spaced)).toBe(policySignature(tight));
+  });
+
+  it("stays put when nothing the judge reads has changed", () => {
+    expect(policySignature({ ...base })).toBe(policySignature(base));
   });
 });
 

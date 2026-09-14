@@ -24,11 +24,12 @@ export function Select({
     <div className={cn("relative", className)}>
       <select
         className={cn(
-          "w-full cursor-default appearance-none rounded-md border bg-background text-foreground shadow-xs transition-colors",
+          // The mockup's .fin, with the chevron the mockup paints in --dim2.
+          "w-full cursor-default appearance-none rounded-[10px] border border-pip bg-loot text-[12.5px] text-btn-ink transition-colors",
           "disabled:cursor-not-allowed disabled:opacity-50",
           size === "sm"
-            ? "h-8 py-0.5 pl-2 pr-7 text-xs"
-            : "h-9 py-1 pl-3 pr-8 text-sm",
+            ? "h-[30px] pl-2 pr-7 text-[11.5px]"
+            : "h-[34px] pl-3 pr-8",
         )}
         {...props}
       >
@@ -36,7 +37,7 @@ export function Select({
       </select>
       <ChevronDown
         className={cn(
-          "pointer-events-none absolute top-1/2 -translate-y-1/2 text-muted-foreground",
+          "pointer-events-none absolute top-1/2 -translate-y-1/2 text-dim2",
           size === "sm" ? "right-2 size-3.5" : "right-2.5 size-4",
         )}
         aria-hidden

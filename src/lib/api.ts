@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 
 import type { LiveWindow, QuestView } from "./questLive";
 
@@ -196,7 +196,12 @@ export interface AppReportRow {
   name: string;
   minutes: number;
   dominant: string;
+  /** The list this app's time belongs to: what the rules decided, or the filing when no
+   *  rule fired. */
   listedAs: string;
+  /** True when the app's name itself sits in `listedAs`, rather than a title / URL rule
+   *  having matched it. Only a filed app is re-filable from the table. */
+  filed: boolean;
 }
 
 export interface HostReportRow {

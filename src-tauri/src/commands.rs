@@ -354,6 +354,7 @@ pub struct AppReportRow {
     pub minutes: i64,
     pub dominant: String,
     pub listed_as: String,
+    pub filed: bool,
 }
 
 #[derive(Serialize)]
@@ -857,15 +858,15 @@ fn dominant_category(
     }
 }
 
-fn listed_as_for(app: &str, bundle_id: &str, policy: &Policy) -> String {
+/// The list an app's *name* is filed in, for the 当日应用 card. Only the lists the judge
+/// still reads: `trusted_apps` and `reading_apps` no longer decide anything, so labelling
+/// an app 主线 or 阅读 would be a claim the engine no longer makes.
+fn filed_list_for(app: &str, bundle_id: &str, policy: &Policy) -> String {
     let bid = if bundle_id.is_empty() {
         None
     } else {
         Some(bundle_id)
     };
-    if matches_app_identity(app, bid, &policy.trusted_apps) {
-        return "mainline".into();
-    }
     if matches_app_identity(app, bid, &policy.side_project_rules) {
         return "side".into();
     }
@@ -874,9 +875,6 @@ fn listed_as_for(app: &str, bundle_id: &str, policy: &Policy) -> String {
     }
     if matches_app_identity(app, bid, &policy.distraction_rules) {
         return "entertainment".into();
-    }
-    if matches_app_identity(app, bid, &policy.reading_apps) {
-        return "reading".into();
     }
     if matches_app_identity(app, bid, &policy.never_capture_apps) {
         return "never_capture".into();
@@ -888,7 +886,41 @@ struct AppAgg {
     name: String,
     minutes: i64,
     dominant: String,
+    /// The list this app's time belongs to: what the rules decided, or the filing when
+    /// no rule fired.
     listed_as: String,
+    /// Whether the app's own name sits in `listed_as`, as opposed to a title / URL rule
+    /// having matched it. Only a filed app can be re-filed from the report table.
+    filed: bool,
+    /// No list and no classified seconds — the ones worth asking the user to classify.
+    unruled: bool,
+}
+
+/// The list that actually governed this app's time, read off the seconds the engine put
+/// in each bucket.
+///
+/// Identity matching alone cannot answer this: `distraction_rules` and
+/// `side_project_rules` match window titles and URLs, so `"bilibili.com"` in the
+/// entertainment list will never match the app name `"Google Chrome"` — yet Chrome's
+/// afternoon *was* entertainment. Reporting 未列入 there was not just uninformative, it
+/// invited the user to file "Google Chrome" under 娱乐, which would make every Chrome
+/// window entertainment. Ties go to the rule that sits earlier in `hint_sample`.
+fn ruled_list(
+    admin: i64,
+    side: i64,
+    distraction: i64,
+) -> Option<&'static str> {
+    let mut best: Option<(i64, &'static str)> = None;
+    for (secs, key) in [
+        (distraction, "entertainment"),
+        (admin, "admin"),
+        (side, "side"),
+    ] {
+        if secs > 0 && best.is_none_or(|(top, _)| secs > top) {
+            best = Some((secs, key));
+        }
+    }
+    best.map(|(_, key)| key)
 }
 
 fn load_app_aggregates(
@@ -937,22 +969,26 @@ fn load_app_aggregates(
     }
     let mut apps = Vec::new();
     for (name, (core, support, admin, side, distraction, away, bundles)) in grouped {
-        let mut listed = String::new();
+        let mut filed = String::new();
         for b in &bundles {
-            listed = listed_as_for(&name, b, policy);
-            if !listed.is_empty() {
+            filed = filed_list_for(&name, b, policy);
+            if !filed.is_empty() {
                 break;
             }
         }
-        if listed.is_empty() {
-            listed = listed_as_for(&name, "", policy);
+        if filed.is_empty() {
+            filed = filed_list_for(&name, "", policy);
         }
+        let ruled = ruled_list(admin, side, distraction);
+        let listed_as = ruled.map(str::to_string).unwrap_or_else(|| filed.clone());
         let cat_secs = core + support + admin + side + distraction + away;
         apps.push(AppAgg {
             name,
             minutes: secs_to_minutes(cat_secs),
             dominant: dominant_category(core, support, admin, side, distraction, away),
-            listed_as: listed,
+            filed: !filed.is_empty() && filed == listed_as,
+            unruled: listed_as.is_empty() && cat_secs == 0,
+            listed_as,
         });
     }
     apps.sort_by(|a, b| b.minutes.cmp(&a.minutes).then(a.name.cmp(&b.name)));
@@ -1689,7 +1725,7 @@ fn build_app_report(
     let (apps, protected_total) = load_app_aggregates(conn, &start_s, &end_s, &policy)?;
     let newcomers: Vec<String> = apps
         .iter()
-        .filter(|a| a.listed_as.is_empty())
+        .filter(|a| a.unruled)
         .map(|a| a.name.clone())
         .collect();
     let rows = apps
@@ -1699,6 +1735,7 @@ fn build_app_report(
             minutes: a.minutes,
             dominant: a.dominant,
             listed_as: a.listed_as,
+            filed: a.filed,
         })
         .collect();
     Ok(AppReportView {
@@ -2953,6 +2990,12 @@ mod tests {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected)
+             VALUES (?1, 'ChatGPT', '', 8, 0, 0, 0, 0, 0, 0, 0, 0, 0)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO host_day_stats (day, host, samples, core, support, admin, side, distraction)
              VALUES (?1, 'arxiv.org', 10, 150, 0, 0, 0, 0)",
             params![day],
@@ -2993,12 +3036,28 @@ mod tests {
 
         let apps = build_app_report(&conn, "week", day).unwrap();
         assert_eq!(apps.protected_minutes, 2);
-        assert!(apps.newcomers.iter().any(|n| n == "Mystery"));
+        // Only the app whose time went nowhere needs filing: Mystery's seconds were
+        // entertainment, which the report now knows even though no list names it.
+        let newcomers = &apps.newcomers;
+        assert!(newcomers.iter().any(|n| n == "ChatGPT"));
+        assert!(!newcomers.iter().any(|n| n == "Mystery"));
+        assert!(!newcomers.iter().any(|n| n == "Cursor"));
+        // Cursor is in the default policy's trusted_apps, which no longer decides
+        // anything, so it is deliberately not labelled 主线 any more.
         let cursor = apps.apps.iter().find(|a| a.name == "Cursor").unwrap();
-        assert_eq!(cursor.listed_as, "mainline");
-        assert_eq!(cursor.minutes, 8);
+        assert_eq!(cursor.listed_as, "");
         let mystery = apps.apps.iter().find(|a| a.name == "Mystery").unwrap();
-        assert_eq!(mystery.listed_as, "");
+        assert_eq!(mystery.listed_as, "entertainment");
+        assert!(!mystery.filed);
+        let pol = gamelife_core::default_v01();
+        assert_eq!(filed_list_for("1Password", "", &pol), "never_capture");
+        assert_eq!(filed_list_for("Cursor", "", &pol), "");
+        // Chrome's minutes are distraction seconds, so it reports 娱乐 even though no
+        // list contains the app name — and it is not offered as re-filable.
+        assert_eq!(ruled_list(0, 0, 45), Some("entertainment"));
+        assert_eq!(ruled_list(300, 0, 45), Some("admin"));
+        assert_eq!(ruled_list(0, 0, 0), None);
+        assert_eq!(cursor.minutes, 8);
         assert_eq!(apps.hosts[0].host, "arxiv.org");
         assert_eq!(apps.hosts[0].minutes, 2);
     }
