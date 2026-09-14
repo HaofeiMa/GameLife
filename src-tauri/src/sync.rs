@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::{normalize_scope, SyncSettings, SCOPE_SAMPLES};
+use crate::db::SettlementMode;
 
 /// Long enough for a multi-megabyte snapshot on a slow link, short enough that
 /// the on-exit sync cannot wedge the tray.
@@ -712,6 +713,26 @@ pub struct SyncOutcome {
     pub at: i64,
     pub snapshot_bytes: u64,
     pub devices: Vec<DeviceEntry>,
+    /// What the merge-and-settle half did, when it ran at all. `None` on a
+    /// single-device install, which has nothing to merge and nothing to settle
+    /// — a more honest answer than an empty summary.
+    #[serde(default)]
+    pub settlement: Option<SettlementSummary>,
+}
+
+/// The outcome of one merge-and-settle pass (§7.5.2).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementSummary {
+    /// Days whose rewards this run paid, oldest first.
+    pub settled: Vec<String>,
+    /// The day the walk stopped at, when it stopped before yesterday.
+    pub blocked: Option<String>,
+    /// Set when the merged view or the settlement itself failed. The upload
+    /// still counts as a success — a backup that landed is a backup that
+    /// landed — and the next tick retries this half, because the watermark
+    /// only moves when a day is actually paid.
+    pub error: Option<String>,
 }
 
 /// Everything `sync_with_target` needs, injected. Nothing here reaches for
@@ -889,11 +910,76 @@ pub fn sync_with_target(ctx: &SyncContext) -> Result<SyncOutcome, SyncError> {
             at: ctx.now,
             snapshot_bytes: report.bytes,
             devices: reg,
+            settlement: None,
         })
     })();
 
     let _ = std::fs::remove_file(&scratch);
     result
+}
+
+/// A full sync: upload, then — with more than one device registered — merge the
+/// devices' snapshots and pay whatever days have come due.
+///
+/// **The ordering is the point.** The settler's only input is the merged view,
+/// so a rebuild that failed must not be followed by settlement. And because an
+/// unsettled day simply stays unsettled — the watermark only moves when a day
+/// is actually paid — a bad network costs nothing but time. That is what lets
+/// `resolve_slot` record nothing at all in deferred mode (§7.5.2).
+///
+/// The mode is decided from the registry this run already fetched, so it
+/// follows the **remote** device count rather than a local guess. It is the one
+/// step here that is not best-effort: a machine that has just become the second
+/// device has to stop paying per slot *before* it settles anything, or it would
+/// pay its own half of a day that the settler is about to pay in full.
+///
+/// Merge and settlement failures are recorded rather than propagated: the
+/// upload succeeded, and reporting the whole sync as failed would make 设置 say
+/// so about a backup that landed. The next tick retries this half.
+pub fn sync_merge_and_settle(
+    ctx: &SyncContext,
+    conn: &mut Connection,
+    merged_db: &Path,
+) -> Result<SyncOutcome, SyncError> {
+    let mut outcome = sync_with_target(ctx)?;
+
+    let mode = if outcome.devices.len() > 1 {
+        SettlementMode::Deferred
+    } else {
+        SettlementMode::Immediate
+    };
+    crate::db::set_settlement_mode(conn, mode).map_err(|e| SyncError::Db(format!("{e:?}")))?;
+
+    if mode == SettlementMode::Immediate {
+        return Ok(outcome);
+    }
+
+    let mut summary = SettlementSummary::default();
+    match rebuild_merged(ctx.target, ctx.settings, merged_db, ctx.scratch) {
+        Ok(report) if report.merged.is_empty() => {
+            summary.error = Some("没有读到任何设备的快照".into());
+        }
+        Ok(report) => {
+            let snapshots = coverage_from(&outcome.devices, &report.merged);
+            match crate::settle::settle_due_days(
+                conn,
+                merged_db,
+                &outcome.devices,
+                &snapshots,
+                ctx.now,
+                SETTLE_GRACE_HOURS,
+            ) {
+                Ok(r) => {
+                    summary.settled = r.settled;
+                    summary.blocked = r.blocked.map(|(day, _)| day);
+                }
+                Err(e) => summary.error = Some(format!("结算失败：{e:?}")),
+            }
+        }
+        Err(e) => summary.error = Some(format!("重建合并视图失败：{e}")),
+    }
+    outcome.settlement = Some(summary);
+    Ok(outcome)
 }
 
 /// Production entry point. Records the outcome in `app_meta` so the settings
@@ -902,7 +988,7 @@ pub fn sync_with_target(ctx: &SyncContext) -> Result<SyncOutcome, SyncError> {
 /// interval.
 pub fn sync_now(settings: &SyncSettings) -> Result<SyncOutcome, SyncError> {
     let live = crate::db::app_db_path().ok_or_else(|| SyncError::Config("找不到数据目录".into()))?;
-    let conn = crate::db::open(&live).map_err(|e| SyncError::Db(format!("{e:?}")))?;
+    let mut conn = crate::db::open(&live).map_err(|e| SyncError::Db(format!("{e:?}")))?;
     crate::db::migrate(&conn).map_err(|e| SyncError::Db(format!("{e:?}")))?;
 
     let id = device_id(&conn)?;
@@ -921,7 +1007,13 @@ pub fn sync_now(settings: &SyncSettings) -> Result<SyncOutcome, SyncError> {
         platform: std::env::consts::OS,
         now,
     };
-    let outcome = sync_with_target(&ctx);
+    let outcome = match merged_db_path() {
+        Some(merged) => sync_merge_and_settle(&ctx, &mut conn, &merged),
+        // Without a data directory there is nowhere to put a merged view, so
+        // the upload runs alone — phase two's read side stays off rather than
+        // failing the backup over it.
+        None => sync_with_target(&ctx),
+    };
 
     match &outcome {
         Ok(o) => {
@@ -1149,6 +1241,29 @@ pub fn day_is_ready(
             .iter()
             .any(|s| s.device_id == d.device_id && s.taken_at >= end)
     })
+}
+
+/// What one run's snapshots can answer for (§3.4).
+///
+/// Only devices whose snapshot was actually **read** count as covering
+/// anything. The distinction matters exactly when a device is registered but
+/// its `latest.db` could not be fetched: passing the registry's `last_seen`
+/// straight through would report that device as covering a day whose data
+/// never arrived, and `day_is_ready` would wave the day through — which is the
+/// one thing it exists to prevent. A device that is merely offline therefore
+/// keeps its days unsettled, and the grace period is what bounds the wait.
+///
+/// `last_seen` is the timestamp used because it is the only "when was this
+/// snapshot taken" the remote carries: a device that uploaded after D ended is
+/// a device whose snapshot covers D.
+pub fn coverage_from(registry: &[DeviceEntry], read: &[String]) -> Vec<SnapshotCoverage> {
+    read.iter()
+        .filter_map(|id| registry.iter().find(|d| &d.device_id == id))
+        .map(|d| SnapshotCoverage {
+            device_id: d.device_id.clone(),
+            taken_at: d.last_seen,
+        })
+        .collect()
 }
 
 /// Where the read-only merged view lives. Beside the live database, so the
@@ -1513,6 +1628,7 @@ mod tests {
     use crate::config::SCOPE_AGGREGATE;
     use std::io::{Read, Write};
     use std::net::TcpStream;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU16, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -3059,5 +3175,253 @@ mod tests {
             .filter(|n| n.starts_with("merged-src-"))
             .collect();
         assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+    }
+
+    // ---- Task 14c: the sync flow owns the mode and the settlement ----------
+
+    /// A whole sync run, with the live database and the remote both real.
+    struct RunFixture {
+        _dir: tempfile::TempDir,
+        target: FakeTarget,
+        settings: SyncSettings,
+        live: PathBuf,
+        merged: PathBuf,
+        scratch: PathBuf,
+        now: i64,
+    }
+
+    const RUN_DAY: &str = "2026-09-10";
+
+    /// The shared `slot()` helper leaves `credited_core_seconds` at 0 — it was
+    /// written for ownership tests, which only care about `observed_seconds`.
+    /// Settlement cares about the credited seconds, so this one carries them.
+    fn credited_slot(day: &str, slot_start: i64, credited: i64) -> String {
+        format!(
+            "INSERT INTO slots (day, slot_start, category, status, observed_seconds,
+                                credited_core_seconds, early_coins)
+             VALUES ('{day}', {slot_start}, 'core_research', 'final', {credited}, {credited}, 0);"
+        )
+    }
+
+    impl RunFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let scratch = dir.path().join("scratch");
+            let merged = dir.path().join("merged.db");
+            std::fs::create_dir_all(&scratch).unwrap();
+            let live = dir.path().join("live.db");
+
+            {
+                let conn = crate::db::open(&live).unwrap();
+                crate::db::migrate(&conn).unwrap();
+                // This machine's identity, so the rows it uploads and the
+                // registry entry it writes agree.
+                crate::db::meta_set(&conn, crate::db::DEVICE_ID_KEY, "aaa").unwrap();
+                conn.execute_batch(
+                    "INSERT INTO slots (day, slot_start, category, status, observed_seconds,
+                                        credited_core_seconds, early_coins)
+                     VALUES ('2026-09-10', 0, 'core_research', 'final', 900, 900, 8);",
+                )
+                .unwrap();
+            }
+
+            Self {
+                _dir: dir,
+                target: FakeTarget::default(),
+                settings: ctx_settings(),
+                live,
+                merged,
+                scratch,
+                // After 2026-09-10 ended, and inside the 36h grace for the day
+                // after it, so coverage is what decides.
+                now: crate::scheduler::start_of_named_day("2026-09-12").unwrap(),
+            }
+        }
+
+        /// A second machine's snapshot, already in the remote — the state a
+        /// device finds itself in the first time it syncs after pairing.
+        fn with_second_device(&self, device: &str) {
+            let path = device_snapshot(
+                &self.scratch,
+                device,
+                &[credited_slot(RUN_DAY, 900, 900)],
+            );
+            let bytes = std::fs::read(&path).unwrap();
+            let dir = remote_dir(&self.settings, device);
+            self.target.put(&format!("{dir}/latest.db"), &bytes).unwrap();
+            let reg = vec![DeviceEntry {
+                device_id: device.into(),
+                label: device.into(),
+                platform: "macos".into(),
+                last_seen: self.now,
+            }];
+            self.target
+                .put("gamelife/devices.json", &serde_json::to_vec(&reg).unwrap())
+                .unwrap();
+        }
+
+        fn run(&self) -> (Connection, SyncOutcome) {
+            let mut conn = crate::db::open(&self.live).unwrap();
+            let ctx = SyncContext {
+                settings: &self.settings,
+                live_db: &self.live,
+                scratch: &self.scratch,
+                target: &self.target,
+                device_id: "aaa",
+                label: "Mac",
+                platform: "macos",
+                now: self.now,
+            };
+            let outcome = sync_merge_and_settle(&ctx, &mut conn, &self.merged).unwrap();
+            (conn, outcome)
+        }
+    }
+
+    fn ledger_coin_ticks(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM ledger WHERE reward_event_key LIKE 'validated_coin:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// §3.4's first row: one device settles as it goes. Phase two must be
+    /// invisible until a second device actually exists.
+    #[test]
+    fn a_lone_device_stays_on_immediate_settlement() {
+        let f = RunFixture::new();
+
+        let (conn, outcome) = f.run();
+
+        assert_eq!(outcome.devices.len(), 1);
+        assert_eq!(outcome.settlement, None, "there is nothing to merge");
+        assert_eq!(
+            crate::db::settlement_mode(&conn),
+            SettlementMode::Immediate
+        );
+        assert!(!f.merged.exists(), "no merged view for a lone device");
+    }
+
+    /// The moment a second device appears, this one stops paying per slot.
+    /// Before the merge, not after: paying its own half and then letting the
+    /// settler pay the day would double-count the half.
+    #[test]
+    fn a_second_device_switches_settlement_to_deferred_and_pays_the_day() {
+        let f = RunFixture::new();
+        f.with_second_device("bbb");
+        // The day before the one under test, so the walk has somewhere to start.
+        {
+            let conn = crate::db::open(&f.live).unwrap();
+            crate::db::meta_set(&conn, crate::db::SETTLED_THROUGH_KEY, "2026-09-09").unwrap();
+        }
+
+        let (conn, outcome) = f.run();
+
+        assert_eq!(outcome.devices.len(), 2);
+        assert_eq!(crate::db::settlement_mode(&conn), SettlementMode::Deferred);
+        let summary = outcome.settlement.expect("the half ran");
+        assert_eq!(summary.error, None);
+        assert_eq!(summary.settled.first().map(String::as_str), Some(RUN_DAY));
+        // Both devices' slots are in the merged view, so the day is worth two
+        // quarter-hours — one from each machine.
+        assert_eq!(ledger_coin_ticks(&conn), 2);
+        let bonus: i64 = conn
+            .query_row(
+                "SELECT coin_delta FROM ledger WHERE reward_event_key = ?1",
+                params![format!("early_start:{RUN_DAY}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bonus, 8, "the bonus came off the owner's slot row");
+    }
+
+    /// A day whose second device never uploaded must not be settled from a
+    /// view missing it — and must not be settled from a view that is not there
+    /// at all either.
+    #[test]
+    fn a_day_waits_when_the_other_device_could_not_be_read() {
+        let f = RunFixture::new();
+        f.with_second_device("bbb");
+        // `bbb` is registered, but its snapshot is unreadable. The registry
+        // still claims it was seen recently, which is exactly the case where
+        // coverage taken from `last_seen` would lie.
+        f.target
+            .put("gamelife/bbb/latest.db", b"not a database")
+            .unwrap();
+        {
+            let conn = crate::db::open(&f.live).unwrap();
+            crate::db::meta_set(&conn, crate::db::SETTLED_THROUGH_KEY, "2026-09-09").unwrap();
+        }
+
+        let (conn, outcome) = f.run();
+
+        let summary = outcome.settlement.expect("the half ran");
+        assert!(summary.settled.is_empty());
+        assert_eq!(summary.blocked.as_deref(), Some(RUN_DAY));
+        assert_eq!(ledger_coin_ticks(&conn), 0);
+        assert_eq!(
+            crate::db::meta_get(&conn, crate::db::SETTLED_THROUGH_KEY)
+                .unwrap()
+                .as_deref(),
+            Some("2026-09-09"),
+            "the watermark must not move for a day that was not paid"
+        );
+    }
+
+    /// The upload's success is not conditional on the merge. A backup that
+    /// landed is a backup that landed, and 设置 must not call the whole sync
+    /// failed because the read side could not run.
+    #[test]
+    fn a_merge_failure_is_reported_without_failing_the_upload() {
+        let f = RunFixture::new();
+        f.with_second_device("bbb");
+        f.target
+            .put("gamelife/bbb/latest.db", b"not a database")
+            .unwrap();
+
+        let (_conn, outcome) = f.run();
+
+        assert!(outcome.snapshot_bytes > 0, "the upload still happened");
+        assert!(
+            f.target.has("gamelife/aaa/latest.db"),
+            "this device's snapshot is in the remote"
+        );
+        let summary = outcome.settlement.expect("the half ran");
+        assert!(
+            summary.error.is_none(),
+            "an unreadable device is a `skipped` device, not a failure: {summary:?}"
+        );
+        assert!(summary.settled.is_empty());
+    }
+
+    /// Coverage is built from what the run **read**, so a device that is
+    /// registered but unreadable contributes nothing.
+    #[test]
+    fn coverage_counts_only_the_devices_that_were_read() {
+        let registry = vec![
+            DeviceEntry {
+                device_id: "aaa".into(),
+                label: "a".into(),
+                platform: "macos".into(),
+                last_seen: 100,
+            },
+            DeviceEntry {
+                device_id: "bbb".into(),
+                label: "b".into(),
+                platform: "macos".into(),
+                last_seen: 200,
+            },
+        ];
+
+        let only_aaa = coverage_from(&registry, &["aaa".to_string()]);
+        assert_eq!(
+            only_aaa,
+            vec![SnapshotCoverage {
+                device_id: "aaa".into(),
+                taken_at: 100
+            }]
+        );
+        assert!(coverage_from(&registry, &[]).is_empty());
     }
 }

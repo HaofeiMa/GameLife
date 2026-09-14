@@ -202,10 +202,19 @@ pub struct SettleReport {
 /// followed by settlement. That ordering is also why nothing needs to be
 /// recorded at judgment time: an unsettled day simply stays unsettled, and
 /// the watermark does not move, so no reward can be lost to a bad network.
+///
+/// `snapshots` is what this run actually **read**, not what the registry
+/// claims exists. The two differ exactly when a device is registered but its
+/// snapshot could not be fetched, and that is the case where settling would
+/// apply §3.3's ownership rule to a view missing that device — the thing
+/// `day_is_ready` exists to prevent. Passing the registry's `last_seen`
+/// straight through would have said "covered" for a device whose data never
+/// arrived.
 pub fn settle_due_days(
     conn: &mut Connection,
     merged: &Path,
     devices: &[DeviceEntry],
+    snapshots: &[SnapshotCoverage],
     now: i64,
     grace_hours: i64,
 ) -> Result<SettleReport, DbOpError> {
@@ -223,25 +232,13 @@ pub fn settle_due_days(
     let yesterday = yesterday_str_for_ts(now);
     let mut from = settled_through(conn, &yesterday)?;
 
-    // §3.4's coverage question, answered from the registry: a device's
-    // `last_seen` is the only "when was this snapshot taken" the remote
-    // carries, and a device that uploaded after D ended is a device whose
-    // snapshot covers D.
-    let coverage: Vec<SnapshotCoverage> = devices
-        .iter()
-        .map(|d| SnapshotCoverage {
-            device_id: d.device_id.clone(),
-            taken_at: d.last_seen,
-        })
-        .collect();
-
     for _ in 0..MAX_DAYS_PER_RUN {
         let Some(day) = next_day(&from) else { break };
         if day > yesterday {
             break;
         }
 
-        if !day_is_ready(&day, devices, &coverage, now, grace_hours) {
+        if !day_is_ready(&day, devices, snapshots, now, grace_hours) {
             report.blocked = Some((day.clone(), "waiting for every device".into()));
             break;
         }
@@ -311,7 +308,8 @@ mod tests {
     use crate::db::{migrate, set_settlement_mode, DEVICE_ID_KEY};
     use crate::scheduler::start_of_named_day;
     use crate::sync::{
-        rebuild_merged, remote_dir, update_registry, DeviceEntry, RemoteTarget, SyncError,
+        coverage_from, rebuild_merged, remote_dir, update_registry, DeviceEntry, RemoteTarget,
+        SyncError,
     };
 
     // ---- the pure half: what a day is worth ------------------------------
@@ -573,9 +571,23 @@ mod tests {
             rebuild_merged(&self.target, &self.settings, &self.merged, &self.scratch).unwrap()
         }
 
+        /// Settle with the coverage the sync flow would build: every device
+        /// whose snapshot this run actually read. In this fixture every upload
+        /// is readable, so that is the whole registry — the tests that care
+        /// about the difference pass coverage explicitly.
         fn settle(&mut self, now: i64, grace_hours: i64) -> SettleReport {
             let devices = self.registry.clone();
-            settle_due_days(&mut self.live, &self.merged, &devices, now, grace_hours).unwrap()
+            let read: Vec<String> = devices.iter().map(|d| d.device_id.clone()).collect();
+            let snapshots = coverage_from(&devices, &read);
+            settle_due_days(
+                &mut self.live,
+                &self.merged,
+                &devices,
+                &snapshots,
+                now,
+                grace_hours,
+            )
+            .unwrap()
         }
 
         fn ledger_keys(&self) -> Vec<String> {

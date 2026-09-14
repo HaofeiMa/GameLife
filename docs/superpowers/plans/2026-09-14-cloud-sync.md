@@ -44,7 +44,7 @@
 | T11 `merged.db` rebuild | **done** — `sync.rs` + `db.rs`, 10 new tests; spec §5.3 added |
 | T12 Owner rule | **done** — `sync.rs`, 5 new tests |
 | T13 Readiness gate | **done** — `sync.rs`, 7 new tests; `scheduler::local_day_end` → `pub(crate)` |
-| T14 Settlement | **T14a done**, **T14b done**; T14c (mode plumbing) not started |
+| T14 Settlement | **done** (T14a/T14b/T14c) |
 | T15 统计 / 商店 merged view | not started |
 | T16 Settings card | not started |
 
@@ -826,9 +826,10 @@ cargo test --offline -p gamelife
 
 Design in the spec. The parts that are additive and behaviour-neutral are being built first, so that nothing about settlement timing is committed before the user signs off on it.
 
-- **Built and green:** T10 (tagging), T11 (`merged.db`), T12 (owner rule), T13 (readiness gate), T14a/T14b (deferral and the settler). T10 and T11 touch only the migration and the sync module; T12/T13 are pure. T14a/T14b add a mode, a column and a new module — with the mode left at `Immediate` the judgment path is byte-for-byte what it was, and the settler returns immediately.
-- **Unblocked and next:** T14c (mode plumbing — writes `settle_mode`, calls the settler after a successful rebuild), then T15 (今日 showing 待结算预览). §13.1 was decided on 2026-09-14 — the user accepted that with two devices the 今日 page's 能量 becomes a 待结算预览.
+- **Built and green:** T10 (tagging), T11 (`merged.db`), T12 (owner rule), T13 (readiness gate), T14 (deferral, the settler, and the wiring). T10 and T11 touch only the migration and the sync module; T12/T13 are pure. T14 adds a mode, a column, a module and a call site — with one device registered the mode is `Immediate` and the judgment path is byte-for-byte what it was.
+- **Unblocked and next:** T15 (统计 / 商店 reading the merged view, and 今日 showing 待结算预览) and T16 (the 设置 card, which also lands `settleGraceHours`). §13.1 was decided on 2026-09-14 — the user accepted that with two devices the 今日 page's 能量 becomes a 待结算预览.
 - **Correction while preparing T14b (2026-09-14):** T14a's `pending_rewards` table was designed as "record the events, replay them later". That model is unsound for the *cumulative* keys, and §7.5 was rewritten (now §7.5.1 / §7.5.2). T14b therefore **deleted the table** rather than leaving it unread: its rows were per-device baselines presented as if they were the day's rewards, which is the bug written down. `resolve_slot` in `Deferred` now writes no reward rows at all, and T14a's test asserting the two modes produce identical event sets was replaced by three tests stating what is actually true.
+- **Found while wiring (T14c):** T14b derived `day_is_ready`'s coverage from the registry's `last_seen` for every registered device. That reports a device as covering a day even when its snapshot could not be fetched — the one case where settling applies the ownership rule to an incomplete view. Coverage now comes from the devices the run actually read (`sync::coverage_from`).
 
 Outline, in dependency order:
 
@@ -854,7 +855,11 @@ Outline, in dependency order:
     - The watermark is **written**, not derived from `now`: a default that slid forward with the clock would answer "yesterday" again tomorrow and never settle the day it was computed for.
     - Coverage comes from the registry's `last_seen`, the only "when was this snapshot taken" the remote carries.
     - 15 tests, 9 of them end to end: snapshots → real `rebuild_merged` → ledger. The headline one is the §7.5.1 case — two devices each observing half of 2026-09-10 must pay the day's eight quarter-hours, not four.
-  - [ ] **T14c Mode plumbing** — the sync flow writes `settle_mode` from the registry it already reads (≥2 devices → `deferred`, ≤1 → `immediate`), calls `settle_due_days` immediately after a successful `rebuild_merged`, and adds `settleGraceHours` to `SyncSettings` (§9). §7.4's `days.settled_at` / `outcome` is about **which device's row the merged view shows**, not about the local write — `scheduler::settle_day` already writes the local one at midnight, and merged `days` is keyed `(device_id, day)` so both survive.
+  - [x] **T14c Mode plumbing** — **done**. `sync::sync_merge_and_settle(ctx, conn, merged_db)` is the full run: upload → write `settle_mode` from the registry the upload just fetched → `rebuild_merged` → `settle_due_days`. `sync_now` calls it (falling back to the upload alone when there is no data directory to put a merged view in). `SyncOutcome` gained `settlement: Option<SettlementSummary>` (`settled` / `blocked` / `error`) so a read-side failure is recorded rather than swallowed — and **not** propagated, because the upload already succeeded and 设置 must not call a landed backup a failure.
+    - Writing the mode is the one step that is *not* best-effort: a machine that has just become the second device has to stop paying per slot **before** it settles, or it pays its own half and the settler then pays the day again.
+    - The wiring exposed a real gap in T14b: coverage has to come from the devices this run actually **read**, not from the registry's `last_seen`. The two differ exactly when a device is registered but its `latest.db` cannot be fetched — the case where settling would apply the ownership rule to a view missing that device. New `sync::coverage_from(registry, read)`; `settle_due_days` now takes the coverage rather than deriving it.
+    - 5 new tests, including a whole two-device run: the mode flips, the merged view is built, and 2026-09-10 is paid from both machines' slots.
+    - **Deferred to T16:** `settleGraceHours` in `SyncSettings` (§9). `sync_merge_and_settle` uses `sync::SETTLE_GRACE_HOURS` for now — the setting and its UI belong in one commit, or saving 设置 would reset a value the user cannot see.
 - [ ] **T15 统计 / 商店 read the merged view** — and 今日 shows 待结算预览 when more than one device is registered.
 - [ ] **T16 Settings card** — device list, 结算宽限期, per-device last-seen.
 
