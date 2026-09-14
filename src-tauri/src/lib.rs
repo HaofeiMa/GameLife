@@ -15,6 +15,7 @@ pub mod platform;
 pub mod resolve;
 pub mod sampler;
 pub mod scheduler;
+pub mod settle;
 pub mod sync;
 pub mod text_ai;
 pub mod ticktick;

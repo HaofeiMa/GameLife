@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS slots (
   observed_seconds INTEGER,
   used_vision INTEGER,
   task_snapshot_json TEXT,
+  -- The early-start bonus this slot earned, recorded at judgment time because
+  -- it cannot be recomputed later: it is derived from `samples`, which the
+  -- default sync scope never uploads (§7.5.2 point 3).
+  early_coins INTEGER,
   PRIMARY KEY (day, slot_start)
 );
 CREATE TABLE IF NOT EXISTS ledger (
@@ -56,18 +60,6 @@ CREATE TABLE IF NOT EXISTS ledger (
   coin_delta INTEGER NOT NULL,
   xp_delta INTEGER NOT NULL
 );
--- Rewards earned while more than one device is registered, held until the day
--- is ready to settle (§3.4). Same primary key as `ledger`, so recording an
--- event is idempotent by exactly the mechanism that makes paying it idempotent.
-CREATE TABLE IF NOT EXISTS pending_rewards (
-  reward_event_key TEXT PRIMARY KEY,
-  day TEXT NOT NULL,
-  slot_start INTEGER NOT NULL,
-  ts INTEGER NOT NULL,
-  coin_delta INTEGER NOT NULL,
-  xp_delta INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS pending_rewards_day ON pending_rewards(day, slot_start);
 CREATE TABLE IF NOT EXISTS wishes (
   id TEXT PRIMARY KEY, name TEXT, kind TEXT, price INTEGER, duration_minutes INTEGER, notes TEXT,
   archived INTEGER NOT NULL DEFAULT 0
@@ -270,6 +262,18 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
     add_column_if_missing(conn, "slots", "task_snapshot_json", "TEXT")?;
     add_column_if_missing(conn, "slots", "credited_side_seconds", "INTEGER")?;
     add_column_if_missing(conn, "slots", "credited_chore_seconds", "INTEGER")?;
+    add_column_if_missing(conn, "slots", "early_coins", "INTEGER")?;
+    // `pending_rewards` was the phase-two deferred destination, designed as
+    // "record the events now, replay them once the day is ready". §7.5.1
+    // records why that model is unsound — the cumulative keys are functions of
+    // the whole day's credited seconds, so the rows it held encoded a
+    // per-device baseline that no device could correct. Deferral now pays
+    // nothing at judgment time and the day is recomputed once from the
+    // canonical sequence (`settle.rs`). The table is dropped rather than left
+    // in place: a store of wrong numbers that nothing reads is worse than no
+    // store at all.
+    conn.execute_batch("DROP TABLE IF EXISTS pending_rewards;")
+        .map_err(map_rusqlite)?;
     let device_id = local_device_id(conn)?;
     tag_device_rows(conn, &device_id)?;
     seed_preset_lists_if_empty(conn)?;
@@ -439,17 +443,30 @@ pub fn now_unix() -> i64 {
 
 pub const SETTLE_MODE_KEY: &str = "settle_mode";
 
-/// Where a slot's rewards go the moment the slot is judged.
+/// The last day whose deferred rewards have been paid. A high-water mark, not
+/// a queue: days at or before it are never looked at again, which is what
+/// makes "late data changes the statistics view but not the ledger" (§3.4)
+/// true rather than aspirational.
+pub const SETTLED_THROUGH_KEY: &str = "rewards_settled_through";
+
+/// When a slot's rewards are allowed to reach the ledger.
 ///
 /// `Immediate` is what the app has always done: the ledger is written as each
-/// slot finalises, and 今日 updates live. `Deferred` records the identical
-/// events in `pending_rewards` and pays them once the day is ready (§3.4) —
-/// which is what lets several devices share one wallet without two of them
-/// paying the same slot.
+/// slot finalises, and 今日 updates live.
 ///
-/// The reward *computation* is the same in both modes; only the destination
-/// differs. That is deliberate: it is what makes "deferring does not change
-/// what is eventually paid" a property a test can state directly.
+/// `Deferred` is for an install with more than one registered device. It
+/// writes **no** reward rows at all — not to the ledger, and not to a holding
+/// pen. The day's rewards are computed once, from the day's canonical slot
+/// sequence, by `settle::settle_due_days` (§7.5.2).
+///
+/// The reason there is no holding pen is §7.5.1: the cumulative keys
+/// (`validated_coin:<day>:<i>`, `ladder:*`, …) are functions of the day's
+/// *total* credited seconds. A device only knows its own share of the day, so
+/// the events it would have written are not a subset of the day's — they are
+/// numbers derived from the wrong baseline. Two devices each observing half a
+/// day both start their cumulative at zero, emit the same keys, and the unique
+/// key silently swallows the second half. Recording those events would record
+/// the bug.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettlementMode {
     Immediate,
@@ -1478,6 +1495,29 @@ mod tests {
         migrate(&conn).unwrap();
 
         assert_eq!(settlement_mode(&conn), SettlementMode::Immediate);
+        set_settlement_mode(&conn, SettlementMode::Deferred).unwrap();
+        assert_eq!(settlement_mode(&conn), SettlementMode::Deferred);
+        set_settlement_mode(&conn, SettlementMode::Immediate).unwrap();
+        assert_eq!(settlement_mode(&conn), SettlementMode::Immediate);
+    }
+
+    /// The holding pen §7.5.1 rejects must be gone, including from a database
+    /// that already had one: its rows are per-device baselines presented as if
+    /// they were the day's rewards.
+    #[test]
+    fn the_rejected_holding_pen_is_dropped_on_migrate() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pending_rewards (
+               reward_event_key TEXT PRIMARY KEY, day TEXT NOT NULL,
+               slot_start INTEGER NOT NULL, ts INTEGER NOT NULL,
+               coin_delta INTEGER NOT NULL, xp_delta INTEGER NOT NULL
+             );
+             INSERT INTO pending_rewards VALUES ('validated_coin:2026-09-10:1', '2026-09-10', 0, 1, 1, 0);",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_rewards'",
@@ -1485,12 +1525,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(n, 1, "the deferred destination must exist");
-
-        set_settlement_mode(&conn, SettlementMode::Deferred).unwrap();
-        assert_eq!(settlement_mode(&conn), SettlementMode::Deferred);
-        set_settlement_mode(&conn, SettlementMode::Immediate).unwrap();
-        assert_eq!(settlement_mode(&conn), SettlementMode::Immediate);
+        assert_eq!(n, 0);
     }
 
     /// A hand-edited or corrupted value must not silently stop the ledger. The

@@ -12,41 +12,15 @@ use gamelife_core::GOLD_DAY_SECS;
 use crate::db::{insert_ledger, settlement_mode, SettlementMode};
 use crate::db_error::{map_rusqlite, DbOpError};
 
-/// Put one reward event where the current settlement mode says it belongs.
+/// Write one reward event to the ledger, treating a repeat as success.
 ///
-/// Both destinations share the same primary key and both treat
-/// `AlreadyApplied` as success, so a slot judged twice — or two devices racing
-/// to settle the same slot (§7.3) — cannot double-pay. The reward *computation*
-/// never consults the mode; only this function does.
-fn record_reward(
-    conn: &Connection,
-    mode: SettlementMode,
-    day: &str,
-    slot_start: i64,
-    ev: &RewardEvent,
-) -> Result<(), DbOpError> {
-    let result = match mode {
-        SettlementMode::Immediate => insert_ledger(conn, &ev.key, day, ev.coin, ev.xp),
-        SettlementMode::Deferred => conn
-            .execute(
-                "INSERT INTO pending_rewards
-                   (reward_event_key, day, slot_start, ts, coin_delta, xp_delta)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    ev.key,
-                    day,
-                    slot_start,
-                    crate::db::now_unix(),
-                    ev.coin,
-                    ev.xp
-                ],
-            )
-            .map(|_| ())
-            .map_err(map_rusqlite),
-    };
-    match result {
+/// `AlreadyApplied` is the only error that may be swallowed: the same event
+/// applied twice is exactly what the unique key exists for (§7.3), whether the
+/// repeat comes from a slot judged twice or from two devices settling the same
+/// day at the same moment.
+fn record_reward(conn: &Connection, day: &str, ev: &RewardEvent) -> Result<(), DbOpError> {
+    match insert_ledger(conn, &ev.key, day, ev.coin, ev.xp) {
         Ok(()) => Ok(()),
-        // The only error that may be swallowed: the same event applied twice.
         Err(DbOpError::AlreadyApplied) => Ok(()),
         Err(e) => Err(e),
     }
@@ -72,7 +46,7 @@ pub fn resolve_slot(
     let stats_already_written = prior.as_deref() == Some("pending_review");
 
     if output.pending {
-        upsert_slot(&tx, day, slot_start, output, "pending_review", 0)?;
+        upsert_slot(&tx, day, slot_start, output, "pending_review", 0, early_coins)?;
         if !stats_already_written {
             write_day_stats(&tx, day, deltas)?;
         }
@@ -81,7 +55,7 @@ pub fn resolve_slot(
     }
 
     let credited = output.credited_core_seconds;
-    if !upsert_slot(&tx, day, slot_start, output, "final", credited)? {
+    if !upsert_slot(&tx, day, slot_start, output, "final", credited, early_coins)? {
         tx.commit().map_err(map_rusqlite)?;
         return Ok(());
     }
@@ -90,18 +64,32 @@ pub fn resolve_slot(
         write_day_stats(&tx, day, deltas)?;
     }
 
-    let after = credited_before + credited;
-    for ev in tick_keys_for_credited(day, credited_before, after) {
-        record_reward(&tx, mode, day, slot_start, &ev)?;
+    // §7.5.2 point 1: with more than one device registered, this machine does
+    // not decide the day's rewards. It has written the slot row and the day
+    // statistics — so 今日 shows the activity seconds live — and stops there.
+    //
+    // Not because the rules differ, but because the *input* would be wrong:
+    // the cumulative keys are functions of the day's total credited seconds
+    // and this device knows only its own share (§7.5.1). The day is paid once,
+    // later, from the canonical sequence, by `settle::settle_due_days`.
+    if mode == SettlementMode::Deferred {
+        tx.commit().map_err(map_rusqlite)?;
+        return Ok(());
     }
 
-    if credited_before < 900 && after >= 900 && early_coins > 0 {
+    let after = credited_before + credited;
+    for ev in tick_keys_for_credited(day, credited_before, after) {
+        record_reward(&tx, day, &ev)?;
+    }
+
+    let early_start_secs = i64::try_from(gamelife_core::COIN_TICK_SECS).unwrap_or(900);
+    if credited_before < early_start_secs && after >= early_start_secs && early_coins > 0 {
         let ev = RewardEvent {
             key: format!("early_start:{day}"),
             coin: early_coins,
             xp: 0,
         };
-        record_reward(&tx, mode, day, slot_start, &ev)?;
+        record_reward(&tx, day, &ev)?;
     }
 
     let gold_day = i64::try_from(GOLD_DAY_SECS).unwrap_or(28800);
@@ -115,7 +103,7 @@ pub fn resolve_slot(
             side_before,
             side_before + output.credited_side_seconds,
         ) {
-            record_reward(&tx, mode, day, slot_start, &ev)?;
+            record_reward(&tx, day, &ev)?;
         }
         for ev in tick_keys_for_discount(
             day,
@@ -123,18 +111,18 @@ pub fn resolve_slot(
             chore_before,
             chore_before + output.credited_chore_seconds,
         ) {
-            record_reward(&tx, mode, day, slot_start, &ev)?;
+            record_reward(&tx, day, &ev)?;
         }
     }
 
     if after < gold_day && output.credited_side_seconds == 0 && output.credited_chore_seconds == 0 {
         if output.dominant == Dominant::ResearchSupport {
             let ev = support_xp_key(day, slot_start);
-            record_reward(&tx, mode, day, slot_start, &ev)?;
+            record_reward(&tx, day, &ev)?;
         }
-        if output.dominant == Dominant::Admin && admin_xp_slots_today(&tx, day, mode)? < 4 {
+        if output.dominant == Dominant::Admin && admin_xp_slots_today(&tx, day)? < 4 {
             let ev = admin_xp_key(day, slot_start);
-            record_reward(&tx, mode, day, slot_start, &ev)?;
+            record_reward(&tx, day, &ev)?;
         }
     }
 
@@ -219,6 +207,11 @@ fn write_day_stats(conn: &Connection, day: &str, deltas: &[DayStatDelta]) -> Res
     Ok(())
 }
 
+/// Write the slot row, unless it is already economically final.
+///
+/// `early_coins` is stored rather than derived because `compute_early_coins`
+/// reads `samples`, and the default sync scope never uploads `samples` — so a
+/// day settled from the merged view cannot recompute it (§7.5.2 point 3).
 fn upsert_slot(
     conn: &Connection,
     day: &str,
@@ -226,11 +219,12 @@ fn upsert_slot(
     output: &JudgeOutput,
     status: &str,
     credited: i64,
+    early_coins: i64,
 ) -> Result<bool, DbOpError> {
     let n = conn
         .execute(
-            "INSERT INTO slots (day, slot_start, category, status, activity_json, credited_core_seconds, credited_side_seconds, credited_chore_seconds, observed_seconds, used_vision)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+            "INSERT INTO slots (day, slot_start, category, status, activity_json, credited_core_seconds, credited_side_seconds, credited_chore_seconds, observed_seconds, used_vision, early_coins)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
          ON CONFLICT(day, slot_start) DO UPDATE SET
            category=excluded.category,
            status=excluded.status,
@@ -239,7 +233,8 @@ fn upsert_slot(
            credited_side_seconds=excluded.credited_side_seconds,
            credited_chore_seconds=excluded.credited_chore_seconds,
            observed_seconds=excluded.observed_seconds,
-           used_vision=excluded.used_vision
+           used_vision=excluded.used_vision,
+           early_coins=excluded.early_coins
          WHERE slots.status IS NULL OR slots.status NOT IN ('final', 'unknown')",
             params![
                 day,
@@ -252,6 +247,7 @@ fn upsert_slot(
                 output.credited_chore_seconds,
                 output.observed_seconds,
                 output.used_vision as i64,
+                early_coins,
             ],
         )
         .map_err(map_rusqlite)?;
@@ -298,18 +294,16 @@ fn dominant_category(d: Dominant) -> &'static str {
 /// With several devices the day can still exceed four, because each machine
 /// only sees its own rows; the settler applies the authoritative day-level cap
 /// when it pays (§7.5).
-fn admin_xp_slots_today(
-    conn: &Connection,
-    day: &str,
-    mode: SettlementMode,
-) -> Result<i64, DbOpError> {
-    let table = match mode {
-        SettlementMode::Immediate => "ledger",
-        SettlementMode::Deferred => "pending_rewards",
-    };
+/// How many slots today have already been paid the `admin` XP, so the day's
+/// four-slot cap holds.
+///
+/// Only consulted on the immediate path. In deferred mode the ledger holds
+/// nothing for the day, and the cap is applied by the day-level settler, which
+/// can see the whole canonical sequence rather than just this device's share.
+fn admin_xp_slots_today(conn: &Connection, day: &str) -> Result<i64, DbOpError> {
     let prefix = format!("xp_admin:{day}:%");
     conn.query_row(
-        &format!("SELECT COUNT(*) FROM {table} WHERE reward_event_key LIKE ?1"),
+        "SELECT COUNT(*) FROM ledger WHERE reward_event_key LIKE ?1",
         params![prefix],
         |r| r.get(0),
     )
@@ -376,15 +370,15 @@ mod tests {
         conn
     }
 
-    /// The whole point of the two modes: deferral changes *when* a reward lands,
-    /// never *what* it is. If the two diverged, a day settled on a two-device
-    /// install would pay a different amount than the same day on a one-device
-    /// install, and the ledger could not be trusted to mean one thing.
+    /// The whole point of the two modes: deferral changes *when* a reward
+    /// lands, never *what* it is. If the two diverged, a day settled on a
+    /// two-device install would pay a different amount than the same day on a
+    /// one-device install, and the ledger could not be trusted to mean one
+    /// thing.
     #[test]
-    fn deferring_records_exactly_what_the_ledger_would_have_paid() {
+    fn the_immediate_ledger_pays_what_the_day_is_worth() {
         let day = "2026-09-10";
         let mut immediate = db_in_mode(SettlementMode::Immediate);
-        let mut deferred = db_in_mode(SettlementMode::Deferred);
 
         let mut credited_before = 0i64;
         for i in 0..6i64 {
@@ -392,11 +386,10 @@ mod tests {
             let start = i * 900;
             // `early_coins` only bites on the first slot, which is the point.
             resolve_slot(&mut immediate, day, start, &output, credited_before, 8, &[]).unwrap();
-            resolve_slot(&mut deferred, day, start, &output, credited_before, 8, &[]).unwrap();
             credited_before += 900;
         }
 
-        // The per-slot keys have their own branches and must defer identically.
+        // The per-slot keys have their own branches.
         let support = JudgeOutput {
             dominant: Dominant::ResearchSupport,
             ..core_output(900)
@@ -407,7 +400,6 @@ mod tests {
         };
         for (slot_start, output) in [(6 * 900, &support), (7 * 900, &admin)] {
             resolve_slot(&mut immediate, day, slot_start, output, credited_before, 0, &[]).unwrap();
-            resolve_slot(&mut deferred, day, slot_start, output, credited_before, 0, &[]).unwrap();
         }
 
         let paid = events_of(&immediate, "ledger");
@@ -415,28 +407,62 @@ mod tests {
             paid.len() > 10,
             "the fixture must actually pay something, got {paid:?}"
         );
-        assert_eq!(paid, events_of(&deferred, "pending_rewards"));
-
-        // ...and neither mode writes to the other's destination.
-        assert!(events_of(&deferred, "ledger").is_empty());
-        assert!(events_of(&immediate, "pending_rewards").is_empty());
+        // The early-start bonus is paid, and it is the stored amount rather
+        // than a recomputed one.
+        let early: i64 = immediate
+            .query_row(
+                "SELECT coin_delta FROM ledger WHERE reward_event_key = ?1",
+                params![format!("early_start:{day}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(early, 8);
     }
 
+    /// §7.5.2 point 1: deferred mode writes no reward rows at all. The events
+    /// it would have written are not a subset of the day's — they are numbers
+    /// derived from this device's own cumulative baseline (§7.5.1) — so
+    /// recording them would record the bug. `settle.rs` recomputes the day.
     #[test]
-    fn a_deferred_slot_recorded_twice_does_not_duplicate_its_intents() {
+    fn deferring_pays_nothing_at_judgment_time() {
         let day = "2026-09-10";
         let mut conn = db_in_mode(SettlementMode::Deferred);
         let output = core_output(900);
 
-        resolve_slot(&mut conn, day, 0, &output, 0, 0, &[]).unwrap();
-        let first = events_of(&conn, "pending_rewards");
-        resolve_slot(&mut conn, day, 0, &output, 0, 0, &[]).unwrap();
+        resolve_slot(&mut conn, day, 0, &output, 0, 8, &[]).unwrap();
 
-        assert_eq!(events_of(&conn, "pending_rewards"), first);
+        assert!(events_of(&conn, "ledger").is_empty());
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE '%reward%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "there is no second destination to record into");
+    }
+
+    /// The stored bonus must survive the path that does not pay it, because
+    /// the settler reads it back off the slot row.
+    #[test]
+    fn the_early_bonus_is_stored_even_when_it_is_not_paid() {
+        let day = "2026-09-10";
+        let mut conn = db_in_mode(SettlementMode::Deferred);
+        resolve_slot(&mut conn, day, 0, &core_output(900), 0, 8, &[]).unwrap();
+
+        let stored: i64 = conn
+            .query_row(
+                "SELECT early_coins FROM slots WHERE day=?1 AND slot_start=0",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 8);
     }
 
     /// Deferring must not stop the slot itself from being written: the local
-    /// database is still the record of what this machine observed.
+    /// database is still the record of what this machine observed, and 今日
+    /// shows the activity seconds live (§13.1).
     #[test]
     fn deferring_still_finalises_the_slot() {
         let day = "2026-09-10";

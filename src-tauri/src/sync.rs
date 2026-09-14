@@ -67,9 +67,6 @@ const SYNCED_TABLES: &[&str] = &[
     "misclassification_reports",
     "policy_versions",
     "samples",
-    // Local to a device — never merged — but it rides in the snapshot so a
-    // restore does not lose rewards that were earned and not yet settled.
-    "pending_rewards",
 ];
 
 /// §4「永不」: rows that must not leave the machine at any scope. `VACUUM INTO`
