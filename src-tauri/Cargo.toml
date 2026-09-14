@@ -40,10 +40,3 @@ objc2-screen-capture-kit = { version = "0.3", default-features = false, features
 [dev-dependencies]
 filetime = "0.2"
 tempfile = "3"
-
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-panic = "abort"
-strip = true

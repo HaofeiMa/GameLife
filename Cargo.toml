@@ -1,3 +1,14 @@
 [workspace]
 resolver = "2"
 members = ["crates/gamelife-core", "src-tauri"]
+
+# The release profile is workspace-wide state and cargo reads it from the root
+# manifest only: a [profile.*] table in a member's manifest is ignored outright
+# (with a warning), so the identical block that used to live in
+# src-tauri/Cargo.toml never reached a single compilation.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
