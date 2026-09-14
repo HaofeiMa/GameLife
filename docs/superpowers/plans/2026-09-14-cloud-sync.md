@@ -41,12 +41,18 @@
 | 8 设置 card | **done** — `Settings.tsx`, `cloudSync.ts` + 9 vitest |
 | 9 Restore | **done** — `sync.rs`, 5 new tests |
 | T10 `device_id` tagging | **done** — `db.rs`, 1 new test; also fixed a phase-one scope leak (amendment 7) |
+| T11 `merged.db` rebuild | not started |
+| T12 Owner rule | **done** — `sync.rs`, 5 new tests |
+| T13 Readiness gate | **done** — `sync.rs`, 7 new tests; `scheduler::local_day_end` → `pub(crate)` |
+| T14 Settlement | **blocked** on the §13.1 product decision |
+| T15 统计 / 商店 merged view | not started |
+| T16 Settings card | not started |
 
 Phase one is complete.
 
 ```
 cargo test --offline -p gamelife-core   165 passed
-cargo test --offline -p gamelife        268 passed / 1 ignored   (was 217 before Task 1)
+cargo test --offline -p gamelife        280 passed / 1 ignored   (was 217 before Task 1)
 npx vitest run --dir src                 94 passed               (was 85)
 npm run build                            ok
 ```
@@ -810,15 +816,20 @@ cargo test --offline -p gamelife
 
 ## Phase two — multi-device ledger
 
-Phase two only starts once a second device is actually registered. Its design is in the spec; the task breakdown follows once phase one is on `main` and the user confirms the settle-timing behaviour change (§3.4, spec §13.1 — with two devices the 今日 page's 能量 stops updating live).
+Design in the spec. The parts that are additive and behaviour-neutral are being built first, so that nothing about settlement timing is committed before the user signs off on it.
+
+- **Built and green:** T10 (tagging), T12 (owner rule), T13 (readiness gate). All three are pure or migration-only: no judgment path, no ledger write, no behaviour change for a single-device install.
+- **Blocked on a product decision:** T14 (settlement) and T15 (今日 showing 待结算预览) change what the 今日 page does once two devices exist. §3.4 flags this as needing explicit confirmation, and the spec's §13.1 asks it. Until that is answered, T14/T15 are not started.
+- **Not yet started:** T11 (`merged.db` rebuild).
 
 Outline, in dependency order:
 
 - [x] **T10 `device_id` tagging** — **done**. `DEVICE_TAGGED_TABLES` (8 tables) each gain `device_id TEXT NOT NULL DEFAULT ''`; `db::local_device_id` mints the id once into `app_meta` and is now the *only* implementation (`sync::device_id` delegates to it, so the remote directory name and the value written into rows cannot disagree). Existing rows are stamped by an `UPDATE … WHERE device_id = ''`; **new** rows are stamped by an `AFTER INSERT` trigger per table, because there are a dozen production insert sites across `sampler.rs` / `scheduler.rs` / `resolve.rs` / `commands.rs` and a missed one would silently produce an unattributable row. The trigger reads the id from `app_meta` rather than baking it in, so a restored snapshot re-stamps with the id it carries; verified that `VACUUM INTO` preserves triggers. `user_version` stays 3.
   Test: `migrate_tags_synced_tables_with_this_device_id` — all eight columns exist, every pre-existing row carries the id, a row inserted after migration is tagged, an explicitly tagged row is not overwritten, and re-migrating does not mint a second identity.
 - [ ] **T11 `merged.db` schema and rebuild** — composite primary keys per spec §5.2, written to a temp file and atomically swapped. `merged.db` is never read by the sampler, `judge_slot`, or `resolve_slot`. Test: rebuilding twice is idempotent.
-- [ ] **T12 Owner rule** — `pub fn slot_owner(rows: &[(String, i64)]) -> String` (max `observed_seconds`, tie → smallest `device_id`). Pure, exhaustively tested including the all-zero `unobserved` case.
-- [ ] **T13 Readiness gate** — `pub fn day_is_ready(day: &str, devices: &[DeviceEntry], snapshots: &[SnapshotCoverage], now: i64, grace_hours: i64) -> bool`.
+  Note for T11: §7.2 means `merged.slots` is **not** a plain union — for each `(day, slot_start)` only the owner's row survives, so the rebuild calls `slot_owner` (T12) after unioning. Also `wishes.updated_at` (§5.2, "两设备改同一条时取新") is a live-schema column that has not been added yet; add it with its writer in T11, where it is first consumed.
+- [x] **T12 Owner rule** — **done**. `sync::slot_owner(&[(device_id, observed_seconds)])`: max `observed_seconds`, tie → smallest `device_id`, reversed-id comparison inside `max_by` so it stays a total order. `""` for an empty slice. 5 tests, including order-independence (the property that actually matters: every device must derive the same owner from the same merged rows) and the all-zero `unobserved` case — a slot nobody observed still gets a deterministic owner, who then finds it `unobserved` and pays nothing, rather than "no owner", which would be indistinguishable from "not settled yet".
+- [x] **T13 Readiness gate** — **done**. `sync::day_is_ready(day, devices, snapshots, now, grace_hours)` with `SnapshotCoverage { device_id, taken_at }` and `SETTLE_GRACE_HOURS = 36`. Coverage is a **timestamp**, not a day: a snapshot taken mid-day may still be missing that evening, so it only answers for D once taken after D ended. `≤1` registered device short-circuits to `true`, which is what keeps phase two invisible until a second device exists. `scheduler::local_day_end` became `pub(crate)` so there is one definition of when a local day ends. 7 tests.
 - [ ] **T14 Settlement** — settle a ready day from the merged view, writing only the slots this device owns; `AlreadyApplied` is the expected outcome when another device won the race. Test: two devices settling the same day concurrently produce exactly one ledger row per slot, with the owner's amount.
 - [ ] **T15 统计 / 商店 read the merged view** — and 今日 shows 待结算预览 when more than one device is registered.
 - [ ] **T16 Settings card** — device list, 结算宽限期, per-device last-seen.

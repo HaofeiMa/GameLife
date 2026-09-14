@@ -446,7 +446,10 @@ fn local_day_start<Tz: TimeZone>(tz: &Tz, date: NaiveDate) -> Option<i64> {
     earliest_instant(tz, date.and_hms_opt(0, 0, 0)?)
 }
 
-fn local_day_end<Tz: TimeZone>(tz: &Tz, date: NaiveDate) -> Option<i64> {
+/// The instant a local day ends — i.e. the start of the next one. `pub(crate)`
+/// because `sync.rs` needs the same boundary to decide when a day's data has
+/// stopped arriving; two definitions of "when did this day end" would drift.
+pub(crate) fn local_day_end<Tz: TimeZone>(tz: &Tz, date: NaiveDate) -> Option<i64> {
     local_day_start(tz, date.succ_opt()?)
 }
 

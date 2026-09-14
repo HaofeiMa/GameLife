@@ -1063,6 +1063,94 @@ pub fn restore_from_target(
     Ok(dest)
 }
 
+// ---------------------------------------------------------------------------
+// Phase two: multi-device merge
+// ---------------------------------------------------------------------------
+
+/// Which device owns the slot at one `(day, slot_start)`, given every device's
+/// `(device_id, observed_seconds)` for it.
+///
+/// The rule has to be **computable identically on every device with no
+/// coordination**, because there is no ledger host: each machine decides for
+/// itself which slots it is responsible for settling, and if two machines
+/// disagreed about ownership they could both try to pay the same slot. So:
+/// most `observed_seconds` wins; a tie goes to the lexicographically smallest
+/// `device_id`. Both halves are total orders over the same input, so every
+/// device derives the same answer from the same merged rows.
+///
+/// A slot nobody observed (every device reports 0 seconds — the process died)
+/// still gets a deterministic owner rather than none: the owner then evaluates
+/// its own row, finds it `unobserved`, and pays nothing. Returning "no owner"
+/// instead would make an unpaid slot indistinguishable from a slot no device
+/// got round to settling yet.
+///
+/// Returns `""` for an empty slice; callers treat that as "no slot here".
+pub fn slot_owner(rows: &[(String, i64)]) -> String {
+    rows.iter()
+        // Reversed id comparison, because `max_by` keeps the greatest element:
+        // among equal durations this makes the *smallest* id the greatest.
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+        .map(|(id, _)| id.clone())
+        .unwrap_or_default()
+}
+
+/// What one device's most recent readable snapshot can answer for.
+///
+/// Coverage is a *timestamp*, not a day, because that is the only honest
+/// question: a snapshot taken in the middle of D may still be missing D's
+/// evening. It answers for D only once it was taken after D ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotCoverage {
+    pub device_id: String,
+    pub taken_at: i64,
+}
+
+/// Default grace period before a day is settled without the stragglers, in
+/// hours. Long enough that a laptop left at the office overnight still lands,
+/// short enough that a machine that is gone for good stops blocking the ledger.
+pub const SETTLE_GRACE_HOURS: i64 = 36;
+
+/// May day `day` be settled yet?
+///
+/// The ledger is irreversible, so a day is only settled once every registered
+/// device has had its say — otherwise a device that comes back tomorrow would
+/// find its own slots already paid by someone else, and §3.3's ownership rule
+/// would have been applied to a view that was missing half the data.
+///
+/// Two escapes keep that from becoming a hostage situation:
+///
+/// - **One device (or none) settles immediately.** That is today's behaviour
+///   exactly, and it is what makes phase two invisible until a second device
+///   is actually registered.
+/// - **`grace_hours` after the day ends, stragglers are abandoned.** Their
+///   late data still reaches the statistics view; only the ledger stops
+///   waiting. This is the explicitly accepted cost recorded in §3.4.
+pub fn day_is_ready(
+    day: &str,
+    devices: &[DeviceEntry],
+    snapshots: &[SnapshotCoverage],
+    now: i64,
+    grace_hours: i64,
+) -> bool {
+    if devices.len() <= 1 {
+        return true;
+    }
+    let Ok(date) = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
+        return false;
+    };
+    let Some(end) = crate::scheduler::local_day_end(&chrono::Local, date) else {
+        return false;
+    };
+    if now >= end.saturating_add(grace_hours.saturating_mul(3600)) {
+        return true;
+    }
+    devices.iter().all(|d| {
+        snapshots
+            .iter()
+            .any(|s| s.device_id == d.device_id && s.taken_at >= end)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2108,5 +2196,202 @@ mod tests {
 
     fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
         hay.windows(needle.len()).position(|w| w == needle)
+    }
+
+    fn owner(rows: &[(&str, i64)]) -> String {
+        let owned: Vec<(String, i64)> = rows.iter().map(|(id, s)| ((*id).to_string(), *s)).collect();
+        slot_owner(&owned)
+    }
+
+    #[test]
+    fn slot_owner_picks_the_device_that_observed_most() {
+        assert_eq!(owner(&[("aaa", 300), ("bbb", 900)]), "bbb");
+        assert_eq!(owner(&[("bbb", 900), ("aaa", 300)]), "bbb");
+        // A device that was asleep owns nothing it did not observe.
+        assert_eq!(owner(&[("aaa", 900), ("bbb", 0)]), "aaa");
+    }
+
+    #[test]
+    fn slot_owner_breaks_ties_by_smallest_device_id() {
+        assert_eq!(owner(&[("bbb", 900), ("aaa", 900)]), "aaa");
+        assert_eq!(owner(&[("aaa", 900), ("bbb", 900)]), "aaa");
+        assert_eq!(owner(&[("ccc", 1), ("bbb", 1), ("aaa", 1)]), "aaa");
+    }
+
+    /// The whole point of the rule: every device must derive the same owner
+    /// from the same merged rows, whatever order it happens to read them in.
+    #[test]
+    fn slot_owner_does_not_depend_on_row_order() {
+        let a = owner(&[("d1", 60), ("d2", 900), ("d3", 60), ("d4", 0)]);
+        let b = owner(&[("d4", 0), ("d3", 60), ("d2", 900), ("d1", 60)]);
+        let c = owner(&[("d2", 900), ("d1", 60), ("d4", 0), ("d3", 60)]);
+        assert_eq!(a, "d2");
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+    }
+
+    /// Nobody observed it — the process died. There is still exactly one
+    /// owner, and settling it pays nothing rather than paying twice.
+    #[test]
+    fn slot_owner_of_an_unobserved_slot_is_still_deterministic() {
+        assert_eq!(owner(&[("bbb", 0), ("aaa", 0)]), "aaa");
+        assert_eq!(owner(&[("aaa", 0), ("bbb", 0)]), "aaa");
+    }
+
+    #[test]
+    fn slot_owner_of_an_empty_slice_is_empty() {
+        assert_eq!(owner(&[]), "");
+    }
+
+    // -- T13: the day-readiness gate ----------------------------------------
+
+    /// The boundary is whatever the machine's own zone says it is. Deriving it
+    /// here rather than hardcoding an instant keeps these tests off `TZ`.
+    fn day_end(day: &str) -> i64 {
+        let date = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").unwrap();
+        crate::scheduler::local_day_end(&chrono::Local, date).unwrap()
+    }
+
+    fn device(id: &str) -> DeviceEntry {
+        DeviceEntry {
+            device_id: id.to_string(),
+            label: id.to_string(),
+            platform: "macos".into(),
+            last_seen: 0,
+        }
+    }
+
+    fn covered(id: &str, taken_at: i64) -> SnapshotCoverage {
+        SnapshotCoverage {
+            device_id: id.to_string(),
+            taken_at,
+        }
+    }
+
+    const D: &str = "2026-09-13";
+
+    /// One device is today's behaviour: settle per slot, no waiting. That is
+    /// what makes phase two invisible until a second machine is registered.
+    #[test]
+    fn a_lone_device_is_always_ready() {
+        let end = day_end(D);
+        assert!(day_is_ready(D, &[], &[], end - 3600, SETTLE_GRACE_HOURS));
+        assert!(day_is_ready(
+            D,
+            &[device("a")],
+            &[],
+            end - 3600,
+            SETTLE_GRACE_HOURS
+        ));
+    }
+
+    #[test]
+    fn two_devices_settle_once_both_have_answered() {
+        let end = day_end(D);
+        let devices = [device("a"), device("b")];
+        let now = end + 3600;
+
+        assert!(!day_is_ready(D, &devices, &[covered("a", now)], now, SETTLE_GRACE_HOURS));
+        assert!(day_is_ready(
+            D,
+            &devices,
+            &[covered("a", now), covered("b", now)],
+            now,
+            SETTLE_GRACE_HOURS
+        ));
+    }
+
+    /// A snapshot taken while D was still running may be missing D's evening,
+    /// so it does not count as having answered for D.
+    #[test]
+    fn a_snapshot_taken_before_the_day_ended_does_not_cover_it() {
+        let end = day_end(D);
+        let devices = [device("a"), device("b")];
+        let midday = end - 3600;
+
+        assert!(!day_is_ready(
+            D,
+            &devices,
+            &[covered("a", midday), covered("b", midday)],
+            midday,
+            SETTLE_GRACE_HOURS
+        ));
+        // ...and D is never ready while it is still running, however recently
+        // everyone uploaded.
+        assert!(!day_is_ready(
+            D,
+            &devices,
+            &[covered("a", midday), covered("b", midday)],
+            end - 1,
+            SETTLE_GRACE_HOURS
+        ));
+    }
+
+    #[test]
+    fn the_grace_period_settles_without_the_straggler() {
+        let end = day_end(D);
+        let devices = [device("a"), device("b")];
+        let only_a = [covered("a", end + 60)];
+
+        assert!(!day_is_ready(
+            D,
+            &devices,
+            &only_a,
+            end + 35 * 3600,
+            SETTLE_GRACE_HOURS
+        ));
+        assert!(day_is_ready(
+            D,
+            &devices,
+            &only_a,
+            end + 36 * 3600,
+            SETTLE_GRACE_HOURS
+        ));
+        assert!(day_is_ready(
+            D,
+            &devices,
+            &only_a,
+            end + 400 * 3600,
+            SETTLE_GRACE_HOURS
+        ));
+    }
+
+    /// A device that registered but whose snapshot we cannot read is still a
+    /// device we are waiting for — silence is not consent.
+    #[test]
+    fn a_registered_device_with_no_readable_snapshot_blocks_settlement() {
+        let end = day_end(D);
+        let devices = [device("a"), device("b"), device("c")];
+        let now = end + 3600;
+        assert!(!day_is_ready(
+            D,
+            &devices,
+            &[covered("a", now), covered("c", now)],
+            now,
+            SETTLE_GRACE_HOURS
+        ));
+    }
+
+    #[test]
+    fn an_unparseable_day_is_never_ready() {
+        let end = day_end(D);
+        let devices = [device("a"), device("b")];
+        let now = end + 3600;
+        assert!(!day_is_ready(
+            "yesterday",
+            &devices,
+            &[covered("a", now), covered("b", now)],
+            now,
+            SETTLE_GRACE_HOURS
+        ));
+    }
+
+    /// Zero grace means "settle the moment the day ends" — no waiting at all.
+    #[test]
+    fn zero_grace_settles_as_soon_as_the_day_ends() {
+        let end = day_end(D);
+        let devices = [device("a"), device("b")];
+        assert!(!day_is_ready(D, &devices, &[], end - 1, 0));
+        assert!(day_is_ready(D, &devices, &[], end, 0));
     }
 }
