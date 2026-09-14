@@ -37,8 +37,7 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "infoPlist": "Info.plist",
-      "signingIdentity": "Apple Development: Haofei MA (3762LQR944)"
+      "infoPlist": "Info.plist"
     }
   }
 }

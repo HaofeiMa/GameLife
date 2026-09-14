@@ -2,8 +2,8 @@
 
 日期：**2026-09-14**（续）
 仓库：`/Volumes/MobileSSD/Program/My/GameLife`（外置盘 MobileSSD，**先确认已挂载**）
-分支：`main`，**HEAD = `c457744`**
-状态：跨平台六批 + spec **已提交**（`9550d96`…`c457744`）。工作区剩下的是 **UI / hint 重设计**，未纳入上述 commit。
+分支：`main`，**HEAD = `a89ac0a`**
+状态：跨平台六批 + spec + 身份别名 **已提交**（`9550d96`…`a89ac0a`）。工作区剩下的是 **UI / hint 重设计**，未纳入上述 commit。
 
 > 上一版 HANDOFF 写「约 38 个文件未提交」——那些平台改动已经按批切进 `main`。规格见 `docs/superpowers/specs/2026-09-14-cross-platform-observation-design.md`。
 > 项目规则看 **`CLAUDE.md`**；本文只写当前进度。
@@ -15,8 +15,9 @@
 - 产品是活动监视器，不是计划器。macOS 完整可用。
 - Windows / Linux **Xorg** 观测后端已提交，交叉编译检查通过，**从未在真机运行**。Wayland 不观测。
 - 跨平台 spec 已写，§6.3 身份别名**已进** `known_app_identities`（`chrome` / `Code` 等精确别名，名单仍是显示名）。
-- 本机 **打不出** Windows / Ubuntu 安装包（`rusqlite` bundled + WebView2 / webkit2gtk）。要在目标 OS 上 `npm run tauri build`。
-- 下一步：**① 在 Windows 11 / Ubuntu Xorg 上打包并实测 ② 提交仍 dirty 的 UI/hint**。
+- Linux **arm64** `.deb` 已用 Colima 里的 Ubuntu 22.04 容器打出（不是交叉链接）：`~/tmp/gamelife-bundles/GameLife_0.1.0_arm64.deb`（仓库里 gitignored 的副本在 `dist-bundles/`）。脚本：`tools/linux-bundle/build.sh`。
+- **Windows 安装包仍然打不出**（要 WebView2 + MSVC/NSIS，Colima 是 Linux VM）。x86_64 `.deb` 用 qemu 编会在 `cc` SIGSEGV（anyhow 的 build script），别再走这条；要在真的 x86_64 Ubuntu 上 `npm run tauri build`。
+- 下一步：① 把 `.deb` 拷到 Ubuntu on Xorg 上装并实测；Windows 仍需真机 `npm run tauri build`。② 提交仍 dirty 的 UI/hint。
 
 ---
 
@@ -72,7 +73,7 @@ app crate 没法为目标平台编译，所以**这是唯一能证明"后端真�
 ## 2. 本次会话做了什么（六批，全部未提交）
 
 ### 第 0 批：本地打包 + 固定签名身份
-- `src-tauri/tauri.conf.json` 加 `bundle.macOS.signingIdentity`（`Apple Development: Haofei MA (3762LQR944)`）。
+- `src-tauri/tauri.conf.json` 加过稳定签名身份（避免每次重建 cdhash 导致辅助功能/屏幕录制重授）。**公开仓库里不再写入开发者姓名 / Team ID**；本机用 gitignored 的 `src-tauri/tauri.conf.local.json` 合并进去。
   **不加的话每次重建 cdhash 都变，macOS 会把每次构建当成新 app，辅助功能/屏幕录制每次都要重授。**
 - 产物：`target/release/bundle/dmg/GameLife_0.1.0_aarch64.dmg`（约 4.3 MB），签名有效。
 - 未做：GitHub 仓库与 CI（用户明确说"先不要在 github 上打包"）。
@@ -176,21 +177,17 @@ c457744 docs: specify Windows and X11 observation, and the identity aliases
 - `Cargo.lock` 因新增目标依赖而更新（`windows-sys`、`x11rb`）——已随观测后端 commit 提交。
 - `src-tauri/gen/schemas/capabilities.json` 是 Tauri 生成的，已随权限变更更新。
 - `.gitignore` 加了 `tools/platform-check/target/`。
-- 打包产物在 `target/release/bundle/`（gitignored），不参与提交。
+- 打包产物在 `target/release/bundle/` 与 `dist-bundles/`（均 gitignored），不参与提交。
+- 装了 **Colima + Docker**（`colima start --cpu 4 --memory 6 --disk 60 --vm-type vz`）。Docker 数据在 VM 的 60GiB 盘；virtiofs **只挂 `$HOME`**，外置盘上的仓库要 `git archive` 进 `~/tmp` 才能给容器用。**没有改 PATH，没有改 shell profile。**
 
 ---
 
 ## 6. 待办（按建议顺序）
 
-### ① 真机打包 + 实测（现在最该做）
-不能在这台 Mac 上交叉打出安装包。拿到 Windows 11 和 Ubuntu 22.04/24.04（登录选 **Ubuntu on Xorg**）：
+### ① 真机装包 + 实测（现在最该做）
+Linux **arm64** 安装包已经有了：`dist-bundles/GameLife_0.1.0_arm64.deb`（Depends: `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`libayatana-appindicator3-1`）。拷到 Ubuntu 22.04/24.04，登录选 **Ubuntu on Xorg**，`sudo apt install ./GameLife_0.1.0_arm64.deb`。x86_64 机器装不上这个包，在那台机器上 `npm run tauri build`（qemu 用户态编 rust 会 SIGSEGV）。
 
-```bash
-# Ubuntu：libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-npm install && npm run tauri build
-# Windows 11：WebView2 + NSIS/WiX 后同样
-npm install && npm run tauri build
-```
+Windows 11 仍要本机打：WebView2 + NSIS/WiX 后 `npm install && npm run tauri build`。
 
 预计要调：X11 visual/`GetImage`、`PrintWindow` 在 Chrome/Electron 上是否非黑、`OpenInputDesktop` 锁屏、GNOME 托盘。
 
@@ -226,4 +223,4 @@ PATH="$TC/bin:$PATH" CARGO_TARGET_DIR=/tmp/pcheck-target cargo check --target x8
 PATH="$TC/bin:$PATH" CARGO_TARGET_DIR=/tmp/pcheck-target cargo check --target x86_64-unknown-linux-gnu
 ```
 
-然后：Windows / Ubuntu 真机打包（§6.①），或落地身份别名（spec §6.3）。
+然后：把 `dist-bundles/*.deb` 拿到 Ubuntu Xorg 上装（§6.①），或提交 dirty 的 UI/hint。

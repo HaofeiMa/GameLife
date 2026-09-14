@@ -8,3 +8,10 @@ dist/
 # The cross-target checker builds into /tmp by convention; ignore its target
 # in case someone runs it without CARGO_TARGET_DIR.
 tools/platform-check/target/
+
+# Linux .deb copied out of the Colima builder; never commit installers.
+dist-bundles/
+
+# Local Apple signing identity. The committed tauri.conf.json must not carry
+# a developer name / team ID; merge this file with `tauri build --config`.
+src-tauri/tauri.conf.local.json

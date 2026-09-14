@@ -163,8 +163,9 @@ Policy JSON 字段名不变。不新增 `windows_apps` / `linux_apps` 配置键�
 
 安装包在 **目标操作系统上** 用 `npm run tauri build` 打。本仓库的 Mac 开发机：
 
-- **不能**交叉打出可用的 Windows / Linux 安装包：`rusqlite` bundled 需要目标 C 工具链，Tauri 还要 WebView2 / webkit2gtk / NSIS。
+- **不能**交叉链接出可用的 Windows / Linux 安装包：`rusqlite` bundled 需要目标 C 工具链，Tauri 还要 WebView2 / webkit2gtk / NSIS。
 - **能**做的是 `tools/platform-check` 的 `cargo check --target x86_64-pc-windows-msvc` 与 `x86_64-unknown-linux-gnu`。
+- Linux 的变通：Colima 里跑 Ubuntu 22.04 容器，等于「在 Linux 上原生编」，走 `tools/linux-bundle/build.sh`。Apple Silicon 打出 `arm64` `.deb`。qemu 打 x86_64 目前会在 rustc/`cc` SIGSEGV，不算可用路径。Windows 没有对等路径。
 
 Ubuntu 22.04/24.04（登录选 Ubuntu on Xorg）：
 
@@ -176,7 +177,7 @@ npm install && npm run tauri build
 
 Windows 11：安装 WebView2 运行时与 NSIS / WiX 后同样 `npm install && npm run tauri build`。
 
-macOS 签名身份写在 `src-tauri/tauri.conf.json` 的 `bundle.macOS.signingIdentity`，避免每次重建 cdhash 变化导致辅助功能 / 屏幕录制重授。不为了「在 GitHub 上打包」改这条，除非另开规格。
+macOS 签名身份不要写进已提交的 `tauri.conf.json`（公开仓库会带上开发者姓名 / Team ID）。本机把身份放在 gitignored 的 `src-tauri/tauri.conf.local.json`，打包时 `tauri build --config src-tauri/tauri.conf.local.json` 合并进去，这样 cdhash 仍然稳定。示例见 `src-tauri/tauri.conf.local.json.example`。
 
 `[profile.release]` 只从 **workspace 根** `Cargo.toml` 读取。`panic = "abort"` 已生效：任何 panic 都会让进程消失（不是弹错误）。日界函数已按 DST gap/fold 写成全函数；若真机上 app 突然整体退出，当作 panic 排查。
 
