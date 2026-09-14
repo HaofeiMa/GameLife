@@ -1,11 +1,16 @@
 import type { ReactNode } from "react";
+import { IS_MACOS } from "../lib/platform";
 
 /**
  * Enough room under the macOS traffic lights that the rail's mark is not
  * covered. The design asks for no reserved space at all; this is the
  * smallest strip that keeps the window controls usable.
+ *
+ * Zero off macOS: Windows and Linux draw their own title bar above the webview
+ * and have no traffic lights to clear, so the strip would be a dead band across
+ * the top of both columns.
  */
-export const TRAFFIC_LIGHT_STRIP = 28;
+export const TRAFFIC_LIGHT_STRIP = IS_MACOS ? 28 : 0;
 /**
  * The mockup's .hd height. The header sits to the right of the rail, so it
  * carries no traffic lights and keeps the design's flat 58px.

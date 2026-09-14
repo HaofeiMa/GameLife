@@ -2071,6 +2071,12 @@ pub fn request_screen_recording() -> bool {
 
 #[tauri::command]
 pub fn open_privacy_settings(kind: String) -> Result<(), String> {
+    // These are `x-apple.systempreferences:` URLs — there is no pane to
+    // deep-link to and no permission to grant off macOS, so say so rather than
+    // shell out to an opener that cannot do anything with the URL.
+    if !cfg!(target_os = "macos") {
+        return Err("privacy settings: macOS only".into());
+    }
     let url = match kind.as_str() {
         "accessibility" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
@@ -2080,11 +2086,7 @@ pub fn open_privacy_settings(kind: String) -> Result<(), String> {
         }
         _ => return Err("unknown pane".into()),
     };
-    std::process::Command::new("open")
-        .arg(url)
-        .status()
-        .map_err(|e| format!("open: {e}"))?;
-    Ok(())
+    crate::platform::open_url(url)
 }
 
 #[tauri::command]

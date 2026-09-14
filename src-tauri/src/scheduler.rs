@@ -134,14 +134,9 @@ pub fn decide_capture(
     }
 }
 
-pub fn app_support_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join("Library/Application Support/GameLife"))
-}
-
-pub fn screenshots_dir() -> Option<PathBuf> {
-    app_support_dir().map(|d| d.join("screenshots"))
-}
+/// Re-exported so the existing callers (`config`, `keychain`, this module's
+/// own capture paths) keep their import site; `platform` owns the definition.
+pub use crate::platform::{app_support_dir, screenshots_dir};
 
 fn screenshot_path_for(day: &str, slot_start_ts: i64, ts: i64) -> Option<PathBuf> {
     screenshots_dir().map(|d| d.join(format!("{day}_{slot_start_ts}_{ts}.jpg")))

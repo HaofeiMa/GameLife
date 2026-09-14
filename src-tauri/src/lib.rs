@@ -4,6 +4,7 @@ pub mod db;
 pub mod db_error;
 pub mod keychain;
 pub mod macos;
+pub mod platform;
 pub mod resolve;
 pub mod sampler;
 pub mod scheduler;
@@ -160,7 +161,7 @@ pub fn run() {
                 .default_window_icon()
                 .cloned()
                 .ok_or("missing default window icon")?;
-            let _tray = TrayIconBuilder::with_id("main")
+            let tray = TrayIconBuilder::with_id("main")
                 .icon(icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -211,7 +212,19 @@ pub fn run() {
                         show_main_window(tray.app_handle());
                     }
                 })
-                .build(app)?;
+                .build(app);
+
+            match tray {
+                Ok(_) => {}
+                // A tray-only app with no tray has no way in at all: the window
+                // starts hidden and 关闭 only hides it again, so the process
+                // would run forever unreachable. Showing the window keeps the UI
+                // reachable — Linux desktops with no AppIndicator host, mainly.
+                Err(err) => {
+                    eprintln!("tray unavailable ({err}); showing the window instead");
+                    show_main_window(app.handle());
+                }
+            }
 
             update_tray_tooltip(app.handle());
             start_tray_tooltip_updater(app.handle().clone());

@@ -393,10 +393,7 @@ fn add_column_if_missing(
 }
 
 pub fn app_db_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(|home| {
-        Path::new(&home)
-            .join("Library/Application Support/GameLife/gamelife.db")
-    })
+    crate::platform::app_support_dir().map(|dir| dir.join("gamelife.db"))
 }
 
 pub fn write_heartbeat(conn: &Connection) -> Result<(), DbOpError> {

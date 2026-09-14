@@ -143,6 +143,9 @@ mod tests {
         assert!(called.get());
     }
 
+    // `sleep` and `kill` are the Unix spellings; Windows has neither, so this
+    // cannot run there even though the module compiles everywhere.
+    #[cfg(unix)]
     #[test]
     fn wait_output_timeout_kills_child() {
         let mut child = std::process::Command::new("sleep")

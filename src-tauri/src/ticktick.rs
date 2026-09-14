@@ -274,17 +274,7 @@ pub fn open_in_browser(url: &str) -> Result<(), String> {
     if !is_ticktick_authorize_url(url) {
         return Err("unexpected authorize url".into());
     }
-    std::process::Command::new("open")
-        .arg(url)
-        .status()
-        .map_err(|e| format!("open: {e}"))
-        .and_then(|status| {
-            if status.success() {
-                Ok(())
-            } else {
-                Err("open failed".into())
-            }
-        })
+    crate::platform::open_url(url)
 }
 
 pub fn oauth_callback_kind(url: &str) -> &'static str {
