@@ -2016,6 +2016,15 @@ pub struct PermissionStatus {
     pub process_path: String,
 }
 
+/// What the running platform can do, so the UI stops guessing from the user
+/// agent — a Linux app under XWayland looks like a working X11 session and is
+/// not one.
+#[tauri::command]
+pub fn observation_status() -> crate::observe::ObservationStatus {
+    crate::observe::status()
+}
+
+/// macOS-only: which system permissions this process has been granted.
 #[tauri::command]
 pub fn get_permission_status() -> PermissionStatus {
     PermissionStatus {

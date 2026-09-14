@@ -37,10 +37,14 @@ fn macos_snapshot() -> FrontmostSnapshot {
             Some(pid) => ax_title_and_document(pid),
             None => (String::new(), None),
         };
-        let cg_window_id = pid_i32.and_then(|pid| {
-            let entries = cg_window_entries();
-            pick_front_window_id(pid, &entries)
-        });
+        // Widened to `u64`: the shared snapshot carries a macOS CGWindowID, a
+        // Windows HWND or an X11 XID in the same field.
+        let window_id = pid_i32
+            .and_then(|pid| {
+                let entries = cg_window_entries();
+                pick_front_window_id(pid, &entries)
+            })
+            .map(|id| id as u64);
 
         FrontmostSnapshot {
             app: name,
@@ -48,7 +52,7 @@ fn macos_snapshot() -> FrontmostSnapshot {
             bundle_id,
             document_raw,
             pid: pid_i32,
-            cg_window_id,
+            window_id,
         }
     })
 }

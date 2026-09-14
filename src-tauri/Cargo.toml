@@ -37,6 +37,25 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = ["
 block2 = "0.6"
 objc2-screen-capture-kit = { version = "0.3", default-features = false, features = ["std", "SCScreenshotManager", "SCShareableContent", "SCStream", "block2", "objc2-core-graphics", "objc2-core-foundation"] }
 
+# Windows observation backend. `Win32_Storage_Xps` is not a typo: windows-sys
+# files `PrintWindow` there, and it is the only way to capture a
+# hardware-composited window.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_Xps",
+  "Win32_System_StationsAndDesktops",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+# Linux/X11 observation backend. Pure Rust: no libX11 to link.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb = { version = "0.13", features = ["screensaver"] }
+
 [dev-dependencies]
 filetime = "0.2"
 tempfile = "3"

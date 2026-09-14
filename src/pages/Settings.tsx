@@ -3,6 +3,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import appIcon from "../../src-tauri/icons/128x128@2x.png";
 import { PageHeader } from "../components/PageHeader";
 import { PermissionPanel } from "../components/PermissionBanner";
+import { PlatformNotice } from "../components/PlatformNotice";
+import { IS_MACOS } from "../lib/platform";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -1393,7 +1395,9 @@ export function Settings() {
 
           {tab === "permissions" && (
             <div className="space-y-4">
-              <PermissionPanel />
+              {/* The macOS permission report would read "已允许" on every other
+                  platform, because the stubs report the grants as true. */}
+              {IS_MACOS ? <PermissionPanel /> : <PlatformNotice />}
             </div>
           )}
 

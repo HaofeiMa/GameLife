@@ -1,9 +1,16 @@
 pub mod commands;
 pub mod config;
+// Per-platform observation backends. `observe::imp` is the seam the app sees;
+// these are only named here so their files are compiled on their own platform.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub mod linux;
+#[cfg(windows)]
+pub mod windows;
 pub mod db;
 pub mod db_error;
 pub mod keychain;
 pub mod macos;
+pub mod observe;
 pub mod platform;
 pub mod resolve;
 pub mod sampler;
@@ -31,6 +38,7 @@ use sampler::PauseControl;
 use commands::{
     archive_wish, continue_previous_workday, create_list, create_wish, end_today, freeze,
     get_app_report, get_month_report, get_permission_status, get_rhythm_report, get_settings,
+    observation_status,
     get_today, get_day_view, get_week, has_api_key, list_tasks, parse_task_line_cmd,
     open_privacy_settings, provider_key_status, redeem, report_misclassification, request_screen_recording, review_slot,
     save_settings, set_api_key, set_provider_api_key, set_quests, test_vision_provider, ticktick_begin_oauth,
@@ -111,6 +119,7 @@ pub fn run() {
             provider_key_status,
             test_vision_provider,
             get_permission_status,
+            observation_status,
             request_screen_recording,
             open_privacy_settings,
             ticktick_status,

@@ -456,6 +456,18 @@ export interface PermissionStatus {
   processPath: string;
 }
 
+export interface ObservationStatus {
+  /** Whether this platform (and, on Linux, this session) can observe at all. */
+  supported: boolean;
+  /** `macOS` / `Windows` / `X11` / `Wayland` / `no X display`. */
+  backend: string;
+}
+
+/** Platform capability, answered by the backend rather than sniffed from the UA. */
+export function getObservationStatus(): Promise<ObservationStatus> {
+  return invoke("observation_status");
+}
+
 export function getPermissionStatus(): Promise<PermissionStatus> {
   return invoke("get_permission_status");
 }

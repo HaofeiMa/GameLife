@@ -3,19 +3,26 @@ mod capture;
 mod document;
 mod input;
 mod snapshot;
-mod state;
 mod window_id;
 pub use browser::{
     fetch_browser_url, fetch_browser_url_for, url_for, BROWSER_URL_TIMEOUT,
 };
-pub use capture::{capture_window, CAPTURE_TIMEOUT};
+pub use capture::CAPTURE_TIMEOUT;
+
+/// The observation surface carries a `u64` window handle so one field can hold
+/// a macOS `CGWindowID`, a Windows `HWND` or an X11 `XID`. This is where macOS
+/// narrows it back to a `CGWindowID`.
+pub fn capture_window(window_id: u64, path: &std::path::Path) -> Result<(), ()> {
+    let id = u32::try_from(window_id).map_err(|_| ())?;
+    capture::capture_window(id, path)
+}
 pub use document::ax_document_raw;
 pub use input::{
     accessibility_granted, idle_seconds, request_screen_recording, screen_locked,
     screen_recording_granted, secure_input_on,
 };
 pub use snapshot::{snapshot, AX_TIMEOUT_SECS};
-pub use state::{FrontmostSnapshot, ObservationState};
+pub use crate::observe::state::{FrontmostSnapshot, ObservationState};
 pub use window_id::{pick_front_window_id, CgWindowEntry};
 
 pub fn frontmost_app() -> Result<(String, String), ()> {

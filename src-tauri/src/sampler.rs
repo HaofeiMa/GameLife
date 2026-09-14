@@ -102,23 +102,26 @@ impl PauseControl {
     }
 }
 
-pub struct MacSampleSource {
+/// Window observation on the running platform: `macos/`, `windows/` or
+/// `linux/`, whichever `observe::imp` resolves to. Everything below is written
+/// against that seam, so there is one sampler for every platform.
+pub struct NativeSampleSource {
     paused: Arc<AtomicBool>,
-    pub(crate) last: crate::macos::ObservationState,
+    pub(crate) last: crate::observe::ObservationState,
 }
 
-impl MacSampleSource {
+impl NativeSampleSource {
     pub fn new(paused: Arc<AtomicBool>) -> Self {
         Self {
             paused,
-            last: crate::macos::ObservationState::new(),
+            last: crate::observe::ObservationState::new(),
         }
     }
 }
 
-impl SampleSource for MacSampleSource {
+impl SampleSource for NativeSampleSource {
     fn observe_window(&self) -> Result<ObservedWindow, ()> {
-        let snap = crate::macos::snapshot();
+        let snap = crate::observe::imp::snapshot();
         self.last.store(snap.clone());
         Ok(ObservedWindow {
             app: snap.app,
@@ -129,30 +132,30 @@ impl SampleSource for MacSampleSource {
     }
 
     fn capture_frontmost_window(&self, path: &std::path::Path) -> Result<(), ()> {
-        let id = self.last.take_cg_window_id().ok_or(())?;
-        crate::macos::capture_window(id, path)
+        let id = self.last.take_window_id().ok_or(())?;
+        crate::observe::imp::capture_window(id, path)
     }
 
     fn frontmost_app(&self) -> Result<(String, String), ()> {
-        crate::macos::frontmost_app()
+        crate::observe::imp::frontmost_app()
     }
 
     fn idle_seconds(&self) -> i64 {
-        crate::macos::idle_seconds()
+        crate::observe::imp::idle_seconds()
     }
 
     fn screen_locked(&self) -> bool {
-        crate::macos::screen_locked()
+        crate::observe::imp::screen_locked()
     }
 
     fn secure_input_on(&self) -> bool {
-        crate::macos::secure_input_on()
+        crate::observe::imp::secure_input_on()
     }
 
     fn optional_browser_url(&self) -> Option<String> {
         let last = self.last.last()?;
-        crate::macos::url_for(last.bundle_id.as_deref(), &last.app, || {
-            crate::macos::fetch_browser_url_for(last.bundle_id.as_deref(), &last.app)
+        crate::observe::imp::url_for(last.bundle_id.as_deref(), &last.app, || {
+            crate::observe::imp::fetch_browser_url_for(last.bundle_id.as_deref(), &last.app)
         })
     }
 
@@ -161,26 +164,26 @@ impl SampleSource for MacSampleSource {
     }
 
     fn metadata_observation_available(&self) -> bool {
-        crate::macos::metadata_observation_available()
+        crate::observe::imp::metadata_observation_available()
     }
 
     fn capture_observation_available(&self) -> bool {
-        crate::macos::capture_observation_available()
+        crate::observe::imp::capture_observation_available()
     }
 
     fn document_path(&self) -> Option<String> {
-        crate::macos::document_path()
+        crate::observe::imp::document_path()
     }
 
     fn bundle_id(&self) -> Option<String> {
-        crate::macos::bundle_id()
+        crate::observe::imp::bundle_id()
     }
 
     fn capture_context(&self) -> CaptureContext {
-        let snap = crate::macos::snapshot();
+        let snap = crate::observe::imp::snapshot();
         self.last.store(snap.clone());
-        let url = crate::macos::url_for(snap.bundle_id.as_deref(), &snap.app, || {
-            crate::macos::fetch_browser_url_for(snap.bundle_id.as_deref(), &snap.app)
+        let url = crate::observe::imp::url_for(snap.bundle_id.as_deref(), &snap.app, || {
+            crate::observe::imp::fetch_browser_url_for(snap.bundle_id.as_deref(), &snap.app)
         });
         CaptureContext {
             app: snap.app,
@@ -190,7 +193,7 @@ impl SampleSource for MacSampleSource {
                 .document_raw
                 .and_then(|s| normalize_document_path(&s)),
             url: optional_stripped_url(url.as_deref()),
-            secure_input: crate::macos::secure_input_on(),
+            secure_input: crate::observe::imp::secure_input_on(),
         }
     }
 }
@@ -463,7 +466,7 @@ pub fn run_sampler_loop(db_path: PathBuf, source: &dyn SampleSource) {
 
 pub fn start_sampler_thread(db_path: PathBuf, paused: Arc<AtomicBool>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let source = MacSampleSource::new(paused);
+        let source = NativeSampleSource::new(paused);
         run_sampler_loop(db_path, &source);
     })
 }
@@ -749,7 +752,7 @@ mod tests {
 
     #[test]
     fn capture_without_window_id_is_err() {
-        let src = MacSampleSource::new(Arc::new(AtomicBool::new(false)));
+        let src = NativeSampleSource::new(Arc::new(AtomicBool::new(false)));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.jpg");
         assert!(src.capture_frontmost_window(&path).is_err());
@@ -758,7 +761,7 @@ mod tests {
 
     #[test]
     fn fetch_is_not_used_when_last_is_empty() {
-        let src = MacSampleSource::new(Arc::new(AtomicBool::new(false)));
+        let src = NativeSampleSource::new(Arc::new(AtomicBool::new(false)));
         assert_eq!(src.optional_browser_url(), None);
     }
 
@@ -787,8 +790,8 @@ mod tests {
     #[test]
     fn mac_source_skips_browser_fetch_for_cursor_snapshot() {
         let paused = Arc::new(AtomicBool::new(false));
-        let src = MacSampleSource::new(paused);
-        src.last.store(crate::macos::FrontmostSnapshot {
+        let src = NativeSampleSource::new(paused);
+        src.last.store(crate::observe::imp::FrontmostSnapshot {
             app: "Cursor".into(),
             bundle_id: Some("com.todesktop.230313mzl4w4u92".into()),
             ..Default::default()

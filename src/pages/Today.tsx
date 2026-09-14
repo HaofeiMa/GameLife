@@ -13,6 +13,7 @@ import { ConfirmEndDay } from "../components/ConfirmEndDay";
 import { EntertainmentBanner } from "../components/EntertainmentBanner";
 import { PageHeader } from "../components/PageHeader";
 import { PermissionBanner } from "../components/PermissionBanner";
+import { PlatformNotice } from "../components/PlatformNotice";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardCh } from "../components/ui/card";
@@ -801,6 +802,7 @@ export function Today() {
       <div className="flex-1 overflow-y-auto">
         <div className="flex flex-col gap-3 px-[22px] pt-3 pb-4">
           <PermissionBanner />
+          <PlatformNotice />
           <EntertainmentBanner
             active={data.activeEntertainment}
             ended={data.endedEntertainment}
