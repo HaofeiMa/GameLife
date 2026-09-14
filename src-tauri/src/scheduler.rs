@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{Local, NaiveDate, TimeZone};
+use chrono::{Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 
@@ -403,17 +403,241 @@ pub fn start_of_named_day(day: &str) -> Option<i64> {
 pub fn day_str_for_ts(ts: i64) -> String {
     Local
         .timestamp_opt(ts, 0)
-        .single()
+        // `earliest` rather than `single`: a timestamp in a DST fold has two
+        // local representations and `single` rejects both, which used to file
+        // the day under 1970.
+        .earliest()
         .map(|dt| dt.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| "1970-01-01".into())
 }
 
-pub fn end_of_local_day(ts: i64) -> i64 {
-    let dt = Local.timestamp_opt(ts, 0).single().unwrap();
-    let date = dt.date_naive();
-    let next = date.succ_opt().unwrap().and_hms_opt(0, 0, 0).unwrap();
-    Local.from_local_datetime(&next).unwrap().timestamp()
+/// How far to walk looking for the first instant that a missing wall time
+/// leaves behind. A DST gap is normally an hour; Samoa skipped a whole day in
+/// 2011, so the bound is a day rather than a couple of hours.
+const MAX_GAP_MINUTES: i64 = 24 * 60;
+
+/// The earliest instant a local wall-clock time maps to.
+///
+/// Local time is not total, and chrono models that honestly instead of
+/// inventing a value: a spring-forward transition creates a *gap* (wall times
+/// that never happen — in the zones that shift at 00:00, that is local
+/// midnight) and an autumn fold makes them *ambiguous*. `.unwrap()` cannot
+/// survive either, so a day boundary has to be resolved:
+///
+/// * `Single` — the ordinary case, unchanged.
+/// * `Ambiguous` — take the earlier instant, so a 25-hour day starts at its
+///   first midnight rather than its second.
+/// * `None` — the wall time is inside a gap; the day starts at the first
+///   instant that does exist. Every probe is a *wall* time, so the first one
+///   that resolves is the far side of the transition.
+///
+/// Generic over the zone so the gap and fold rules can be tested against a
+/// synthetic transition: the tests must not set `TZ`, and no test machine can
+/// be assumed to sit in a zone that shifts at midnight.
+fn earliest_instant<Tz: TimeZone>(tz: &Tz, local: NaiveDateTime) -> Option<i64> {
+    let resolve = |probe: NaiveDateTime| match tz.from_local_datetime(&probe) {
+        LocalResult::Single(dt) => Some(dt.timestamp()),
+        LocalResult::Ambiguous(earliest, _) => Some(earliest.timestamp()),
+        LocalResult::None => None,
+    };
+
+    resolve(local).or_else(|| {
+        (1..=MAX_GAP_MINUTES).find_map(|minutes| resolve(local + Duration::minutes(minutes)))
+    })
 }
+
+/// The instant a local day starts. `None` only for a wall time that cannot be
+/// resolved at all — an out-of-range date, or missing zone data.
+fn local_day_start<Tz: TimeZone>(tz: &Tz, date: NaiveDate) -> Option<i64> {
+    earliest_instant(tz, date.and_hms_opt(0, 0, 0)?)
+}
+
+fn local_day_end<Tz: TimeZone>(tz: &Tz, date: NaiveDate) -> Option<i64> {
+    local_day_start(tz, date.succ_opt()?)
+}
+
+/// Last-ditch boundary for a timestamp no zone can place: a UTC-aligned day.
+/// Unreachable for timestamps a running system can produce; the point is that
+/// a day boundary never takes the process down.
+fn utc_day_start(ts: i64) -> i64 {
+    // `saturating_mul`, not `*`: `div_euclid` floors, so `i64::MIN` lands a
+    // step below the representable range and a plain multiply overflows.
+    ts.div_euclid(86_400).saturating_mul(86_400)
+}
+
+/// The first instant of the local day containing `ts`.
+pub fn start_of_local_day(ts: i64) -> i64 {
+    let Some(dt) = Local.timestamp_opt(ts, 0).earliest() else {
+        return utc_day_start(ts);
+    };
+    local_day_start(&Local, dt.date_naive()).unwrap_or_else(|| utc_day_start(ts))
+}
+
+/// The first instant of the local day after the one containing `ts` — the
+/// exclusive end of that day.
+pub fn end_of_local_day(ts: i64) -> i64 {
+    let Some(dt) = Local.timestamp_opt(ts, 0).earliest() else {
+        return utc_day_start(ts).saturating_add(86_400);
+    };
+    local_day_end(&Local, dt.date_naive())
+        .unwrap_or_else(|| utc_day_start(ts).saturating_add(86_400))
+}
+
+#[cfg(test)]
+mod local_day_tests {
+    use super::*;
+    // Only the synthetic zone below needs these.
+    use chrono::{FixedOffset, NaiveTime};
+
+    /// A zone whose two transitions both land on midnight — the wall time a day
+    /// boundary actually asks for, and the case where the old `.unwrap()` died:
+    ///
+    /// * `2026-03-08` 00:00–01:00 never happens (spring forward: a *gap*)
+    /// * `2026-11-01` 00:00–01:00 happens twice (fall back: a *fold*)
+    ///
+    /// Built here rather than by setting `TZ`: tests must not set process-wide
+    /// environment variables, and no test machine can be assumed to sit in a
+    /// zone that shifts at midnight.
+    #[derive(Clone, Debug)]
+    struct MidnightDst;
+
+    fn gap_date() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 3, 8).unwrap()
+    }
+
+    fn fold_date() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()
+    }
+
+    fn plain_date() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()
+    }
+
+    fn utc() -> FixedOffset {
+        FixedOffset::east_opt(0).unwrap()
+    }
+
+    fn summer() -> FixedOffset {
+        FixedOffset::east_opt(3600).unwrap()
+    }
+
+    fn hour(h: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, 0, 0).unwrap()
+    }
+
+    fn instant(day: &str, hms: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(&format!("{day}T{hms}Z"))
+            .unwrap()
+            .timestamp()
+    }
+
+    impl TimeZone for MidnightDst {
+        type Offset = FixedOffset;
+
+        fn from_offset(_offset: &FixedOffset) -> Self {
+            MidnightDst
+        }
+
+        fn offset_from_local_date(&self, _local: &NaiveDate) -> LocalResult<FixedOffset> {
+            LocalResult::Single(utc())
+        }
+
+        fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<FixedOffset> {
+            let (date, time) = (local.date(), local.time());
+            if date == gap_date() && time < hour(1) {
+                return LocalResult::None;
+            }
+            if date == fold_date() && time < hour(1) {
+                // The clock goes back at 01:00, so 00:00–01:00 happens first on
+                // summer time and again on winter time — chrono's "(earliest,
+                // latest)" order, which is what `earliest_instant` reads.
+                return LocalResult::Ambiguous(summer(), utc());
+            }
+            LocalResult::Single(utc())
+        }
+
+        fn offset_from_utc_date(&self, _utc: &NaiveDate) -> FixedOffset {
+            utc()
+        }
+
+        fn offset_from_utc_datetime(&self, _utc: &NaiveDateTime) -> FixedOffset {
+            utc()
+        }
+    }
+
+    #[test]
+    fn an_ordinary_day_is_still_exactly_24_hours() {
+        let start = local_day_start(&MidnightDst, plain_date()).unwrap();
+        let end = local_day_end(&MidnightDst, plain_date()).unwrap();
+        assert_eq!(start, instant("2026-06-01", "00:00:00"));
+        assert_eq!(end - start, 86_400);
+    }
+
+    #[test]
+    fn a_missing_midnight_starts_the_day_at_the_far_side_of_the_gap() {
+        // 00:00 does not exist on 2026-03-08; the day begins at 01:00, so it is
+        // 23 hours long and the previous day ends where the gap does.
+        let start = local_day_start(&MidnightDst, gap_date()).unwrap();
+        assert_eq!(start, instant("2026-03-08", "01:00:00"));
+
+        let previous_end = local_day_end(
+            &MidnightDst,
+            NaiveDate::from_ymd_opt(2026, 3, 7).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(previous_end, start);
+
+        let end = local_day_end(&MidnightDst, gap_date()).unwrap();
+        assert_eq!(end - start, 82_800);
+    }
+
+    #[test]
+    fn an_ambiguous_midnight_takes_the_earlier_one() {
+        // 00:00 happens twice on 2026-11-01; the day starts at the first of
+        // them, so it is 25 hours long.
+        let start = local_day_start(&MidnightDst, fold_date()).unwrap();
+        assert_eq!(start, instant("2026-10-31", "23:00:00"));
+
+        let end = local_day_end(&MidnightDst, fold_date()).unwrap();
+        assert_eq!(end, instant("2026-11-02", "00:00:00"));
+        assert_eq!(end - start, 90_000);
+    }
+
+    /// The host's own zone, whatever it is. Two years of hourly probes: every
+    /// boundary must bracket its instant, be stable when re-derived, and come
+    /// out 23–25 hours wide. In a DST zone this walks the real transitions; in
+    /// a fixed-offset zone it is still the totality guard the panic sites
+    /// lacked.
+    #[test]
+    fn host_day_boundaries_are_total_across_two_years() {
+        let base = instant("2026-01-01", "00:00:00");
+        for hour_offset in 0..(2 * 365 * 24) {
+            let ts = base + hour_offset * 3_600;
+            let start = start_of_local_day(ts);
+            let end = end_of_local_day(ts);
+
+            assert!(start <= ts && ts < end, "{ts} is not bracketed");
+            assert_eq!(start_of_local_day(start), start, "{ts}: start moved");
+            assert_eq!(end_of_local_day(start), end, "{ts}: end moved");
+
+            let length = end - start;
+            assert!(
+                (82_800..=90_000).contains(&length),
+                "{ts}: day length {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn day_boundaries_survive_timestamps_no_zone_can_place() {
+        for ts in [i64::MIN, i64::MAX, -1, 0, i64::MAX - 1] {
+            let _ = start_of_local_day(ts);
+            let _ = end_of_local_day(ts);
+            let _ = day_str_for_ts(ts);
+        }
+    }
+}
+
 
 pub fn same_local_day(a: i64, b: i64) -> bool {
     day_str_for_ts(a) == day_str_for_ts(b)
@@ -1461,15 +1685,6 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
-}
-
-pub fn start_of_local_day(ts: i64) -> i64 {
-    let dt = Local.timestamp_opt(ts, 0).single().unwrap();
-    let date = dt.date_naive();
-    Local
-        .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
-        .unwrap()
-        .timestamp()
 }
 
 pub fn yesterday_str_for_ts(now: i64) -> String {
