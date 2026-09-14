@@ -2490,6 +2490,168 @@ fn ticktick_tree_blocking(
     })
 }
 
+// ---- Cloud backup ---------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusView {
+    pub enabled: bool,
+    pub target: String,
+    pub url: String,
+    pub scope: String,
+    pub interval_minutes: i64,
+    pub last_at: Option<i64>,
+    pub last_ok: bool,
+    pub last_error: String,
+    pub snapshot_bytes: u64,
+    pub device_id: String,
+    pub devices: Vec<crate::sync::DeviceEntry>,
+}
+
+fn sync_meta(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM app_meta WHERE key = ?1",
+        params![key],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
+fn sync_status_from(conn: &Connection, settings: &AppSettings) -> Result<SyncStatusView, String> {
+    let device_id = crate::sync::device_id(conn).map_err(|e| e.to_string())?;
+    let last_at = sync_meta(conn, "sync_last_at").and_then(|s| s.parse::<i64>().ok());
+    let last_error = sync_meta(conn, "sync_last_error").unwrap_or_default();
+    let outcome: Option<crate::sync::SyncOutcome> =
+        sync_meta(conn, "sync_last_result").and_then(|s| serde_json::from_str(&s).ok());
+
+    Ok(SyncStatusView {
+        enabled: settings.sync.enabled,
+        target: settings.sync.target.clone(),
+        url: settings.sync.url.clone(),
+        scope: crate::config::normalize_scope(&settings.sync.scope).to_string(),
+        interval_minutes: settings.sync.interval_minutes,
+        last_at,
+        last_ok: last_at.is_some() && last_error.is_empty(),
+        last_error,
+        snapshot_bytes: outcome.as_ref().map(|o| o.snapshot_bytes).unwrap_or(0),
+        device_id,
+        devices: outcome.map(|o| o.devices).unwrap_or_default(),
+    })
+}
+
+fn sync_conn() -> Result<Connection, String> {
+    let path = crate::db::app_db_path().ok_or_else(|| "home dir".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create db dir: {e}"))?;
+    }
+    let conn = open(&path).map_err(|e| format!("{e:?}"))?;
+    migrate(&conn).map_err(|e| format!("{e:?}"))?;
+    Ok(conn)
+}
+
+/// Cached status only. Opening 设置 must not hit the network — the same rule
+/// that made 设置 → TickTick hang before `ticktick_tree` was split.
+#[tauri::command]
+pub fn sync_status() -> Result<SyncStatusView, String> {
+    let settings = load_settings();
+    let conn = sync_conn()?;
+    sync_status_from(&conn, &settings)
+}
+
+#[tauri::command]
+pub async fn sync_now_cmd() -> Result<SyncStatusView, String> {
+    tauri::async_runtime::spawn_blocking(sync_now_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn sync_now_blocking() -> Result<SyncStatusView, String> {
+    let settings = load_settings();
+    crate::sync::sync_now(&settings.sync).map_err(|e| e.to_string())?;
+    let conn = sync_conn()?;
+    sync_status_from(&conn, &settings)
+}
+
+/// Writes and deletes a probe object: that proves the credentials, the write
+/// permission and the path all work, which a read-only probe would not.
+#[tauri::command]
+pub async fn sync_test_connection() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(sync_test_connection_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn sync_test_connection_blocking() -> Result<String, String> {
+    use crate::sync::SyncError;
+
+    let settings = load_settings();
+    let target =
+        crate::sync::target_from_settings(&settings.sync).map_err(|e| e.to_string())?;
+    let base = crate::sync::base_dir(&settings.sync);
+    let probe = format!("{base}/.gamelife-probe");
+
+    match target.put(&probe, b"ok") {
+        Ok(()) => {}
+        Err(SyncError::Remote(404)) => {
+            return Err(format!("远端目录不存在，请先创建 {base}"));
+        }
+        Err(SyncError::Auth) => return Err("远端认证失败，请检查账号与凭据".into()),
+        Err(e) => return Err(e.to_string()),
+    }
+    let _ = target.delete(&probe);
+    Ok(format!("连接正常，可写入 {base}"))
+}
+
+#[tauri::command]
+pub fn sync_set_credentials(password: String) -> Result<(), String> {
+    let settings = load_settings();
+    let slot = if settings.sync.target == "s3" {
+        "sync-s3-secret"
+    } else {
+        "sync-webdav-password"
+    };
+    let path = crate::keychain::secrets_path()?;
+    crate::keychain::set_in(&path, slot, &password)
+}
+
+#[tauri::command]
+pub async fn sync_list_devices() -> Result<Vec<crate::sync::DeviceEntry>, String> {
+    tauri::async_runtime::spawn_blocking(sync_list_devices_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn sync_list_devices_blocking() -> Result<Vec<crate::sync::DeviceEntry>, String> {
+    use crate::sync::SyncError;
+
+    let settings = load_settings();
+    let target =
+        crate::sync::target_from_settings(&settings.sync).map_err(|e| e.to_string())?;
+    let path = format!("{}/devices.json", crate::sync::base_dir(&settings.sync));
+    match target.get(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("devices.json: {e}")),
+        Err(SyncError::Remote(404)) => Ok(Vec::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Stages the restored database next to the live one. It deliberately does not
+/// swap it in — the sampler must not have its database replaced underneath it.
+#[tauri::command]
+pub async fn sync_restore(device_id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || sync_restore_blocking(device_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn sync_restore_blocking(device_id: String) -> Result<String, String> {
+    let settings = load_settings();
+    let dir = crate::platform::app_support_dir().ok_or_else(|| "home dir".to_string())?;
+    let path = crate::sync::restore_from_target(&settings.sync, &device_id, &dir)
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

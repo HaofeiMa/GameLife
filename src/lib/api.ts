@@ -238,6 +238,45 @@ export interface CategoryGuides {
   entertainment: string;
 }
 
+export interface SyncSettings {
+  enabled: boolean;
+  /** "webdav" | "s3" */
+  target: string;
+  url: string;
+  username: string;
+  /** S3 only. */
+  bucket: string;
+  /** S3 only; "auto" for Cloudflare R2. */
+  region: string;
+  remotePath: string;
+  intervalMinutes: number;
+  /** "aggregate" | "samples" */
+  scope: string;
+  keepSnapshots: number;
+  deviceLabel: string;
+}
+
+export interface SyncDevice {
+  deviceId: string;
+  label: string;
+  platform: string;
+  lastSeen: number;
+}
+
+export interface SyncStatus {
+  enabled: boolean;
+  target: string;
+  url: string;
+  scope: string;
+  intervalMinutes: number;
+  lastAt: number | null;
+  lastOk: boolean;
+  lastError: string;
+  snapshotBytes: number;
+  deviceId: string;
+  devices: SyncDevice[];
+}
+
 export interface AppSettings {
   screenshotRetention: string;
   sampleKeepDays: number;
@@ -259,6 +298,7 @@ export interface AppSettings {
   ticktickColumnRoles: Record<string, string>;
   /** system | light | dark — see src/lib/theme.ts */
   theme: string;
+  sync: SyncSettings;
 }
 
 export interface ProviderKeyStatus {
@@ -556,4 +596,34 @@ export interface TickTickTree {
  */
 export function ticktickTree(refresh = false): Promise<TickTickTree> {
   return invoke("ticktick_tree", { refresh });
+}
+
+/**
+ * Cached sync status. Reads `app_meta` only — opening 设置 must not hit the
+ * network, so the remote is contacted by `syncNow` / `syncTestConnection`.
+ */
+export function syncStatus(): Promise<SyncStatus> {
+  return invoke("sync_status");
+}
+
+export function syncNow(): Promise<SyncStatus> {
+  return invoke("sync_now_cmd");
+}
+
+export function syncTestConnection(): Promise<string> {
+  return invoke("sync_test_connection");
+}
+
+/** Write-only: the credential is never read back to the frontend. */
+export function syncSetCredentials(password: string): Promise<void> {
+  return invoke("sync_set_credentials", { password });
+}
+
+export function syncListDevices(): Promise<SyncDevice[]> {
+  return invoke("sync_list_devices");
+}
+
+/** Stages the restored database next to the live one; returns its path. */
+export function syncRestore(deviceId: string): Promise<string> {
+  return invoke("sync_restore", { deviceId });
 }

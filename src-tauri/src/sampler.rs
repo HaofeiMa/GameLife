@@ -455,14 +455,24 @@ pub fn run_sampler_loop(db_path: PathBuf, source: &dyn SampleSource) {
     }
     let mut state = SamplerState::default();
     let interval = Duration::from_secs(SAMPLE_INTERVAL_SECS);
+    let mut ticks: u64 = 0;
     loop {
         let ts = now_secs();
         if let Err(e) = sample_once(&mut conn, source, ts, &mut state) {
             eprintln!("sampler: sample failed: {e:?}");
         }
+        ticks += 1;
+        if ticks % SYNC_CHECK_EVERY_TICKS == 0 {
+            crate::sync::maybe_spawn_sync(&conn, ts);
+        }
         thread::sleep(interval);
     }
 }
+
+/// The cloud sync check is cheap (a settings read plus an `app_meta` lookup) but
+/// not free, and the shortest meaningful interval is minutes, so it runs once
+/// every five minutes rather than on every 15-second tick.
+pub const SYNC_CHECK_EVERY_TICKS: u64 = 20;
 
 pub fn start_sampler_thread(db_path: PathBuf, paused: Arc<AtomicBool>) -> thread::JoinHandle<()> {
     thread::spawn(move || {

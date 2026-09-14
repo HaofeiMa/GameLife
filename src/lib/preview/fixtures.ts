@@ -14,6 +14,7 @@ import type {
   ProviderKeyStatus,
   RhythmReportView,
   SlotActivityMinutes,
+  SyncStatus,
   TickTickStatus,
   TickTickTree,
   TodaySlot,
@@ -432,6 +433,46 @@ export const PREVIEW_SETTINGS: AppSettings = {
   ticktickProjectRoles: {},
   ticktickColumnRoles: {},
   theme: "light",
+  sync: {
+    enabled: true,
+    target: "webdav",
+    url: "https://dav.example.com/dav/",
+    username: "haofei",
+    bucket: "",
+    region: "auto",
+    remotePath: "gamelife",
+    intervalMinutes: 60,
+    scope: "aggregate",
+    keepSnapshots: 7,
+    deviceLabel: "书房 Mac",
+  },
+};
+
+export const PREVIEW_SYNC_STATUS: SyncStatus = {
+  enabled: true,
+  target: "webdav",
+  url: "https://dav.example.com/dav/",
+  scope: "aggregate",
+  intervalMinutes: 60,
+  lastAt: 1789372197,
+  lastOk: true,
+  lastError: "",
+  snapshotBytes: 512 * 1024,
+  deviceId: "9f3a1c2b4d5e6f70",
+  devices: [
+    {
+      deviceId: "9f3a1c2b4d5e6f70",
+      label: "书房 Mac",
+      platform: "macos",
+      lastSeen: 1789372197,
+    },
+    {
+      deviceId: "1a2b3c4d5e6f7081",
+      label: "Surface",
+      platform: "windows",
+      lastSeen: 1789365000,
+    },
+  ],
 };
 
 export const PREVIEW_KEY_STATUS: ProviderKeyStatus = {

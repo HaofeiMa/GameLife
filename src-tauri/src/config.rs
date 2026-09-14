@@ -14,12 +14,62 @@ pub const PROVIDER_NONE: &str = "none";
 
 pub const THEME_SYSTEM: &str = "system";
 
+pub const SCOPE_AGGREGATE: &str = "aggregate";
+pub const SCOPE_SAMPLES: &str = "samples";
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VisionProviderSettings {
     pub id: String,
     pub base_url: String,
     pub model: String,
+}
+
+/// Cloud backup. Never part of the policy snapshot: two devices with different
+/// remote targets must not cut a new `policy_versions` row.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSettings {
+    pub enabled: bool,
+    pub target: String,
+    pub url: String,
+    pub username: String,
+    /// S3 only: path-style bucket. Unused by WebDAV.
+    pub bucket: String,
+    /// S3 only: `auto` for Cloudflare R2.
+    pub region: String,
+    pub remote_path: String,
+    pub interval_minutes: i64,
+    pub scope: String,
+    pub keep_snapshots: i64,
+    pub device_label: String,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target: "webdav".into(),
+            url: String::new(),
+            username: String::new(),
+            bucket: String::new(),
+            region: "auto".into(),
+            remote_path: "gamelife".into(),
+            interval_minutes: 60,
+            scope: SCOPE_AGGREGATE.into(),
+            keep_snapshots: 7,
+            device_label: String::new(),
+        }
+    }
+}
+
+/// `aggregate` is the default and the fallback: anything unrecognised must
+/// narrow the upload, never widen it.
+pub fn normalize_scope(s: &str) -> &'static str {
+    match s {
+        SCOPE_SAMPLES => SCOPE_SAMPLES,
+        _ => SCOPE_AGGREGATE,
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -57,6 +107,8 @@ pub struct AppSettings {
     /// `normalizeThemePreference` in src/lib/theme.ts.
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default)]
+    pub sync: SyncSettings,
 }
 
 fn default_primary_provider() -> String {
@@ -126,6 +178,7 @@ pub fn default_settings() -> AppSettings {
         ticktick_project_roles: std::collections::BTreeMap::new(),
         ticktick_column_roles: std::collections::BTreeMap::new(),
         theme: default_theme(),
+        sync: SyncSettings::default(),
     }
 }
 
@@ -253,5 +306,55 @@ mod tests {
         b.ticktick_client_id = "changed".into();
         b.primary_provider = "openai".into();
         assert_eq!(policy_snapshot_json(&a), policy_snapshot_json(&b));
+    }
+
+    #[test]
+    fn old_config_json_without_sync_gets_disabled_defaults() {
+        let parsed: AppSettings = serde_json::from_str(
+            r#"{"screenshotRetention":"none","sampleKeepDays":7,"loginAtStartup":true,"trustedApps":[],"distractionRules":[],"sideProjectRules":[],"readingApps":[],"neverCaptureApps":[]}"#,
+        )
+        .unwrap();
+        assert!(!parsed.sync.enabled);
+        assert_eq!(parsed.sync.target, "webdav");
+        assert_eq!(parsed.sync.scope, SCOPE_AGGREGATE);
+        assert_eq!(parsed.sync.interval_minutes, 60);
+        assert_eq!(parsed.sync.keep_snapshots, 7);
+        assert_eq!(parsed.sync.remote_path, "gamelife");
+        assert!(parsed.sync.bucket.is_empty());
+        assert_eq!(parsed.sync.region, "auto");
+    }
+
+    #[test]
+    fn unknown_scope_falls_back_to_aggregate() {
+        assert_eq!(normalize_scope("samples"), SCOPE_SAMPLES);
+        assert_eq!(normalize_scope("everything"), SCOPE_AGGREGATE);
+        assert_eq!(normalize_scope(""), SCOPE_AGGREGATE);
+        assert_eq!(normalize_scope("Aggregate"), SCOPE_AGGREGATE);
+    }
+
+    #[test]
+    fn sync_settings_are_not_part_of_the_policy_snapshot() {
+        let a = default_settings();
+        let mut b = default_settings();
+        b.sync.enabled = true;
+        b.sync.url = "https://dav.example.com".into();
+        b.sync.scope = SCOPE_SAMPLES.into();
+        assert_eq!(policy_snapshot_json(&a), policy_snapshot_json(&b));
+    }
+
+    #[test]
+    fn sync_settings_roundtrip_through_camel_case_json() {
+        let mut s = SyncSettings::default();
+        s.enabled = true;
+        s.url = "https://dav.example.com/remote.php/dav/files/me/".into();
+        s.interval_minutes = 15;
+        s.keep_snapshots = 3;
+        s.device_label = "MacBook".into();
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"remotePath\""));
+        assert!(json.contains("\"intervalMinutes\""));
+        assert!(json.contains("\"keepSnapshots\""));
+        assert!(json.contains("\"deviceLabel\""));
+        assert_eq!(serde_json::from_str::<SyncSettings>(&json).unwrap(), s);
     }
 }

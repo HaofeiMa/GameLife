@@ -149,6 +149,26 @@ const WAVE1_COLUMNS: &[(&str, &str, &str)] = &[
     ("slots", "capture_context_json", "TEXT"),
 ];
 
+/// Tables that phase two merges across devices. Each carries `device_id` so a
+/// row can be attributed to the machine that observed it.
+///
+/// The local primary keys deliberately do **not** gain a device dimension: one
+/// device has one database, so `(day, slot_start)` stays unique here. The
+/// device dimension only matters inside `merged.db`, which is why adding these
+/// columns touches no query in `resolve.rs` / `scheduler.rs` / `commands.rs`.
+const DEVICE_TAGGED_TABLES: &[&str] = &[
+    "slots",
+    "ledger",
+    "samples",
+    "app_day_stats",
+    "host_day_stats",
+    "days",
+    "policy_versions",
+    "misclassification_reports",
+];
+
+pub const DEVICE_ID_KEY: &str = "device_id";
+
 pub fn open(path: &Path) -> Result<Connection, DbOpError> {
     let conn = Connection::open(path).map_err(map_rusqlite)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))
@@ -234,6 +254,8 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
     add_column_if_missing(conn, "slots", "task_snapshot_json", "TEXT")?;
     add_column_if_missing(conn, "slots", "credited_side_seconds", "INTEGER")?;
     add_column_if_missing(conn, "slots", "credited_chore_seconds", "INTEGER")?;
+    let device_id = local_device_id(conn)?;
+    tag_device_rows(conn, &device_id)?;
     seed_preset_lists_if_empty(conn)?;
     seed_example_wishes_if_empty(conn)?;
     Ok(())
@@ -390,6 +412,83 @@ fn add_column_if_missing(
         }
     }
     Err(last_err.unwrap_or_else(|| DbOpError::Busy))
+}
+
+pub fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>, DbOpError> {
+    conn.query_row(
+        "SELECT value FROM app_meta WHERE key = ?1",
+        params![key],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(map_rusqlite)
+}
+
+pub fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), DbOpError> {
+    conn.execute(
+        "INSERT INTO app_meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+/// This installation's stable identity, minted on first use and kept in
+/// `app_meta`. It names the remote directory a device uploads into, and in
+/// phase two it is what makes slot ownership decidable.
+///
+/// The value is never regenerated once written — changing it would orphan the
+/// device's remote directory and, worse, re-attribute its history.
+pub fn local_device_id(conn: &Connection) -> Result<String, DbOpError> {
+    if let Some(existing) = meta_get(conn, DEVICE_ID_KEY)? {
+        let existing = existing.trim().to_string();
+        if !existing.is_empty() {
+            return Ok(existing);
+        }
+    }
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|e| DbOpError::Fatal(format!("random: {e}")))?;
+    let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    meta_set(conn, DEVICE_ID_KEY, &id)?;
+    Ok(id)
+}
+
+/// Phase-two tagging: give every merged table a `device_id`, stamp the rows
+/// that predate the column, and keep new rows stamped.
+///
+/// The trigger is what keeps new rows tagged. There are a dozen production
+/// insert sites across `sampler.rs` / `scheduler.rs` / `resolve.rs` /
+/// `commands.rs`; editing all of them means a future one will be missed, and a
+/// silently untagged row is exactly the kind of quiet corruption this project
+/// goes out of its way to avoid. The trigger reads the id from `app_meta`
+/// rather than baking it in, so a restored snapshot re-stamps itself with the
+/// id that snapshot carries.
+///
+/// Adding a column is idempotent and carries no version semantics, so
+/// `user_version` stays 3.
+fn tag_device_rows(conn: &Connection, device_id: &str) -> Result<(), DbOpError> {
+    for table in DEVICE_TAGGED_TABLES {
+        add_column_if_missing(conn, table, "device_id", "TEXT NOT NULL DEFAULT ''")?;
+        conn.execute(
+            &format!("UPDATE {table} SET device_id = ?1 WHERE device_id = ''"),
+            params![device_id],
+        )
+        .map_err(map_rusqlite)?;
+        conn.execute_batch(&format!(
+            "DROP TRIGGER IF EXISTS tag_{table}_device;
+             CREATE TRIGGER tag_{table}_device AFTER INSERT ON {table}
+             WHEN NEW.device_id = ''
+             BEGIN
+               UPDATE {table}
+                  SET device_id = COALESCE(
+                        (SELECT value FROM app_meta WHERE key = '{DEVICE_ID_KEY}'), '')
+                WHERE rowid = NEW.rowid;
+             END;"
+        ))
+        .map_err(map_rusqlite)?;
+    }
+    Ok(())
 }
 
 pub fn app_db_path() -> Option<std::path::PathBuf> {
@@ -1168,5 +1267,145 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    /// Phase-two tagging. Every table that can be merged carries the id of the
+    /// machine that produced the row, so a merge can tell two devices' rows
+    /// apart. The id is minted once and never changes on later migrations —
+    /// changing it would orphan the device's remote directory.
+    #[test]
+    fn migrate_tags_synced_tables_with_this_device_id() {
+        const TAGGED: &[&str] = &[
+            "slots",
+            "ledger",
+            "samples",
+            "app_day_stats",
+            "host_day_stats",
+            "days",
+            "policy_versions",
+            "misclassification_reports",
+        ];
+
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        // Rows written by phase one, before the tag column existed.
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, category) VALUES ('2026-09-13', 1, 'core')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger (reward_event_key, day, ts, coin_delta, xp_delta)
+             VALUES ('slot:2026-09-13:1', '2026-09-13', 1, 5, 3)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO samples (ts, day, app, title) VALUES (1, '2026-09-13', 'Cursor', 'secret')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected)
+             VALUES ('2026-09-13','Cursor','',1,0,15,0,0,0,0,0,0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO host_day_stats (day, host, samples, core, support, admin, side, distraction)
+             VALUES ('2026-09-13','arxiv.org',1,15,0,0,0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO days (day, settled_at, outcome) VALUES ('2026-09-13', 1, 'ok')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO policy_versions (id, json, created_at) VALUES (1, '{}', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO misclassification_reports (id, day, slot_start, note, ts)
+             VALUES (1, '2026-09-13', 1, 'n', 1)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        // Adding a column is not a version-semantics change.
+        assert_eq!(user_version(&conn), 3);
+
+        let id: String = conn
+            .query_row("SELECT value FROM app_meta WHERE key='device_id'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(id.len(), 32, "device_id should be 16 random bytes in hex");
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+
+        for table in TAGGED {
+            assert!(
+                column_names(&conn, table).iter().any(|c| c == "device_id"),
+                "{table} has no device_id column"
+            );
+            let tagged: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE device_id = ?1"),
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let total: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert!(total > 0, "{table} was not seeded by this test");
+            assert_eq!(tagged, total, "{table} has untagged rows");
+        }
+
+        // Rows written *after* the migration are tagged too — by the trigger,
+        // not by the insert site, so a future insert path cannot forget.
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, category) VALUES ('2026-09-14', 2, 'core')",
+            [],
+        )
+        .unwrap();
+        let fresh: String = conn
+            .query_row(
+                "SELECT device_id FROM slots WHERE day='2026-09-14' AND slot_start=2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fresh, id);
+
+        // An explicit tag is respected rather than overwritten: that is what
+        // lets a restored snapshot keep another device's attribution.
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, device_id) VALUES ('2026-09-14', 3, 'other')",
+            [],
+        )
+        .unwrap();
+        let other: String = conn
+            .query_row(
+                "SELECT device_id FROM slots WHERE day='2026-09-14' AND slot_start=3",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(other, "other");
+
+        // Re-migrating must not mint a second identity.
+        migrate(&conn).unwrap();
+        let again: String = conn
+            .query_row("SELECT value FROM app_meta WHERE key='device_id'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(again, id);
     }
 }

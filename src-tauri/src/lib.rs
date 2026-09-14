@@ -15,6 +15,7 @@ pub mod platform;
 pub mod resolve;
 pub mod sampler;
 pub mod scheduler;
+pub mod sync;
 pub mod text_ai;
 pub mod ticktick;
 pub mod vision;
@@ -42,6 +43,8 @@ use commands::{
     get_today, get_day_view, get_week, has_api_key, list_tasks, parse_task_line_cmd,
     open_privacy_settings, provider_key_status, redeem, report_misclassification, request_screen_recording, review_slot,
     save_settings, set_api_key, set_provider_api_key, set_quests, test_vision_provider, ticktick_begin_oauth,
+    sync_list_devices, sync_now_cmd, sync_restore, sync_set_credentials, sync_status,
+    sync_test_connection,
     ticktick_disconnect, ticktick_finish_oauth, ticktick_set_client_secret,
     ticktick_status, ticktick_sync, ticktick_tree, toggle_task_done, update_wish, upsert_task,
 };
@@ -129,6 +132,12 @@ pub fn run() {
             ticktick_disconnect,
             ticktick_sync,
             ticktick_tree,
+            sync_status,
+            sync_now_cmd,
+            sync_test_connection,
+            sync_set_credentials,
+            sync_list_devices,
+            sync_restore,
         ])
         .setup(|app| {
             let pause = PauseControl::new();
@@ -206,6 +215,8 @@ pub fn run() {
                     }
                     "quit" => {
                         write_quit_heartbeat();
+                        let settings = load_settings();
+                        crate::sync::sync_on_exit(&settings.sync);
                         ALLOW_EXIT.store(true, Ordering::Relaxed);
                         app.exit(0);
                     }

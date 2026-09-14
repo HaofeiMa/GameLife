@@ -20,6 +20,11 @@ import {
   providerKeyStatus,
   saveSettings,
   setProviderApiKey,
+  syncListDevices,
+  syncNow,
+  syncSetCredentials,
+  syncStatus,
+  syncTestConnection,
   testVisionProvider,
   ticktickBeginOauth,
   ticktickDisconnect,
@@ -30,10 +35,20 @@ import {
   ticktickTree,
   type AppSettings,
   type ProviderKeyStatus,
+  type SyncSettings,
+  type SyncStatus,
   type TickTickTree,
   type TickTickStatus,
   type VisionProviderSettings,
 } from "../lib/api";
+import {
+  defaultSyncSettings,
+  deviceName,
+  formatBytes,
+  formatCloudStatus,
+  normalizeScope,
+  scopeLabel,
+} from "../lib/cloudSync";
 import { GUIDE_PLACEHOLDERS, savedCategoryGuides } from "../lib/guides";
 import {
   callbackPasteKind,
@@ -58,7 +73,14 @@ import {
 } from "../lib/ticktickBoard";
 import { cn } from "../lib/utils";
 
-type SettingsTab = "basic" | "api" | "lists" | "ticktick" | "permissions" | "about";
+type SettingsTab =
+  | "basic"
+  | "api"
+  | "lists"
+  | "ticktick"
+  | "cloud"
+  | "permissions"
+  | "about";
 
 /** One draggable thing in the TickTick tree. */
 type AssignTarget =
@@ -70,6 +92,7 @@ const TABS: { value: SettingsTab; label: string }[] = [
   { value: "api", label: "API" },
   { value: "lists", label: "名单" },
   { value: "ticktick", label: "TickTick" },
+  { value: "cloud", label: "云端" },
   { value: "permissions", label: "权限" },
   { value: "about", label: "关于" },
 ];
@@ -405,7 +428,13 @@ export function Settings() {
   const [truncated, setTruncated] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
+  const [cloudStatus, setCloudStatus] = useState<SyncStatus | null>(null);
+  const [cloudPassword, setCloudPassword] = useState("");
+  const [cloudBusy, setCloudBusy] = useState(false);
+  const [cloudNote, setCloudNote] = useState<string | null>(null);
   const formLocked = saving;
+  /** Older config.json may predate the cloud settings; never render undefined. */
+  const sync = settings?.sync ?? defaultSyncSettings();
   /** The policy fingerprint as the backend last saw it. */
   const lastPolicySig = useRef<string | null>(null);
 
@@ -444,6 +473,22 @@ export function Settings() {
           });
       })
       .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
+  // Cached status only — opening 云端 must not contact the remote.
+  useEffect(() => {
+    if (tab !== "cloud") return;
+    let cancelled = false;
+    syncStatus()
+      .then((s) => {
+        if (!cancelled) setCloudStatus(s);
+      })
+      .catch((e) => {
+        if (!cancelled) setCloudNote(String(e));
+      });
     return () => {
       cancelled = true;
     };
@@ -597,6 +642,67 @@ export function Settings() {
       setMsg(String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  /** Cloud settings save on change — 保存设置 is the policy form's button, and a
+   * half-configured remote should not depend on it. */
+  async function persistSync(next: SyncSettings) {
+    if (!settings) return;
+    await persistBasic({ ...settings, sync: next });
+  }
+
+  async function handleCloudSync() {
+    setCloudBusy(true);
+    setCloudNote(null);
+    try {
+      setCloudStatus(await syncNow());
+      setCloudNote("已上传");
+    } catch (e) {
+      setCloudNote(String(e));
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  async function handleCloudTest() {
+    setCloudBusy(true);
+    setCloudNote(null);
+    try {
+      setCloudNote(await syncTestConnection());
+    } catch (e) {
+      setCloudNote(String(e));
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  async function handleCloudPassword() {
+    const typed = secretToPersist(cloudPassword);
+    if (!typed) return;
+    setCloudBusy(true);
+    setCloudNote(null);
+    try {
+      await syncSetCredentials(typed);
+      setCloudPassword("");
+      setCloudNote("凭据已保存");
+    } catch (e) {
+      setCloudNote(String(e));
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  async function handleCloudDevices() {
+    setCloudBusy(true);
+    setCloudNote(null);
+    try {
+      const devices = await syncListDevices();
+      setCloudStatus((prev) => (prev ? { ...prev, devices } : prev));
+    } catch (e) {
+      setCloudNote(String(e));
+    } finally {
+      setCloudBusy(false);
     }
   }
 
@@ -1402,6 +1508,268 @@ export function Settings() {
                   )}
                 </Section>
               )}
+            </div>
+          )}
+
+          {tab === "cloud" && (
+            <div className="flex flex-col gap-3">
+              <Section
+                title="云端备份"
+                caption="把本地库的一致性快照上传到你自己的 WebDAV 或 S3 兼容存储。远端只是副本，采样、判定与结算永远读本地库。"
+              >
+                <ToggleRow
+                  title="开启云端备份"
+                  description="关闭时不会发出任何请求。"
+                  checked={sync.enabled}
+                  disabled={formLocked}
+                  onChange={(v) => void persistSync({ ...sync, enabled: v })}
+                />
+                <Field label="存储类型">
+                  <Select
+                    value={sync.target}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      void persistSync({ ...sync, target: e.target.value })
+                    }
+                  >
+                    <option value="webdav">WebDAV（坚果云 / Nextcloud）</option>
+                    <option value="s3">S3 兼容（Cloudflare R2 / B2 / MinIO）</option>
+                  </Select>
+                </Field>
+                <Field
+                  label={sync.target === "s3" ? "Endpoint" : "WebDAV 地址"}
+                  hint={
+                    sync.target === "s3"
+                      ? undefined
+                      : "填到目录为止，例如 https://dav.jianguoyun.com/dav/"
+                  }
+                >
+                  <Input
+                    value={sync.url}
+                    disabled={formLocked}
+                    placeholder={
+                      sync.target === "s3"
+                        ? "https://<accountid>.r2.cloudflarestorage.com"
+                        : "https://dav.jianguoyun.com/dav/"
+                    }
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        sync: { ...sync, url: e.target.value },
+                      })
+                    }
+                  />
+                </Field>
+                {sync.target === "s3" && (
+                  <>
+                    <Field label="Bucket">
+                      <Input
+                        value={sync.bucket}
+                        disabled={formLocked}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            sync: { ...sync, bucket: e.target.value },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="Region" hint="Cloudflare R2 填 auto。">
+                      <Input
+                        value={sync.region}
+                        disabled={formLocked}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            sync: { ...sync, region: e.target.value },
+                          })
+                        }
+                      />
+                    </Field>
+                  </>
+                )}
+                <Field label={sync.target === "s3" ? "Access Key ID" : "账号"}>
+                  <Input
+                    value={sync.username}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        sync: { ...sync, username: e.target.value },
+                      })
+                    }
+                  />
+                </Field>
+                <Field
+                  label={sync.target === "s3" ? "Secret Access Key" : "密码 / 应用密码"}
+                  hint="只写进本机 secrets.json（权限 0600），不会回读，也不会随快照上传。"
+                >
+                  <div className="flex gap-2">
+                    <Input
+                      type="password"
+                      value={cloudPassword}
+                      disabled={formLocked || cloudBusy}
+                      placeholder={SECRET_MASK}
+                      onChange={(e) => setCloudPassword(e.target.value)}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={
+                        formLocked || cloudBusy || !secretToPersist(cloudPassword)
+                      }
+                      onClick={() => void handleCloudPassword()}
+                    >
+                      保存凭据
+                    </Button>
+                  </div>
+                </Field>
+              </Section>
+
+              <Section
+                title="同步内容与频率"
+                caption="默认档位只上传判定结果、金币与能量流水、每日汇总和商店数据。"
+              >
+                <Field label="同步范围">
+                  <Select
+                    value={normalizeScope(sync.scope)}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        sync: { ...sync, scope: e.target.value },
+                      })
+                    }
+                  >
+                    <option value="aggregate">仅判定与汇总（不含窗口标题）</option>
+                    <option value="samples">含原始采样（含窗口标题与路径）</option>
+                  </Select>
+                </Field>
+                {normalizeScope(sync.scope) === "samples" && (
+                  <p className="rounded-[10px] bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-warning">
+                    这一档会把窗口标题、URL 和文档路径一起上传。受保护窗口的脱敏只发生在 AI
+                    层，数据库里仍是原文，请只在完全自控的存储上使用。
+                  </p>
+                )}
+                <Field
+                  label="远端目录"
+                  hint={`快照写到 ${sync.remotePath || "gamelife"}/<设备号>/ 下。`}
+                >
+                  <Input
+                    value={sync.remotePath}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        sync: { ...sync, remotePath: e.target.value },
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="同步间隔（分钟）">
+                  <Input
+                    type="number"
+                    min={5}
+                    value={sync.intervalMinutes}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        sync: {
+                          ...sync,
+                          intervalMinutes: Number(e.target.value),
+                        },
+                      })
+                    }
+                  />
+                </Field>
+                <Field
+                  label="保留快照份数"
+                  hint="0 表示只留最新一份，不再保留每日快照。"
+                >
+                  <Input
+                    type="number"
+                    min={0}
+                    value={sync.keepSnapshots}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        sync: {
+                          ...sync,
+                          keepSnapshots: Number(e.target.value),
+                        },
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="设备名称" hint="留空时自动使用「系统 · 设备号前六位」。">
+                  <Input
+                    value={sync.deviceLabel}
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        sync: { ...sync, deviceLabel: e.target.value },
+                      })
+                    }
+                  />
+                </Field>
+              </Section>
+
+              <Section
+                title="状态"
+                caption={
+                  cloudNote ??
+                  (cloudStatus
+                    ? `${formatCloudStatus(cloudStatus)} · 范围：${scopeLabel(cloudStatus.scope)}`
+                    : "读取中…")
+                }
+              >
+                <Row
+                  title="本机设备号"
+                  description={cloudStatus?.deviceId ?? "—"}
+                >
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={cloudBusy || formLocked}
+                    onClick={() => void handleCloudSync()}
+                  >
+                    {cloudBusy ? "处理中…" : "立即同步"}
+                  </Button>
+                </Row>
+                <Row
+                  title="上次快照"
+                  description={cloudStatus ? formatBytes(cloudStatus.snapshotBytes) : "—"}
+                >
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={cloudBusy || formLocked}
+                    onClick={() => void handleCloudTest()}
+                  >
+                    测试连接
+                  </Button>
+                </Row>
+                <Row
+                  title="已登记设备"
+                  description={
+                    cloudStatus && cloudStatus.devices.length > 0
+                      ? cloudStatus.devices.map(deviceName).join("、")
+                      : "还没有读取"
+                  }
+                >
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={cloudBusy || formLocked}
+                    onClick={() => void handleCloudDevices()}
+                  >
+                    刷新列表
+                  </Button>
+                </Row>
+              </Section>
             </div>
           )}
 

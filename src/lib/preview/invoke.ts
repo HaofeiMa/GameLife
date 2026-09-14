@@ -4,6 +4,7 @@ import {
   PREVIEW_OBSERVATION,
   PREVIEW_PERMISSIONS,
   PREVIEW_SETTINGS,
+  PREVIEW_SYNC_STATUS,
   PREVIEW_TICKTICK_STATUS,
   PREVIEW_TICKTICK_TREE,
   PREVIEW_TODAY,
@@ -59,6 +60,16 @@ export async function previewInvoke<T>(
     case "update_wish":
     case "archive_wish":
     case "end_today":
+    case "sync_status":
+    case "sync_now_cmd":
+      return PREVIEW_SYNC_STATUS as T;
+    case "sync_list_devices":
+      return PREVIEW_SYNC_STATUS.devices as unknown as T;
+    case "sync_test_connection":
+      return "连接正常，可写入 gamelife" as unknown as T;
+    case "sync_set_credentials":
+    case "sync_restore":
+      return undefined as T;
     case "freeze":
     case "request_screen_recording":
     case "open_privacy_settings":
