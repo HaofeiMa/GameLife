@@ -215,6 +215,6 @@ macOS 签名身份写在 `src-tauri/tauri.conf.json` 的 `bundle.macOS.signingId
 
 ## 12. 实现状态
 
-**已在本机落地（交叉编译检查通过，未真机运行）：** `platform.rs`、`observe/` 缝、`windows/`、`linux/`、`NativeSampleSource`、`observation_status`、`PlatformNotice`、`tools/platform-check`、托盘失败显示窗口、非 macOS 交通灯条为 0、稳定 macOS 签名身份、workspace 根 release profile、本地日界 DST 全函数。
+**已落地：** `platform.rs`、`observe/` 缝、`windows/`、`linux/`、`NativeSampleSource`、`observation_status`、`PlatformNotice`、`tools/platform-check`、托盘失败显示窗口、非 macOS 交通灯条为 0、稳定 macOS 签名身份、workspace 根 release profile、本地日界 DST 全函数。
 
-**本文要求、尚未改 `gamelife-core` 的：** §6.3 身份别名表。没有这张表，两端能采样、能截图，但 `chrome` / `Code` 对不上默认主线名单，娱乐 host 在无 URL 时也不开火，槽会大量停在灰区。这是产品层补表，不是再写一个后端。
+**已落地（本规格 §6.3）：** `known_app_identities` 为 Windows stem / Linux `WM_CLASS` 提供精确、大小写不敏感别名；`matches_app_identity` 先解析到显示名再对名单。默认 Policy **没有** 把 `chrome` / `Code` 写成子串。两端后端仍未经真机运行。

@@ -14,9 +14,9 @@
 
 - 产品是活动监视器，不是计划器。macOS 完整可用。
 - Windows / Linux **Xorg** 观测后端已提交，交叉编译检查通过，**从未在真机运行**。Wayland 不观测。
-- 跨平台 spec 已写：身份别名（`chrome` → `Google Chrome`）**尚未改 `gamelife-core`**。
+- 跨平台 spec 已写，§6.3 身份别名**已进** `known_app_identities`（`chrome` / `Code` 等精确别名，名单仍是显示名）。
 - 本机 **打不出** Windows / Ubuntu 安装包（`rusqlite` bundled + WebView2 / webkit2gtk）。要在目标 OS 上 `npm run tauri build`。
-- 下一步：**① 在 Windows 11 / Ubuntu Xorg 上打包并实测 ② 落地 spec §6 身份表 ③ 提交仍 dirty 的 UI/hint**。
+- 下一步：**① 在 Windows 11 / Ubuntu Xorg 上打包并实测 ② 提交仍 dirty 的 UI/hint**。
 
 ---
 
@@ -194,13 +194,10 @@ npm install && npm run tauri build
 
 预计要调：X11 visual/`GetImage`、`PrintWindow` 在 Chrome/Electron 上是否非黑、`OpenInputDesktop` 锁屏、GNOME 托盘。
 
-### ② 落地身份别名（spec §6.3）
-`docs/superpowers/specs/2026-09-14-cross-platform-observation-design.md`。扩展 `known_app_identities`，**不要**把 `chrome` / `Code` 当子串写进默认名单。
-
-### ③ 提交仍 dirty 的 UI / hint
+### ② 提交仍 dirty 的 UI / hint
 见 §3。与已提交代码的 `hint_sample` 签名不同，要成套交。
 
-### ④ 小尾巴
+### ③ 小尾巴
 - `PlatformNotice` 目前只轮询一次 `observation_status`
 - Linux 锁屏 best-effort；精确锁屏走 D-Bus `LockedHint`（`zbus`）另开规格
 
