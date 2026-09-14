@@ -1,0 +1,8 @@
+# Pinned so this checker always builds with the rustup toolchain and the two
+# cross targets, regardless of whatever `cargo` is first on PATH. It lives here
+# rather than at the repo root on purpose: a root toolchain file would hand the
+# main build over to rustup too.
+[toolchain]
+channel = "stable"
+profile = "minimal"
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]

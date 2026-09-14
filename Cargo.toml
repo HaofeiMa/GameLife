@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/gamelife-core", "src-tauri"]
+# Not a member: it is checked with the rustup toolchain against other targets,
+# and must not pull windows-sys/x11rb into the app's lockfile.
+exclude = ["tools/platform-check"]
 
 # The release profile is workspace-wide state and cargo reads it from the root
 # manifest only: a [profile.*] table in a member's manifest is ignored outright

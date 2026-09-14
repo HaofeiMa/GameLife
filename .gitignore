@@ -4,3 +4,7 @@ target/
 node_modules/
 dist/
 .DS_Store
+
+# The cross-target checker builds into /tmp by convention; ignore its target
+# in case someone runs it without CARGO_TARGET_DIR.
+tools/platform-check/target/

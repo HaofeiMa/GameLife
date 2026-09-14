@@ -1,0 +1,32 @@
+# Compile-checks the per-platform observation backends against the OS they are
+# written for. The real app cannot be checked this way: `rusqlite` is built with
+# `bundled`, so it needs a C toolchain for the target. This crate has no C
+# dependencies, which is what makes `cargo check --target …` possible from a Mac.
+[package]
+name = "platform-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gamelife-core = { path = "../../crates/gamelife-core" }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_System_StationsAndDesktops",
+  "Win32_System_SystemInformation",
+  "Win32_Storage_Xps",
+  "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb = { version = "0.13", features = ["randr", "screensaver"] }
