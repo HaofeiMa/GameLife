@@ -183,7 +183,9 @@
 
 ### 7.3 账本互斥
 
-`reward_event_key` 全局唯一，所以两台设备即使同时结算同一个槽，也只有一台的 `INSERT` 成功，另一台拿到 `DbOpError::AlreadyApplied` —— 这正是既有代码已经吞掉的唯一错误类型（「Only `DbOpError::AlreadyApplied` may be swallowed」）。归属规则保证两者算出的金额一致，所以谁先落账都不影响结果。
+`reward_event_key` 全局唯一，所以两台设备即使同时结算同一个槽，也只有一台的 `INSERT` 成功，另一台拿到 `DbOpError::AlreadyApplied` —— 这正是既有代码已经吞掉的唯一错误类型（「Only `DbOpError::AlreadyApplied` may be swallowed」）。
+
+注意这条唯一性只能保证**同一笔奖励不会发两次**，它**保证不了两笔奖励金额相同**：累计键的基准是本机的累计秒数，两台设备各占半天时会各自从 0 开始、产出相同的键，从而互相吞掉。所以键唯一是**安全网**，不是正确性来源 —— 正确性来自 §7.5 的规范化序列。
 
 ### 7.4 日结算
 
@@ -191,23 +193,39 @@
 
 ### 7.5 延迟结算怎么落地
 
-§3.4 要求「≥2 台设备时按日收齐再结算」，但 `resolve_slot` 现在是**逐槽即时**把奖励写进 `ledger`。改动的关键是：**只改落账的时机，不改奖励的计算**。
+§3.4 要求「≥2 台设备时按日收齐再结算」，但 `resolve_slot` 现在是**逐槽即时**把奖励写进 `ledger`。改动的关键是：**只改落账的时机，不改奖励的规则**。
 
-奖励事件的键全部是 `(day, 累计 credited 秒数, 类别)` 的函数（`validated_coin:<day>:<i>`、`ladder:<label>:<day>`、`xp_admin:<day>:<slot_start>` …），其中累计秒数依赖**当天规范化后的槽序列**。所以只要序列一致，每台设备算出的键与金额就一致 —— 这是 §7.3 的前提。
+#### 7.5.1 为什么不能「逐槽记下来、之后照单落账」
 
-落地方式：
+最直觉的做法是：延迟模式下把 `resolve_slot` 本来要写 `ledger` 的那些事件原样记进一张待定表，收齐后照单落账。**这是错的。**
 
-1. **新增 `pending_rewards` 表**（`reward_event_key` 主键，与 `ledger` 同构，另存 `day` / `slot_start` / `ts` / `coin_delta` / `xp_delta`）。
-2. `resolve_slot` 按模式分流：`Immediate` 照旧写 `ledger`；`Deferred` 把**完全相同的事件**写进 `pending_rewards`。奖励计算代码一行不动，两种模式共用同一个 `record_reward`，都只吞 `AlreadyApplied`。
-   - 这样「延迟」是纯粹的时间平移，可以被测试直接证明：同一输入两种模式产出的事件集合必须逐条相等。
-   - `pending_rewards` 的主键与 `ledger` 一致，所以记录的幂等性与落账的幂等性来自同一机制，不需要第二套去重逻辑。
-3. **模式存在 `app_meta['settle_mode']`**，由同步流程读 `devices.json` 后写入（≥2 台写 `deferred`，≤1 台写回 `immediate`）。`resolve_slot` 只读这个本地值 —— 判定链路绝不能因为网络失败而改变行为。读不到或值非法时按 `immediate` 处理（= 今天的行为），**失败方向永远是「照常发币」**。
-4. **结算器（settler）**：对每个有 `pending_rewards` 的日期 D，若 `day_is_ready(D)`，则从 `merged.db` 取 D 的 owner 映射（`slot_start -> device_id`），**只落账本机拥有的槽**的待定事件，然后删掉这些待定行。
-   - §7.3 的「两台设备都插、键唯一仲裁」是**安全网**，不是主机制：主机制是归属过滤。因为两台设备对同一槽的判定金额可能不同（观测秒数不同），只有 owner 那一份是规范的。安全网覆盖的是本机视图过期、误以为自己拥有某槽的情况。
-   - 顺序：按 `slot_start` 升序落账，使 `admin_xp` 的「每日最多 4 个槽」截断是确定性的。
-5. **`admin_xp` 的每日 4 槽上限**需要日级视图。逐槽即时模式下它由 `ledger` 里的当日计数天然保证；延迟模式下 `ledger` 是空的，所以结算器必须按 `slot_start` 顺序只落前 4 个 `xp_admin:*` 事件。这条规则属于日级，就该由日级的执行者负责。
-6. 归属判定需要完整视图，所以 `day_is_ready` 不成立时**不结算**，待定事件继续攒着。宽限期过后照常结算 —— 迟到的设备数据只进统计视图，不改账本（§3.4 已显式接受）。
-7. `pending_rewards` **进快照**（不含用户文本、不含密钥，体积可忽略），这样从远端恢复后未落账的奖励还在；但它**不参与合并**（不进 `MERGED_TABLES`），因为它是每台设备各自的待办。
+奖励事件分两类，只有一类是本槽的局部函数：
+
+| 类别 | 例子 | 依赖 |
+| --- | --- | --- |
+| **局部** | `xp_support:<day>:<slot>`、`xp_admin:<day>:<slot>`、`early_start:<day>` | 本槽的判定结果 |
+| **累计** | `validated_coin:<day>:<i>`、`validated_xp:<day>:<i>`、`ladder:<label>:<day>`、`validated_side_coin/xp:*`、`validated_chore_coin/xp:*` | **当天规范化槽序列的累计秒数** |
+
+累计那一类的 `before` 来自 `credited_before_slot(conn, day, slot_start)` —— 它只统计**本机**的槽。于是两台设备各占半天时，双方的累计都从 0 开始：
+
+- A 的槽在上午，产出 `validated_coin:<day>:1..16`；
+- B 的槽在下午，也产出 `validated_coin:<day>:1..16`；
+- `reward_event_key` 唯一，第二份被 `AlreadyApplied` 吞掉。
+
+结果是**半天的工作只发一半币**，而且不报错。`ladder:*` 同理（`ladder:2h:<day>` 被跨两次却只发一次）。§7.3 那句「归属规则保证两者算出的金额一致」在累计键上不成立 —— 归属规则管的是**哪个槽算数**，管不了**累计基准**。
+
+#### 7.5.2 落地方式
+
+**累计奖励是日级规则，就交给日级的执行者算。**
+
+1. `resolve_slot` 在 `Deferred` 模式下**照旧写槽行与日统计，但不写任何账本行**。奖励规则一行不动，改的只是「今天不落账」。
+2. **结算器（settler）**从 `merged.db` 的 owner 过滤后槽序列，按 `slot_start` 升序走一遍，累加 `credited_core_seconds` / `credited_side_seconds` / `credited_chore_seconds`，调用 `gamelife-core` 里**同一批纯函数**（`tick_keys_for_credited` / `tick_keys_for_discount`）产出当天的累计事件并落账。规则没有第二份实现，变的只是输入从「本机槽」换成「规范化槽序列」。
+3. **`slots` 新增 `early_coins INTEGER`**，`upsert_slot` 两种模式都写。`early_start` 的金额来自 `compute_early_coins`，它读 `samples` —— 而 `aggregate` 档不上传 `samples`，所以合并视图**无法重建**这个值。它必须由判定当时就记在槽行上，结算器再从 owner 那一行读。
+4. `xp_support` / `xp_admin` 不需要单独记：`category`、`credited_side_seconds`、`credited_chore_seconds` 都在合并视图里，足以判定。`xp_admin` 的「每日最多 4 槽」由结算器按 `slot_start` 升序截断 —— 它是日级规则，就该由日级执行者负责。
+5. 模式存在 `app_meta['settle_mode']`，由同步流程读 `devices.json` 后写入（≥2 台写 `deferred`，≤1 台写回 `immediate`）。`resolve_slot` 只读这个本地值 —— 判定链路绝不能因为网络失败而改变行为。读不到或值非法时按 `immediate` 处理（= 今天的行为），**失败方向永远是「照常发币」**。
+6. 结算器只结算 `day_is_ready` 成立的日期：归属判定需要完整视图，不完整时算出的 owner 可能不对。宽限期过后照常结算 —— 迟到的设备数据只进统计视图，不改账本（§3.4 已显式接受）。此时合并视图可能仍缺该设备，`early_start` 的金额会取先落账那一方的值；这是宽限期换来的已知代价。
+7. 结算进度记在 `app_meta['rewards_settled_through']`（一个日期）。切入 `deferred` 时初始化为**昨天** —— 今天本来就还不能结算，而更早的日期已经由即时模式发过了。已结算日期不再回看，与 §3.4「迟到数据不改账本」一致。
+8. 切换模式**不做历史回填**：已经在即时模式下发过的币不会重发（键唯一天然保证），也不会因为切到延迟模式而少发 —— 少发的只是切换之后新判定的槽，它们由结算器补上。
 
 ## 8. 触发点
 
