@@ -254,6 +254,8 @@ export interface SyncSettings {
   scope: string;
   keepSnapshots: number;
   deviceLabel: string;
+  /** Hours after a local day ends before stragglers stop blocking settlement. */
+  settleGraceHours: number;
 }
 
 export interface SyncDevice {

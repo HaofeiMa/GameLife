@@ -4,7 +4,9 @@ import {
   deviceName,
   formatBytes,
   formatCloudStatus,
+  formatLastSeen,
   normalizeScope,
+  normalizeSettleGraceHours,
   scopeLabel,
 } from "./cloudSync";
 import type { SyncStatus } from "./api";
@@ -52,6 +54,27 @@ describe("defaultSyncSettings", () => {
     expect(s.keepSnapshots).toBe(7);
     expect(s.remotePath).toBe("gamelife");
     expect(s.region).toBe("auto");
+    expect(s.settleGraceHours).toBe(36);
+  });
+});
+
+describe("normalizeSettleGraceHours", () => {
+  it("keeps a positive value and falls back to 36 otherwise", () => {
+    expect(normalizeSettleGraceHours(12)).toBe(12);
+    expect(normalizeSettleGraceHours(0)).toBe(36);
+    expect(normalizeSettleGraceHours(-1)).toBe(36);
+    expect(normalizeSettleGraceHours(Number.NaN)).toBe(36);
+  });
+});
+
+describe("formatLastSeen", () => {
+  it("renders a placeholder when the device has never reported", () => {
+    expect(formatLastSeen(0)).toBe("从未上报");
+    expect(formatLastSeen(-1)).toBe("从未上报");
+  });
+
+  it("formats a unix timestamp in the local locale", () => {
+    expect(formatLastSeen(1_789_000_000)).toContain("2026");
   });
 });
 

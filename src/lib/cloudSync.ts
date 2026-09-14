@@ -14,7 +14,12 @@ export function defaultSyncSettings(): SyncSettings {
     scope: "aggregate",
     keepSnapshots: 7,
     deviceLabel: "",
+    settleGraceHours: 36,
   };
+}
+
+export function normalizeSettleGraceHours(hours: number): number {
+  return Number.isFinite(hours) && hours > 0 ? Math.floor(hours) : 36;
 }
 
 /**
@@ -49,4 +54,9 @@ export function formatCloudStatus(status: SyncStatus): string {
 export function deviceName(device: { label: string; deviceId: string }): string {
   const label = device.label.trim();
   return label || `设备 ${device.deviceId.slice(0, 6)}`;
+}
+
+export function formatLastSeen(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return "从未上报";
+  return new Date(ts * 1000).toLocaleString();
 }

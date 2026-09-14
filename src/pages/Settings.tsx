@@ -8,6 +8,7 @@ import { IS_MACOS } from "../lib/platform";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
+import { Dialog } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Segmented } from "../components/ui/segmented";
@@ -22,6 +23,7 @@ import {
   setProviderApiKey,
   syncListDevices,
   syncNow,
+  syncRestore,
   syncSetCredentials,
   syncStatus,
   syncTestConnection,
@@ -35,6 +37,7 @@ import {
   ticktickTree,
   type AppSettings,
   type ProviderKeyStatus,
+  type SyncDevice,
   type SyncSettings,
   type SyncStatus,
   type TickTickTree,
@@ -46,7 +49,9 @@ import {
   deviceName,
   formatBytes,
   formatCloudStatus,
+  formatLastSeen,
   normalizeScope,
+  normalizeSettleGraceHours,
   scopeLabel,
 } from "../lib/cloudSync";
 import { GUIDE_PLACEHOLDERS, savedCategoryGuides } from "../lib/guides";
@@ -432,6 +437,7 @@ export function Settings() {
   const [cloudPassword, setCloudPassword] = useState("");
   const [cloudBusy, setCloudBusy] = useState(false);
   const [cloudNote, setCloudNote] = useState<string | null>(null);
+  const [restoreDevice, setRestoreDevice] = useState<SyncDevice | null>(null);
   const formLocked = saving;
   /** Older config.json may predate the cloud settings; never render undefined. */
   const sync = settings?.sync ?? defaultSyncSettings();
@@ -587,6 +593,10 @@ export function Settings() {
       categoryGuides: savedCategoryGuides(next.categoryGuides),
       ticktickProjectRoles: next.ticktickProjectRoles ?? {},
       ticktickColumnRoles: next.ticktickColumnRoles ?? {},
+      sync: {
+        ...next.sync,
+        settleGraceHours: normalizeSettleGraceHours(next.sync.settleGraceHours),
+      },
     };
     await saveSettings(trimmed, updatePolicy);
     setSettings(trimmed);
@@ -649,7 +659,13 @@ export function Settings() {
    * half-configured remote should not depend on it. */
   async function persistSync(next: SyncSettings) {
     if (!settings) return;
-    await persistBasic({ ...settings, sync: next });
+    await persistBasic({
+      ...settings,
+      sync: {
+        ...next,
+        settleGraceHours: normalizeSettleGraceHours(next.settleGraceHours),
+      },
+    });
   }
 
   async function handleCloudSync() {
@@ -699,6 +715,21 @@ export function Settings() {
     try {
       const devices = await syncListDevices();
       setCloudStatus((prev) => (prev ? { ...prev, devices } : prev));
+    } catch (e) {
+      setCloudNote(String(e));
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  async function handleCloudRestore() {
+    if (!restoreDevice) return;
+    setCloudBusy(true);
+    setCloudNote(null);
+    try {
+      const path = await syncRestore(restoreDevice.deviceId);
+      setCloudNote(`已写成 ${path}。退出应用后把它改名为 gamelife.db 再打开。`);
+      setRestoreDevice(null);
     } catch (e) {
       setCloudNote(String(e));
     } finally {
@@ -1703,6 +1734,36 @@ export function Settings() {
                     }
                   />
                 </Field>
+                <Field
+                  label="结算宽限期（小时）"
+                  hint="两台以上设备时，一天结束后再等这么久才结算迟到的机器。默认 36。"
+                >
+                  <Input
+                    type="number"
+                    min={1}
+                    value={
+                      Number.isFinite(sync.settleGraceHours) ? sync.settleGraceHours : 36
+                    }
+                    disabled={formLocked}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        sync: {
+                          ...sync,
+                          settleGraceHours: Number(e.target.value),
+                        },
+                      })
+                    }
+                    onBlur={() =>
+                      void persistSync({
+                        ...sync,
+                        settleGraceHours: normalizeSettleGraceHours(
+                          sync.settleGraceHours,
+                        ),
+                      })
+                    }
+                  />
+                </Field>
                 <Field label="设备名称" hint="留空时自动使用「系统 · 设备号前六位」。">
                   <Input
                     value={sync.deviceLabel}
@@ -1754,11 +1815,7 @@ export function Settings() {
                 </Row>
                 <Row
                   title="已登记设备"
-                  description={
-                    cloudStatus && cloudStatus.devices.length > 0
-                      ? cloudStatus.devices.map(deviceName).join("、")
-                      : "还没有读取"
-                  }
+                  description="点「刷新列表」从远端读取。恢复不会覆盖正在用的库。"
                 >
                   <Button
                     size="sm"
@@ -1769,6 +1826,34 @@ export function Settings() {
                     刷新列表
                   </Button>
                 </Row>
+                {(cloudStatus?.devices ?? []).length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground">还没有读取到设备。</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {cloudStatus!.devices.map((device) => (
+                      <li
+                        key={device.deviceId}
+                        className="flex items-start justify-between gap-3 rounded-lg border px-3 py-2"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">{deviceName(device)}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {device.platform || "未知平台"} · 最近{" "}
+                            {formatLastSeen(device.lastSeen)}
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={cloudBusy || formLocked}
+                          onClick={() => setRestoreDevice(device)}
+                        >
+                          恢复
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </Section>
             </div>
           )}
@@ -1850,6 +1935,33 @@ export function Settings() {
           )}
         </div>
       </div>
+      <Dialog
+        open={restoreDevice != null}
+        onClose={() => {
+          if (!cloudBusy) setRestoreDevice(null);
+        }}
+        title="从这台设备恢复？"
+        description={
+          restoreDevice
+            ? `会把「${deviceName(restoreDevice)}」的最新快照写成 gamelife.restored.db，不会覆盖正在使用的库。退出应用后自行改名替换。`
+            : undefined
+        }
+        className="max-w-sm"
+        footer={
+          <>
+            <Button
+              variant="outline"
+              onClick={() => setRestoreDevice(null)}
+              disabled={cloudBusy}
+            >
+              取消
+            </Button>
+            <Button onClick={() => void handleCloudRestore()} disabled={cloudBusy}>
+              {cloudBusy ? "下载中…" : "下载快照"}
+            </Button>
+          </>
+        }
+      />
     </>
   );
 }

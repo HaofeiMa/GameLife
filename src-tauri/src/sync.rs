@@ -967,7 +967,7 @@ pub fn sync_merge_and_settle(
                 &outcome.devices,
                 &snapshots,
                 ctx.now,
-                SETTLE_GRACE_HOURS,
+                crate::config::normalize_settle_grace_hours(ctx.settings.settle_grace_hours),
             ) {
                 Ok(r) => {
                     summary.settled = r.settled;

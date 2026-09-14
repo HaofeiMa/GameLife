@@ -43,6 +43,25 @@ pub struct SyncSettings {
     pub scope: String,
     pub keep_snapshots: i64,
     pub device_label: String,
+    /// Hours after a local day ends before stragglers stop blocking settlement.
+    /// Missing or non-positive values fall back to 36 (§9 / T16).
+    #[serde(default = "default_settle_grace_hours")]
+    pub settle_grace_hours: i64,
+}
+
+fn default_settle_grace_hours() -> i64 {
+    36
+}
+
+/// Anything non-positive (and the 0 that a blank number input produces) must
+/// not disable the grace period — that would settle a two-device day the
+/// moment it ended, which is the hostage situation §3.4 exists to avoid.
+pub fn normalize_settle_grace_hours(h: i64) -> i64 {
+    if h <= 0 {
+        default_settle_grace_hours()
+    } else {
+        h
+    }
 }
 
 impl Default for SyncSettings {
@@ -59,6 +78,7 @@ impl Default for SyncSettings {
             scope: SCOPE_AGGREGATE.into(),
             keep_snapshots: 7,
             device_label: String::new(),
+            settle_grace_hours: default_settle_grace_hours(),
         }
     }
 }
@@ -207,7 +227,9 @@ pub fn load_settings() -> AppSettings {
         return default_settings();
     };
     if let Ok(data) = fs::read_to_string(&path) {
-        if let Ok(s) = serde_json::from_str(&data) {
+        if let Ok(mut s) = serde_json::from_str::<AppSettings>(&data) {
+            s.sync.settle_grace_hours =
+                normalize_settle_grace_hours(s.sync.settle_grace_hours);
             return with_vision_defaults(s);
         }
     }
@@ -322,6 +344,15 @@ mod tests {
         assert_eq!(parsed.sync.remote_path, "gamelife");
         assert!(parsed.sync.bucket.is_empty());
         assert_eq!(parsed.sync.region, "auto");
+        assert_eq!(parsed.sync.settle_grace_hours, 36);
+    }
+
+    #[test]
+    fn normalize_settle_grace_hours_rejects_non_positive() {
+        assert_eq!(normalize_settle_grace_hours(36), 36);
+        assert_eq!(normalize_settle_grace_hours(12), 12);
+        assert_eq!(normalize_settle_grace_hours(0), 36);
+        assert_eq!(normalize_settle_grace_hours(-8), 36);
     }
 
     #[test]
@@ -339,6 +370,7 @@ mod tests {
         b.sync.enabled = true;
         b.sync.url = "https://dav.example.com".into();
         b.sync.scope = SCOPE_SAMPLES.into();
+        b.sync.settle_grace_hours = 12;
         assert_eq!(policy_snapshot_json(&a), policy_snapshot_json(&b));
     }
 
@@ -350,11 +382,13 @@ mod tests {
         s.interval_minutes = 15;
         s.keep_snapshots = 3;
         s.device_label = "MacBook".into();
+        s.settle_grace_hours = 12;
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"remotePath\""));
         assert!(json.contains("\"intervalMinutes\""));
         assert!(json.contains("\"keepSnapshots\""));
         assert!(json.contains("\"deviceLabel\""));
+        assert!(json.contains("\"settleGraceHours\""));
         assert_eq!(serde_json::from_str::<SyncSettings>(&json).unwrap(), s);
     }
 }

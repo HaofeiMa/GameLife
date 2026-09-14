@@ -445,6 +445,7 @@ export const PREVIEW_SETTINGS: AppSettings = {
     scope: "aggregate",
     keepSnapshots: 7,
     deviceLabel: "书房 Mac",
+    settleGraceHours: 36,
   },
 };
 
