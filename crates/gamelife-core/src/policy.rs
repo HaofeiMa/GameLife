@@ -48,89 +48,135 @@ pub fn nonempty_guides(g: &CategoryGuides) -> Vec<(&'static str, String)> {
 struct KnownApp {
     display: &'static str,
     bundle_ids: &'static [&'static str],
+    /// Windows `image_display_name` (exe stem). Exact, case-insensitive.
+    windows_stems: &'static [&'static str],
+    /// X11 `WM_CLASS` class (or instance fallback). Exact, case-insensitive.
+    linux_classes: &'static [&'static str],
 }
+
+const NONE: &[&str] = &[];
 
 fn known_app_identities() -> &'static [KnownApp] {
     &[
         KnownApp {
             display: "Cursor",
             bundle_ids: &["com.todesktop.230313mzl4w4u92"],
+            windows_stems: &["Cursor"],
+            linux_classes: &["Cursor"],
         },
         KnownApp {
             display: "Visual Studio Code",
             bundle_ids: &["com.microsoft.VSCode"],
+            windows_stems: &["Code"],
+            linux_classes: &["Code"],
         },
         KnownApp {
             display: "Preview",
             bundle_ids: &["com.apple.Preview"],
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
         KnownApp {
             display: "Zotero",
             bundle_ids: &["org.zotero.zotero"],
+            windows_stems: &["zotero"],
+            linux_classes: &["Zotero"],
         },
         KnownApp {
             display: "Google Chrome",
             bundle_ids: &["com.google.Chrome"],
+            windows_stems: &["chrome"],
+            linux_classes: &["Google-chrome", "google-chrome"],
         },
         KnownApp {
             display: "Safari",
             bundle_ids: &["com.apple.Safari"],
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
         KnownApp {
             display: "Microsoft Word",
             bundle_ids: &["com.microsoft.Word"],
+            windows_stems: &["WINWORD"],
+            linux_classes: &["WINWORD"],
         },
         KnownApp {
             display: "Pages",
             bundle_ids: &["com.apple.iWork.Pages"],
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
         KnownApp {
             display: "PDF Expert",
             bundle_ids: &["com.readdle.PDFExpert-Mac"],
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
         KnownApp {
             display: "Terminal",
             bundle_ids: &["com.apple.Terminal"],
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
         KnownApp {
             display: "iTerm2",
             bundle_ids: &["com.googlecode.iterm2"],
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
         KnownApp {
             display: "Warp",
             bundle_ids: &["dev.warp.Warp-Stable"],
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
         KnownApp {
             display: "TeXShop",
             bundle_ids: &["edu.ucsd.cs.mmccrack.texshop"],
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
         KnownApp {
             display: "MATLAB",
             bundle_ids: &["com.mathworks.matlab"],
+            windows_stems: &["matlab"],
+            linux_classes: &["MATLAB"],
         },
         KnownApp {
             display: "PyCharm",
             bundle_ids: &["com.jetbrains.pycharm", "com.jetbrains.pycharm.ce"],
+            windows_stems: &["pycharm64"],
+            linux_classes: &["jetbrains-pycharm", "jetbrains-pycharm-ce"],
         },
         KnownApp {
             display: "JupyterLab",
             bundle_ids: &["org.jupyter.jupyterlab-desktop"],
+            windows_stems: &["JupyterLab"],
+            linux_classes: &["JupyterLab"],
         },
         KnownApp {
             display: "Jupyter",
-            bundle_ids: &[],
+            bundle_ids: NONE,
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
         KnownApp {
             display: "1Password",
             bundle_ids: &["com.1password.1password", "com.agilebits.onepassword7"],
+            windows_stems: &["1Password"],
+            linux_classes: &["1Password"],
         },
         KnownApp {
             display: "Bitwarden",
             bundle_ids: &["com.bitwarden.desktop"],
+            windows_stems: &["Bitwarden"],
+            linux_classes: &["Bitwarden"],
         },
         KnownApp {
             display: "Keychain Access",
             bundle_ids: &["com.apple.keychainaccess"],
+            windows_stems: NONE,
+            linux_classes: NONE,
         },
     ]
 }
@@ -209,9 +255,17 @@ pub fn never_capture_removable(app: &str, builtin: &[String]) -> bool {
         .any(|name| app_lower.contains(&name.to_ascii_lowercase()))
 }
 
+fn catalog_alias_hit(app: &str, known: &KnownApp) -> bool {
+    known
+        .windows_stems
+        .iter()
+        .chain(known.linux_classes)
+        .any(|alias| alias.eq_ignore_ascii_case(app))
+}
+
 pub fn matches_app_identity(app: &str, bundle_id: Option<&str>, names: &[String]) -> bool {
-    if let Some(bid) = bundle_id {
-        for known in known_app_identities() {
+    for known in known_app_identities() {
+        if let Some(bid) = bundle_id {
             let bundle_hit = known
                 .bundle_ids
                 .iter()
@@ -219,6 +273,9 @@ pub fn matches_app_identity(app: &str, bundle_id: Option<&str>, names: &[String]
             if bundle_hit && matches_app_name(known.display, names) {
                 return true;
             }
+        }
+        if catalog_alias_hit(app, known) && matches_app_name(known.display, names) {
+            return true;
         }
     }
     matches_app_name(app, names)
@@ -331,5 +388,55 @@ mod tests {
         assert_eq!(v.len(), 2);
         assert_eq!(v[0], ("mainline", "主线说明".into()));
         assert_eq!(v[1], ("entertainment", "娱乐说明".into()));
+    }
+
+    #[test]
+    fn windows_chrome_stem_matches_google_chrome_on_the_list() {
+        let names = vec!["Google Chrome".into()];
+        assert!(matches_app_identity("chrome", None, &names));
+        assert!(matches_app_identity("CHROME", None, &names));
+    }
+
+    #[test]
+    fn linux_chrome_class_matches_google_chrome_on_the_list() {
+        let names = vec!["Google Chrome".into()];
+        assert!(matches_app_identity("Google-chrome", None, &names));
+        assert!(matches_app_identity("google-chrome", None, &names));
+    }
+
+    #[test]
+    fn linux_code_class_matches_visual_studio_code_on_the_list() {
+        let names = vec!["Visual Studio Code".into()];
+        assert!(matches_app_identity("Code", None, &names));
+    }
+
+    #[test]
+    fn alias_does_not_use_contains() {
+        let names = vec!["Google Chrome".into()];
+        assert!(!matches_app_identity("chromedriver", None, &names));
+    }
+
+    #[test]
+    fn default_trusted_list_does_not_contain_short_stems() {
+        let p = default_v01();
+        assert!(!p.trusted_apps.iter().any(|a| a == "chrome" || a == "Code"));
+        assert!(matches_app_identity("chrome", None, &p.trusted_apps));
+        assert!(matches_app_identity("Code", None, &p.trusted_apps));
+    }
+
+    #[test]
+    fn remaining_spec_aliases_resolve() {
+        let p = default_v01();
+        assert!(matches_app_identity("WINWORD", None, &p.trusted_apps));
+        assert!(matches_app_identity("zotero", None, &p.trusted_apps));
+        assert!(matches_app_identity("matlab", None, &p.trusted_apps));
+        assert!(matches_app_identity("pycharm64", None, &p.trusted_apps));
+        assert!(matches_app_identity("jetbrains-pycharm", None, &p.trusted_apps));
+        assert!(matches_app_identity("JupyterLab", None, &p.trusted_apps));
+        let never = builtin_never_capture();
+        assert!(!never_capture_removable("1Password", &never));
+        assert!(!never_capture_removable("Bitwarden", &never));
+        assert!(matches_app_identity("1Password", None, &never));
+        assert!(matches_app_identity("Bitwarden", None, &never));
     }
 }
