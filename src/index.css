@@ -320,13 +320,11 @@
     background-color: hsl(var(--muted-foreground) / 0.5);
   }
 
-  [data-tauri-drag-region] {
-    -webkit-app-region: drag;
-  }
-  [data-tauri-no-drag],
-  [data-tauri-drag-region] .no-drag {
-    -webkit-app-region: no-drag;
-  }
+  /* Drag regions are Tauri's own: the injected script
+     (tauri/src/window/scripts/drag.js) walks the composed path and invokes
+     plugin:window|start_dragging, which capabilities/default.json must allow.
+     The `-webkit-app-region` rules that used to live here were inert and made
+     the missing permission look like it was already handled. */
 
   input[type="password"]::-ms-reveal,
   input[type="password"]::-ms-clear {

@@ -229,12 +229,20 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, event| {
-            if let RunEvent::ExitRequested { api, .. } = event {
+        .run(|app, event| match event {
+            RunEvent::ExitRequested { api, .. } => {
                 if !ALLOW_EXIT.load(Ordering::Relaxed) {
                     api.prevent_exit();
                 }
             }
+            // The red button does not close the window, it hides it
+            // (CloseRequested -> prevent_close + hide), so the window outlives
+            // it and the tray is not the only way back. macOS asks the app to
+            // reopen via applicationShouldHandleReopen; without this arm the
+            // Dock icon is inert because nothing answers the question.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => show_main_window(app),
+            _ => {}
         });
 }
 

@@ -52,7 +52,7 @@ export function PageHeader({
 }: PageHeaderProps) {
   return (
     <header
-      data-tauri-drag-region
+      data-tauri-drag-region="deep"
       className="relative flex shrink-0 items-center bg-background px-[22px]"
       style={{ height: TOOLBAR_HEIGHT }}
     >
