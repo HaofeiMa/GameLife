@@ -5,8 +5,6 @@ import {
   PREVIEW_PERMISSIONS,
   PREVIEW_SETTINGS,
   PREVIEW_SYNC_STATUS,
-  PREVIEW_TICKTICK_STATUS,
-  PREVIEW_TICKTICK_TREE,
   PREVIEW_TODAY,
   PREVIEW_WEEK,
   previewDayView,
@@ -45,11 +43,13 @@ export async function previewInvoke<T>(
       return PREVIEW_PERMISSIONS as T;
     case "observation_status":
       return PREVIEW_OBSERVATION as T;
-    case "ticktick_status":
-      return PREVIEW_TICKTICK_STATUS as T;
-    case "ticktick_tree":
-      return PREVIEW_TICKTICK_TREE as T;
-    case "save_settings":
+    case "save_settings": {
+      const next = args?.settings;
+      if (next && typeof next === "object") {
+        Object.assign(PREVIEW_SETTINGS, next);
+      }
+      return undefined as T;
+    }
     case "set_api_key":
     case "set_provider_api_key":
     case "set_quests":
@@ -73,14 +73,7 @@ export async function previewInvoke<T>(
     case "freeze":
     case "request_screen_recording":
     case "open_privacy_settings":
-    case "ticktick_set_client_secret":
-    case "ticktick_disconnect":
       return undefined as T;
-    case "ticktick_sync":
-      return {
-        count: PREVIEW_TICKTICK_STATUS.todayTasks.length,
-        truncated: false,
-      } as T;
     default:
       console.warn(`[preview] unhandled invoke: ${cmd}`);
       return undefined as T;

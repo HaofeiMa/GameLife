@@ -1,11 +1,10 @@
-import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import appIcon from "../../src-tauri/icons/128x128@2x.png";
 import { PageHeader } from "../components/PageHeader";
 import { PermissionPanel } from "../components/PermissionBanner";
 import { PlatformNotice } from "../components/PlatformNotice";
 import { IS_MACOS } from "../lib/platform";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Dialog } from "../components/ui/dialog";
@@ -28,20 +27,11 @@ import {
   syncStatus,
   syncTestConnection,
   testVisionProvider,
-  ticktickBeginOauth,
-  ticktickDisconnect,
-  ticktickFinishOauth,
-  ticktickSetClientSecret,
-  ticktickStatus,
-  ticktickSync,
-  ticktickTree,
   type AppSettings,
   type ProviderKeyStatus,
   type SyncDevice,
   type SyncSettings,
   type SyncStatus,
-  type TickTickTree,
-  type TickTickStatus,
   type VisionProviderSettings,
 } from "../lib/api";
 import {
@@ -56,14 +46,10 @@ import {
 } from "../lib/cloudSync";
 import { GUIDE_PLACEHOLDERS, savedCategoryGuides } from "../lib/guides";
 import {
-  callbackPasteKind,
-  oauthErrorMessage,
-  oauthWaitingHint,
   policySignature,
   SECRET_MASK,
   secretToPersist,
   showSecretMask,
-  ticktickSecretReady,
 } from "../lib/secretField";
 import {
   addCodexPanel,
@@ -76,39 +62,20 @@ import {
   withVisionProviders,
 } from "../lib/providers";
 import { notifySettingsChanged } from "../lib/settingsEvents";
-import {
-  columnRoleKey,
-  formatTicktickLastSync,
-  groupTicktickTodayTasks,
-  nextRoleMap,
-  TICKTICK_ROLE_COLUMNS,
-  TICKTICK_TASK_ROLES,
-  ticktickRoleLabel,
-  ticktickSyncButtonLabel,
-  ticktickSyncErrorMessage,
-  ticktickTaskTimeLabel,
-} from "../lib/ticktickBoard";
 import { cn } from "../lib/utils";
 
 type SettingsTab =
   | "basic"
   | "api"
   | "lists"
-  | "ticktick"
   | "cloud"
   | "permissions"
   | "about";
-
-/** One draggable thing in the TickTick tree. */
-type AssignTarget =
-  | { kind: "project"; projectId: string; label: string }
-  | { kind: "column"; projectId: string; columnId: string; label: string };
 
 const TABS: { value: SettingsTab; label: string }[] = [
   { value: "basic", label: "基础" },
   { value: "api", label: "API" },
   { value: "lists", label: "名单" },
-  { value: "ticktick", label: "TickTick" },
   { value: "cloud", label: "云端" },
   { value: "permissions", label: "权限" },
   { value: "about", label: "关于" },
@@ -467,31 +434,10 @@ export function Settings() {
     codexLoggedIn: false,
   });
   const [saving, setSaving] = useState(false);
-  const [connecting, setConnecting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tab, setTab] = useState<SettingsTab>("basic");
-  const [ticktickSecret, setTicktickSecret] = useState("");
-  const [ttStatus, setTtStatus] = useState<TickTickStatus>({
-    connected: false,
-    lastSync: null,
-    lastError: null,
-    secretPresent: false,
-    todayTasks: [],
-  });
-  const [callbackDraft, setCallbackDraft] = useState("");
-  const [authorizeUrl, setAuthorizeUrl] = useState("");
-  const [tree, setTree] = useState<TickTickTree | null>(null);
-  const [treeLoading, setTreeLoading] = useState(false);
-  const [treeError, setTreeError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [picked, setPicked] = useState<AssignTarget | null>(null);
-  const [dragPayload, setDragPayload] = useState<AssignTarget | null>(null);
-  const [dragOverRole, setDragOverRole] = useState<string | null>(null);
-  const [truncated, setTruncated] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncNote, setSyncNote] = useState<string | null>(null);
   const [cloudStatus, setCloudStatus] = useState<SyncStatus | null>(null);
   const [cloudPassword, setCloudPassword] = useState("");
   const [cloudBusy, setCloudBusy] = useState(false);
@@ -519,36 +465,6 @@ export function Settings() {
     providerKeyStatus().then(setKeyStatus).catch(() => undefined);
   }, []);
 
-  // Opening the tab reads local status plus the *cached* tree; the network
-  // round trip only happens on an explicit sync.
-  useEffect(() => {
-    if (tab !== "ticktick") return;
-    let cancelled = false;
-    ticktickStatus()
-      .then((status) => {
-        if (cancelled) return;
-        setTtStatus(status);
-        if (!status.connected) return;
-        setTreeLoading(true);
-        setTreeError(null);
-        void ticktickTree(false)
-          .then((t) => {
-            if (!cancelled) setTree(t);
-          })
-          .catch((e) => {
-            if (!cancelled) setTreeError(String(e));
-          })
-          .finally(() => {
-            if (!cancelled) setTreeLoading(false);
-          });
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [tab]);
-
-  // Cached status only — opening 云端 must not contact the remote.
   useEffect(() => {
     if (tab !== "cloud") return;
     let cancelled = false;
@@ -580,7 +496,7 @@ export function Settings() {
         tab !== "permissions" && tab !== "about" ? (
           <Button
             size="sm"
-            disabled={formLocked || connecting || !settings}
+            disabled={formLocked || !settings}
             onClick={() => void handleSave()}
           >
             {saving ? "保存中…" : "保存设置"}
@@ -645,8 +561,6 @@ export function Settings() {
     const trimmed = {
       ...next,
       categoryGuides: savedCategoryGuides(next.categoryGuides),
-      ticktickProjectRoles: next.ticktickProjectRoles ?? {},
-      ticktickColumnRoles: next.ticktickColumnRoles ?? {},
       sync: {
         ...next.sync,
         settleGraceHours: normalizeSettleGraceHours(next.sync.settleGraceHours),
@@ -682,11 +596,6 @@ export function Settings() {
         if (!typed) continue;
         await setProviderApiKey(p.id, typed);
       }
-      const tt = secretToPersist(ticktickSecret);
-      if (tt) {
-        await ticktickSetClientSecret(tt);
-        setTicktickSecret("");
-      }
       const trimmed = await persistSettings(
         settings,
         policySignature(settings) !== lastPolicySig.current,
@@ -696,8 +605,6 @@ export function Settings() {
       const confirmed = await providerKeyStatus();
       setKeyStatus(confirmed);
       setKeys({});
-      const nextTt = await ticktickStatus();
-      setTtStatus(nextTt);
       if (!chainHasUsable(trimmed.visionProviders, confirmed.keys, confirmed.codexLoggedIn)) {
         setMsg("设置已写入，但还没有可用的 API。请填写自定义 Key，或先在终端运行 codex login。");
       } else {
@@ -805,209 +712,9 @@ export function Settings() {
     }
   }
 
-  async function handleConnect() {
-    if (!settings) return;
-    const ready = ticktickSecretReady(ticktickSecret, ttStatus.secretPresent);
-    if (!ready.ok) {
-      setMsg(ready.error);
-      return;
-    }
-    if (!settings.ticktickClientId.trim()) {
-      setMsg("请填写 Client ID");
-      return;
-    }
-    setConnecting(true);
-    setMsg(null);
-    try {
-      const result = await ticktickBeginOauth(settings.ticktickClientId, ready.toWrite);
-      setAuthorizeUrl(result.authorizeUrl);
-      const statusAfter = await ticktickStatus();
-      setTtStatus(statusAfter);
-      if (ready.toWrite) setTicktickSecret("");
-      if (!result.listenOk) {
-        setMsg(
-          `${oauthWaitingHint()} 本机未能自动收回调。授权后请把浏览器地址栏整段粘贴回来。`,
-        );
-        return;
-      }
-      setMsg(
-        result.opened
-          ? oauthWaitingHint()
-          : "未能自动打开浏览器，请复制下方授权链接到浏览器打开。",
-      );
-      const deadline = Date.now() + 180_000;
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 1000));
-        const status = await ticktickStatus();
-        setTtStatus(status);
-        if (status.connected) {
-          setTree(await ticktickTree(true));
-          setAuthorizeUrl("");
-          setMsg("已连接 TickTick");
-          return;
-        }
-      }
-      setMsg("等待授权超时。可复制下方授权链接到浏览器，或把跳转后的地址粘贴回来");
-    } catch (e) {
-      setMsg(oauthErrorMessage(String(e)));
-    } finally {
-      setConnecting(false);
-    }
-  }
-
-  async function handleDisconnect() {
-    setSaving(true);
-    setMsg(null);
-    try {
-      await ticktickDisconnect();
-      setTtStatus({
-        connected: false,
-        lastSync: null,
-        lastError: null,
-        secretPresent: ttStatus.secretPresent,
-        todayTasks: [],
-      });
-      setTree(null);
-      setTruncated(false);
-      setPicked(null);
-      setExpanded({});
-      setAuthorizeUrl("");
-      setMsg("已断开 TickTick");
-    } catch (e) {
-      setMsg(String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handlePasteCallback() {
-    const url = callbackDraft.trim();
-    const kind = callbackPasteKind(url);
-    if (kind === "empty") return;
-    if (kind !== "code") {
-      setMsg(oauthErrorMessage("oauth redirect setting"));
-      return;
-    }
-    const ready = ticktickSecretReady(ticktickSecret, ttStatus.secretPresent);
-    if (!ready.ok) {
-      setMsg(ready.error);
-      return;
-    }
-    setConnecting(true);
-    setMsg(null);
-    try {
-      await ticktickFinishOauth(url, ready.toWrite);
-      setCallbackDraft("");
-      if (ready.toWrite) setTicktickSecret("");
-      const status = await ticktickStatus();
-      setTtStatus(status);
-      if (status.connected) {
-        setTree(await ticktickTree(true));
-        setAuthorizeUrl("");
-        setMsg("已连接 TickTick");
-      } else if (status.lastError) {
-        setMsg(oauthErrorMessage(status.lastError));
-      }
-    } catch (e) {
-      setMsg(oauthErrorMessage(String(e)));
-    } finally {
-      setConnecting(false);
-    }
-  }
-
-  /**
-   * Files a project or one of its columns under a role. Roles are not part
-   * of the policy snapshot, so this does not need a new policy version.
-   */
-  async function assignRole(target: AssignTarget, role: string) {
-    if (!settings) return;
-    const next = { ...settings };
-    if (target.kind === "project") {
-      next.ticktickProjectRoles = nextRoleMap(
-        settings.ticktickProjectRoles ?? {},
-        target.projectId,
-        role,
-      );
-    } else {
-      next.ticktickColumnRoles = nextRoleMap(
-        settings.ticktickColumnRoles ?? {},
-        columnRoleKey(target.projectId, target.columnId),
-        role,
-      );
-    }
-    setSettings(next);
-    setPicked(null);
-    setSaving(true);
-    setMsg(null);
-    try {
-      await persistSettings(next, false);
-    } catch (e) {
-      setMsg(String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleSync() {
-    setSyncing(true);
-    setSyncNote(null);
-    try {
-      const result = await ticktickSync();
-      setTruncated(result.truncated);
-      setTtStatus(await ticktickStatus());
-      // sync_projects also refreshes the cached tree.
-      setTree(await ticktickTree(false));
-      setSyncNote(
-        result.truncated
-          ? "同步完成（当天时段任务超过 20）"
-          : `同步完成（${result.count} 条任务）`,
-      );
-    } catch (e) {
-      setSyncNote(ticktickSyncErrorMessage(String(e)));
-    } finally {
-      setSyncing(false);
-    }
-  }
-
-
-
-
-
-  async function copyRedirectUri() {
-    try {
-      await navigator.clipboard.writeText("http://127.0.0.1:18789/callback");
-      setMsg("已复制 Redirect URI（仅填开发者中心，不要用浏览器打开）");
-    } catch {
-      setMsg("请手动复制 http://127.0.0.1:18789/callback");
-    }
-  }
-
-  async function copyAuthorizeUrl() {
-    if (!authorizeUrl) return;
-    try {
-      await navigator.clipboard.writeText(authorizeUrl);
-      setMsg("已复制授权链接，请粘贴到浏览器打开");
-    } catch {
-      setMsg("请手动选中下方授权链接并复制");
-    }
-  }
-
   const userNeverCapture = settings.neverCaptureApps.filter(
     (n) => !BUILTIN_NEVER_CAPTURE.some((b) => b.toLowerCase() === n.toLowerCase()),
   );
-  // How many things sit in each role bucket, for the drop targets.
-  const roleCounts: Record<string, number> = {};
-  for (const role of settings?.ticktickProjectRoles
-    ? Object.values(settings.ticktickProjectRoles)
-    : []) {
-    roleCounts[role] = (roleCounts[role] ?? 0) + 1;
-  }
-  for (const role of settings?.ticktickColumnRoles
-    ? Object.values(settings.ticktickColumnRoles)
-    : []) {
-    roleCounts[role] = (roleCounts[role] ?? 0) + 1;
-  }
-  const todayGroups = groupTicktickTodayTasks(ttStatus.todayTasks ?? []);
 
   return (
     <>
@@ -1286,378 +993,6 @@ export function Settings() {
                   </Field>
                 ))}
               </Section>
-            </div>
-          )}
-
-          {tab === "ticktick" && (
-            <div className="flex flex-col gap-3">
-              <Section
-                title="连接"
-                caption={
-                  <>
-                    到 TickTick 开发者中心建应用，Redirect URI 必须填{" "}
-                    <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-                      http://127.0.0.1:18789/callback
-                    </code>
-                    。不要用 localhost:3000。Client Secret 只保存在本机，不进 config.json。
-                  </>
-                }
-              >
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={formLocked}
-                  onClick={() => void copyRedirectUri()}
-                >
-                  复制 Redirect URI（仅开发者中心）
-                </Button>
-
-                {!ttStatus.connected && (
-                  <p className="text-xs text-muted-foreground">尚未连接 TickTick。</p>
-                )}
-                {ttStatus.lastError && (
-                  <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    {oauthErrorMessage(ttStatus.lastError)}
-                  </p>
-                )}
-
-                <Field label="Client ID">
-                  <Input
-                    value={settings.ticktickClientId}
-                    disabled={formLocked}
-                    onChange={(e) =>
-                      setSettings({ ...settings, ticktickClientId: e.target.value })
-                    }
-                  />
-                </Field>
-                <SecretField
-                  label="Client Secret"
-                  present={ttStatus.secretPresent}
-                  draft={ticktickSecret}
-                  busy={formLocked}
-                  placeholder="保存或连接时写入本机"
-                  onDraftChange={setTicktickSecret}
-                />
-
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    disabled={formLocked || connecting}
-                    onClick={() => void handleConnect()}
-                  >
-                    {connecting ? "等待授权…" : "连接"}
-                  </Button>
-                  {ttStatus.connected && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={formLocked || connecting}
-                      onClick={() => void handleDisconnect()}
-                    >
-                      断开
-                    </Button>
-                  )}
-                </div>
-
-                {authorizeUrl && !ttStatus.connected && (
-                  <Field label="授权链接" hint={oauthWaitingHint()}>
-                    <Textarea
-                      readOnly
-                      rows={4}
-                      className="font-mono text-[11px]"
-                      value={authorizeUrl}
-                      onFocus={(e) => e.currentTarget.select()}
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void copyAuthorizeUrl()}
-                    >
-                      复制授权链接
-                    </Button>
-                  </Field>
-                )}
-
-                {!ttStatus.connected && (
-                  <>
-                    <Field label="回调地址">
-                      <Input
-                        value={callbackDraft}
-                        disabled={saving}
-                        placeholder="授权后浏览器地址栏整段，须含 code="
-                        onChange={(e) => setCallbackDraft(e.target.value)}
-                      />
-                    </Field>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={saving || connecting || !callbackDraft.trim()}
-                      onClick={() => void handlePasteCallback()}
-                    >
-                      粘贴回调完成连接
-                    </Button>
-                  </>
-                )}
-              </Section>
-
-              {ttStatus.connected && (
-                <Section
-                  title="任务类别"
-                  caption="把整个清单，或清单里的某个分组，拖到下面任一栏；也可以先点一行选中，再点那一栏。归到「忽略」的清单不参与判定。"
-                >
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                    {TICKTICK_ROLE_COLUMNS.map(([role, label]) => (
-                      <button
-                        key={role}
-                        type="button"
-                        disabled={formLocked || !picked}
-                        onClick={() => picked && void assignRole(picked, role)}
-                        onDragOver={(e) => {
-                          if (!dragPayload) return;
-                          e.preventDefault();
-                          e.dataTransfer.dropEffect = "move";
-                        }}
-                        onDragEnter={() => dragPayload && setDragOverRole(role)}
-                        onDragLeave={() =>
-                          setDragOverRole((r) => (r === role ? null : r))
-                        }
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          if (dragPayload) void assignRole(dragPayload, role);
-                          setDragPayload(null);
-                          setDragOverRole(null);
-                        }}
-                        className={cn(
-                          "rounded-lg border border-dashed px-3 py-3 text-xs font-medium transition-colors",
-                          dragOverRole === role
-                            ? "border-primary bg-primary/15 text-primary"
-                            : picked
-                              ? "border-primary/50 text-primary hover:bg-primary/10"
-                              : "text-muted-foreground",
-                        )}
-                      >
-                        <span className="block text-center">{label}</span>
-                        <span className="mt-1 block text-center text-[10px] tabular-nums opacity-70">
-                          {roleCounts[role] ?? 0} 项
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-
-                  {(picked || dragPayload) && (
-                    <p className="text-[11px] text-muted-foreground">
-                      正在移动「{(picked ?? dragPayload)?.label}」——
-                      拖到上面任一栏，或点那一栏。
-                    </p>
-                  )}
-
-                  {treeLoading && (
-                    <p className="text-xs text-muted-foreground">正在载入清单…</p>
-                  )}
-                  {treeError && (
-                    <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                      拉取清单失败：{treeError}
-                    </p>
-                  )}
-                  {!treeLoading && !treeError && (tree?.projects.length ?? 0) === 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      还没有清单结构。点下面的「同步任务」拉取全部清单与分组。
-                    </p>
-                  )}
-
-                  <ul className="space-y-1">
-                    {tree?.projects.map((project) => {
-                      const projectRole =
-                        settings.ticktickProjectRoles[project.id] ?? "ignore";
-                      const open = expanded[project.id] === true;
-                      const target: AssignTarget = {
-                        kind: "project",
-                        projectId: project.id,
-                        label: project.name || project.id,
-                      };
-                      const selected =
-                        picked?.kind === "project" && picked.projectId === project.id;
-                      return (
-                        <li key={project.id} className="rounded-lg border">
-                          <div
-                            draggable={!formLocked}
-                            onDragStart={() => setDragPayload(target)}
-                            onDragEnd={() => {
-                              setDragPayload(null);
-                              setDragOverRole(null);
-                            }}
-                            className={cn(
-                              "flex cursor-grab items-center gap-2 px-3 py-2 text-sm transition-colors active:cursor-grabbing",
-                              selected && "bg-primary/10",
-                            )}
-                          >
-                            <button
-                              type="button"
-                              disabled={project.columns.length === 0}
-                              aria-expanded={open}
-                              aria-label={open ? "折叠分组" : "展开分组"}
-                              onClick={() =>
-                                setExpanded((prev) => ({
-                                  ...prev,
-                                  [project.id]: !open,
-                                }))
-                              }
-                              className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-30"
-                            >
-                              <ChevronRight
-                                className={cn(
-                                  "size-3.5 transition-transform",
-                                  open && "rotate-90",
-                                )}
-                                aria-hidden
-                              />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={formLocked}
-                              onClick={() => setPicked(target)}
-                              className="min-w-0 flex-1 truncate text-left"
-                            >
-                              {project.name || project.id}
-                            </button>
-                            {project.columns.length > 0 && (
-                              <span className="shrink-0 text-[10px] text-muted-foreground">
-                                {project.columns.length} 个分组
-                              </span>
-                            )}
-                            <Badge
-                              tone={projectRole === "ignore" ? "neutral" : "primary"}
-                            >
-                              {ticktickRoleLabel(projectRole)}
-                            </Badge>
-                          </div>
-
-                          {open && project.columns.length > 0 && (
-                            <ul className="space-y-0.5 border-t px-3 py-2">
-                              {project.columns.map((column) => {
-                                const columnRole =
-                                  settings.ticktickColumnRoles[
-                                    columnRoleKey(project.id, column.id)
-                                  ] ?? "ignore";
-                                const columnTarget: AssignTarget = {
-                                  kind: "column",
-                                  projectId: project.id,
-                                  columnId: column.id,
-                                  label: column.name || column.id,
-                                };
-                                const columnSelected =
-                                  picked?.kind === "column" &&
-                                  picked.columnId === column.id &&
-                                  picked.projectId === project.id;
-                                return (
-                                  <li
-                                    key={column.id}
-                                    draggable={!formLocked}
-                                    onDragStart={() => setDragPayload(columnTarget)}
-                                    onDragEnd={() => {
-                                      setDragPayload(null);
-                                      setDragOverRole(null);
-                                    }}
-                                    className={cn(
-                                      "flex cursor-grab items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors active:cursor-grabbing",
-                                      columnSelected
-                                        ? "bg-primary/10"
-                                        : "hover:bg-accent",
-                                    )}
-                                  >
-                                    <span
-                                      className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
-                                      aria-hidden
-                                    />
-                                    <button
-                                      type="button"
-                                      disabled={formLocked}
-                                      onClick={() => setPicked(columnTarget)}
-                                      className="min-w-0 flex-1 truncate text-left"
-                                    >
-                                      {column.name || column.id}
-                                    </button>
-                                    <Badge
-                                      tone={
-                                        columnRole === "ignore" ? "neutral" : "primary"
-                                      }
-                                    >
-                                      {ticktickRoleLabel(columnRole)}
-                                    </Badge>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={formLocked || syncing}
-                      onClick={() => void handleSync()}
-                    >
-                      {ticktickSyncButtonLabel(syncing)}
-                    </Button>
-                    {syncNote && (
-                      <p className="text-[11px] text-muted-foreground">{syncNote}</p>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    {formatTicktickLastSync(ttStatus.lastSync, Math.floor(Date.now() / 1000))}
-                    。同步会拉取全部清单与分组，并自动最多每 30 分钟一次。
-                  </p>
-                  <div>
-                    <p className="text-xs font-medium">当天任务</p>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">
-                      按映射角色列出当天未完成的任务名。全天或只有日期的也会出现在这里，但不进入判定。
-                    </p>
-                  </div>
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                    {TICKTICK_TASK_ROLES.map((role) => {
-                      const list = todayGroups[role];
-                      return (
-                        <div
-                          key={role}
-                          className="rounded-lg border px-3 py-2"
-                        >
-                          <p className="text-[11px] font-medium">
-                            {ticktickRoleLabel(role)}
-                            <span className="ml-1 tabular-nums text-muted-foreground">
-                              {list.length}
-                            </span>
-                          </p>
-                          {list.length === 0 ? (
-                            <p className="mt-1 text-[11px] text-muted-foreground">
-                              无
-                            </p>
-                          ) : (
-                            <ul className="mt-1 space-y-1">
-                              {list.map((task) => (
-                                <li key={task.id} className="min-w-0">
-                                  <p className="truncate text-[12px]">{task.title}</p>
-                                  <p className="text-[10px] tabular-nums text-muted-foreground">
-                                    {ticktickTaskTimeLabel(task)}
-                                  </p>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {truncated && (
-                    <p className="text-[11px] text-warning">
-                      当天有时段任务超过 20，请在 TickTick 勾完或改期。
-                    </p>
-                  )}
-                </Section>
-              )}
             </div>
           )}
 
@@ -2002,7 +1337,7 @@ export function Settings() {
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
                   每 15 秒采样一次前台窗口，按 15 分钟槽判定主线 / 支线 / 杂项 / 娱乐，
-                  再给有效主线时间发硬币与能量。排期留在 TickTick，本机只负责观测、判定、发币与统计。
+                  再给有效主线时间发硬币与能量。排期在任务页，本机负责观测、判定、发币与统计。
                 </p>
               </Section>
 
@@ -2020,7 +1355,7 @@ export function Settings() {
                   </li>
                   <li className="flex gap-2">
                     <span className="font-medium text-foreground">3</span>
-                    剩下的是灰区，交给文本 AI：当天有带时段的 TickTick 任务就匹配任务，
+                    剩下的是灰区，交给文本 AI：当天有带时段的本地任务就匹配任务，
                     没有就按「名单」里那四段类别说明归类。
                   </li>
                   <li className="flex gap-2">

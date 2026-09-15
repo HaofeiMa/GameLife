@@ -1,14 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  callbackPasteKind,
-  isTicktickAuthorizeUrl,
-  oauthErrorMessage,
-  oauthWaitingHint,
   policySignature,
   SECRET_MASK,
   secretToPersist,
   showSecretMask,
-  ticktickSecretReady,
 } from "./secretField";
 
 describe("secretToPersist", () => {
@@ -25,36 +20,6 @@ describe("showSecretMask", () => {
     expect(showSecretMask(true, "")).toBe(true);
     expect(showSecretMask(true, "sk-new")).toBe(false);
     expect(showSecretMask(false, "")).toBe(false);
-  });
-});
-
-describe("ticktickSecretReady", () => {
-  it("requires a typed secret when the keychain has none", () => {
-    expect(ticktickSecretReady("", false)).toEqual({
-      ok: false,
-      error: "请填写 Client Secret 后再连接",
-    });
-    expect(ticktickSecretReady("  abc  ", false)).toEqual({
-      ok: true,
-      toWrite: "abc",
-    });
-  });
-
-  it("lets connect proceed with a stored secret and no new draft", () => {
-    expect(ticktickSecretReady("", true)).toEqual({ ok: true, toWrite: null });
-  });
-});
-
-describe("oauthErrorMessage", () => {
-  it("translates the missing-secret preflight into Chinese", () => {
-    expect(oauthErrorMessage("missing ticktick client secret")).toBe(
-      "缺少 TickTick Client Secret，请重新填写后连接",
-    );
-  });
-
-  it("explains oauth listen as a port/callback problem, not a save failure", () => {
-    expect(oauthErrorMessage("oauth listen")).toContain("18789");
-    expect(oauthErrorMessage("oauth listen")).toContain("粘贴");
   });
 });
 
@@ -87,39 +52,5 @@ describe("policySignature", () => {
 
   it("stays put when nothing the judge reads has changed", () => {
     expect(policySignature({ ...base })).toBe(policySignature(base));
-  });
-});
-
-describe("callbackPasteKind", () => {
-  it("rejects the developer-console redirect URI that has no code", () => {
-    expect(callbackPasteKind("http://localhost:3000/callback")).toBe("setting");
-    expect(
-      callbackPasteKind("http://127.0.0.1:18789/callback?code=abc"),
-    ).toBe("code");
-  });
-});
-
-describe("isTicktickAuthorizeUrl", () => {
-  it("accepts TickTick authorize URLs and rejects the loopback redirect", () => {
-    expect(
-      isTicktickAuthorizeUrl(
-        "https://ticktick.com/oauth/authorize?client_id=abc&response_type=code",
-      ),
-    ).toBe(true);
-    expect(isTicktickAuthorizeUrl("http://127.0.0.1:18789/callback")).toBe(
-      false,
-    );
-    expect(isTicktickAuthorizeUrl("http://localhost:3000/callback")).toBe(
-      false,
-    );
-  });
-});
-
-describe("oauthWaitingHint", () => {
-  it("tells the user to open the authorize URL, not the redirect URI", () => {
-    const hint = oauthWaitingHint();
-    expect(hint).toContain("ticktick.com/oauth/authorize");
-    expect(hint).toContain("不要");
-    expect(hint).toContain("127.0.0.1");
   });
 });

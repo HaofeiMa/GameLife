@@ -8,10 +8,6 @@ pub const KEYCHAIN_ACCOUNT: &str = "GameLife";
 pub const KEYCHAIN_SERVICE: &str = "openai";
 pub const KEYCHAIN_SERVICE_OPENCODE_GO: &str = "opencode-go";
 pub const KEYCHAIN_SERVICE_CUSTOM: &str = "custom";
-pub const KEYCHAIN_SERVICE_TICKTICK_TOKEN: &str = "ticktick-access";
-pub const KEYCHAIN_SERVICE_TICKTICK_SECRET: &str = "ticktick-secret";
-pub const KEYCHAIN_ACCOUNT_ACCESS: &str = "ticktick-access";
-pub const KEYCHAIN_ACCOUNT_REFRESH: &str = "ticktick-refresh";
 
 static SECRETS_LOCK: Mutex<()> = Mutex::new(());
 
@@ -116,37 +112,6 @@ pub fn delete_openai_api_key() -> Result<(), String> {
     with_store(|path| delete_in(path, KEYCHAIN_SERVICE))
 }
 
-pub fn get_ticktick_access_token() -> Result<String, String> {
-    with_store(|path| get_in(path, KEYCHAIN_ACCOUNT_ACCESS))
-}
-
-pub fn set_ticktick_access_token(v: &str) -> Result<(), String> {
-    with_store(|path| set_in(path, KEYCHAIN_ACCOUNT_ACCESS, v))
-}
-
-pub fn get_ticktick_refresh_token() -> Result<String, String> {
-    with_store(|path| get_in(path, KEYCHAIN_ACCOUNT_REFRESH))
-}
-
-pub fn set_ticktick_refresh_token(v: &str) -> Result<(), String> {
-    with_store(|path| set_in(path, KEYCHAIN_ACCOUNT_REFRESH, v))
-}
-
-pub fn get_ticktick_client_secret() -> Result<String, String> {
-    with_store(|path| get_in(path, KEYCHAIN_SERVICE_TICKTICK_SECRET))
-}
-
-pub fn set_ticktick_client_secret(v: &str) -> Result<(), String> {
-    with_store(|path| set_in(path, KEYCHAIN_SERVICE_TICKTICK_SECRET, v))
-}
-
-pub fn clear_ticktick_tokens() -> Result<(), String> {
-    with_store(|path| {
-        delete_in(path, KEYCHAIN_ACCOUNT_ACCESS)?;
-        delete_in(path, KEYCHAIN_ACCOUNT_REFRESH)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,15 +125,6 @@ mod tests {
         assert_eq!(service_for_provider("openai"), KEYCHAIN_SERVICE);
         assert_eq!(service_for_provider("custom"), KEYCHAIN_SERVICE_CUSTOM);
         assert_eq!(service_for_provider("unknown"), "unknown");
-    }
-
-    #[test]
-    fn ticktick_services_are_distinct() {
-        assert_ne!(KEYCHAIN_SERVICE_TICKTICK_TOKEN, KEYCHAIN_SERVICE);
-        assert_ne!(
-            KEYCHAIN_SERVICE_TICKTICK_SECRET,
-            KEYCHAIN_SERVICE_TICKTICK_TOKEN
-        );
     }
 
     #[test]

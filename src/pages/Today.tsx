@@ -39,7 +39,7 @@ import {
   resolvedActivityMinutes,
   weekdayLabel,
 } from "../lib/calendar";
-import { ticktickRoleLabel, ticktickTaskTimeLabel } from "../lib/ticktickBoard";
+import { listRoleLabel, taskTimeLabel } from "../lib/taskBoard";
 import { compareDayTasks, COMPARE_STATE_LABEL, type DayComparison } from "../lib/taskCompare";
 import { categoryColor, categoryOf, type CategoryKey } from "../lib/theme";
 import {
@@ -471,7 +471,7 @@ function Timeline({
               return (
                 <div
                   key={`${mark.title}-${mark.rowStart}-${mark.lane}`}
-                  title={`${mark.title} · ${ticktickRoleLabel(mark.role)}`}
+                  title={`${mark.title} · ${listRoleLabel(mark.role)}`}
                   className="absolute overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[11px] leading-tight"
                   style={{
                     left: `${(mark.lane / lanes) * 100}%`,
@@ -1079,10 +1079,10 @@ export function Today() {
                         <div className="min-w-0">
                           <p className="truncate">{task.title}</p>
                           <p className="text-[11px] tabular-nums text-muted-foreground">
-                            {ticktickTaskTimeLabel(task)}
+                            {taskTimeLabel(task.start, task.end)}
                           </p>
                         </div>
-                        <Badge tone="outline">{ticktickRoleLabel(task.role)}</Badge>
+                        <Badge tone="outline">{listRoleLabel(task.role)}</Badge>
                       </li>
                     ))}
                   </ul>

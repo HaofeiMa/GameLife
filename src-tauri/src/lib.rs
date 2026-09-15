@@ -17,7 +17,6 @@ pub mod scheduler;
 pub mod settle;
 pub mod sync;
 pub mod text_ai;
-pub mod ticktick;
 pub mod vision;
 #[cfg(windows)]
 pub mod windows;
@@ -45,8 +44,7 @@ use commands::{
     rename_list, report_misclassification, request_screen_recording, reschedule_task, review_slot,
     save_settings, set_api_key, set_provider_api_key, set_quests, sync_list_devices, sync_now_cmd,
     sync_restore, sync_set_credentials, sync_status, sync_test_connection, test_vision_provider,
-    ticktick_begin_oauth, ticktick_disconnect, ticktick_finish_oauth, ticktick_set_client_secret,
-    ticktick_status, ticktick_sync, ticktick_tree, toggle_task_done, update_wish, upsert_task,
+    toggle_task_done, update_wish, upsert_task,
 };
 
 use tauri::{
@@ -140,13 +138,6 @@ pub fn run() {
             observation_status,
             request_screen_recording,
             open_privacy_settings,
-            ticktick_status,
-            ticktick_set_client_secret,
-            ticktick_begin_oauth,
-            ticktick_finish_oauth,
-            ticktick_disconnect,
-            ticktick_sync,
-            ticktick_tree,
             sync_status,
             sync_now_cmd,
             sync_test_connection,

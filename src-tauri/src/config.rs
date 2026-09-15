@@ -124,11 +124,11 @@ pub struct AppSettings {
     pub admin_apps: Vec<String>,
     #[serde(default)]
     pub category_guides: CategoryGuides,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub ticktick_client_id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub ticktick_project_roles: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub ticktick_column_roles: std::collections::BTreeMap<String, String>,
     /// UI appearance: system | light | dark. Normalised on the frontend by
     /// `normalizeThemePreference` in src/lib/theme.ts.

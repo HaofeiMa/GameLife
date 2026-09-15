@@ -15,8 +15,6 @@ import type {
   RhythmReportView,
   SlotActivityMinutes,
   SyncStatus,
-  TickTickStatus,
-  TickTickTree,
   TodaySlot,
   TodayView,
   WeekView,
@@ -446,9 +444,6 @@ export const PREVIEW_SETTINGS: AppSettings = {
     admin: "",
     entertainment: "",
   },
-  ticktickClientId: "preview-client",
-  ticktickProjectRoles: { "proj-work": "mainline" },
-  ticktickColumnRoles: { "proj-work:col-today": "mainline" },
   theme: "light",
   sync: {
     enabled: true,
@@ -510,46 +505,3 @@ export const PREVIEW_OBSERVATION: ObservationStatus = {
   backend: "macOS",
 };
 
-export const PREVIEW_TICKTICK_STATUS: TickTickStatus = {
-  connected: true,
-  lastSync: DAY_START + 9 * 3600,
-  lastError: null,
-  secretPresent: true,
-  todayTasks: [
-    {
-      id: "tt-1",
-      title: "写设计说明",
-      role: "mainline",
-      start: DAY_START + 9 * 3600,
-      end: DAY_START + 11 * 3600,
-      allDay: false,
-    },
-    {
-      id: "tt-3",
-      title: "组会",
-      role: "chore",
-      start: DAY_START,
-      end: DAY_START + 86400,
-      allDay: true,
-    },
-  ],
-};
-
-export const PREVIEW_TICKTICK_TREE: TickTickTree = {
-  fetchedAt: DAY_START,
-  projects: [
-    {
-      id: "proj-work",
-      name: "工作",
-      columns: [
-        { id: "col-today", name: "今天" },
-        { id: "col-backlog", name: "稍后" },
-      ],
-    },
-    {
-      id: "proj-life",
-      name: "生活",
-      columns: [],
-    },
-  ],
-};

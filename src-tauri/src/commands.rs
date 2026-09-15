@@ -12,7 +12,7 @@ use gamelife_core::{
     align_range, can_delete_list, distraction_runs, first_core_hour, format_estimated_minutes,
     hit_rate, is_lock_screen_app, is_weekday, judgment_tasks, matched_quest_index,
     matches_app_identity, parse_list_role_strict, parse_task_line, streak_at_risk, sum_activity,
-    ticktick_day_list, validate_lists, wow_delta, xp_shop_unlocked, ParseContext, Policy,
+    validate_lists, wow_delta, xp_shop_unlocked, ParseContext, Policy,
     QuestDraft, Task, TaskList, TaskListError, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
     PRESET_MAINLINE_ID, SLOT_SECS,
 };
@@ -245,17 +245,6 @@ pub struct DayTaskView {
     pub role: String,
     pub start: i64,
     pub end: i64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TickTickTaskView {
-    pub id: String,
-    pub title: String,
-    pub role: String,
-    pub start: i64,
-    pub end: i64,
-    pub all_day: bool,
 }
 
 #[derive(Serialize)]
@@ -1354,29 +1343,6 @@ fn load_plan_marks(
             end: t.end,
             title: t.title,
         })
-        .collect())
-}
-
-fn ticktick_task_view(task: &gamelife_core::TimedTask) -> TickTickTaskView {
-    TickTickTaskView {
-        id: task.id.clone(),
-        title: task.title.clone(),
-        role: list_role_sql(task.role).to_string(),
-        start: task.start,
-        end: task.end,
-        all_day: task.all_day,
-    }
-}
-
-fn load_ticktick_day_tasks(
-    conn: &Connection,
-    day_start: i64,
-    day_end: i64,
-) -> Result<Vec<TickTickTaskView>, DbOpError> {
-    let cache = crate::ticktick::load_ticktick_cache(conn)?;
-    Ok(ticktick_day_list(&cache, day_start, day_end)
-        .into_iter()
-        .map(ticktick_task_view)
         .collect())
 }
 
@@ -2513,208 +2479,6 @@ pub async fn test_vision_provider(provider: Option<String>) -> Result<ProviderTe
     }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TickTickStatus {
-    pub connected: bool,
-    pub last_sync: Option<i64>,
-    pub last_error: Option<String>,
-    pub secret_present: bool,
-    pub today_tasks: Vec<TickTickTaskView>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TickTickAuthorize {
-    pub authorize_url: String,
-    pub listen_ok: bool,
-    pub opened: bool,
-}
-
-#[tauri::command]
-pub fn ticktick_status() -> Result<TickTickStatus, String> {
-    let connected = crate::keychain::get_ticktick_access_token().is_ok();
-    let now = now_secs();
-    let day = day_str_for_ts(now);
-    let day_start = start_of_named_day(&day).unwrap_or(now);
-    let day_end = end_of_local_day(day_start);
-    let (last_sync, today_tasks) = with_db(|conn| {
-        let last_sync = crate::ticktick::ticktick_fetched_at(conn)?;
-        let today_tasks = load_ticktick_day_tasks(conn, day_start, day_end)?;
-        Ok((last_sync, today_tasks))
-    })
-    .unwrap_or((None, Vec::new()));
-    Ok(TickTickStatus {
-        connected,
-        last_sync,
-        last_error: crate::ticktick::oauth_last_error(),
-        secret_present: crate::ticktick::client_secret_present(),
-        today_tasks,
-    })
-}
-
-#[tauri::command]
-pub fn ticktick_set_client_secret(secret: String) -> Result<(), String> {
-    crate::keychain::set_ticktick_client_secret(&secret)
-}
-
-#[tauri::command]
-pub async fn ticktick_begin_oauth(
-    client_id: Option<String>,
-    client_secret: Option<String>,
-) -> Result<TickTickAuthorize, String> {
-    if let Some(id) = client_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let mut settings = load_settings();
-        settings.ticktick_client_id = id.to_string();
-        write_settings_file(&settings)?;
-    }
-    if let Some(secret) = crate::ticktick::incoming_secret_to_store(client_secret.as_deref()) {
-        crate::keychain::set_ticktick_client_secret(&secret)?;
-    }
-    let client_id = load_settings().ticktick_client_id.trim().to_string();
-    crate::ticktick::oauth_begin_preflight(&client_id, crate::ticktick::client_secret_present())
-        .map_err(|e| {
-            crate::ticktick::set_oauth_last_error(e.clone());
-            e
-        })?;
-    crate::ticktick::clear_oauth_last_error();
-    let verifier = crate::ticktick::pkce_verifier();
-    let challenge = crate::ticktick::pkce_challenge(&verifier);
-    crate::ticktick::store_pkce_verifier(verifier);
-    let listen_ok = match crate::ticktick::bind_oauth_loopback() {
-        Ok(listener) => {
-            crate::ticktick::spawn_oauth_loopback(listener);
-            true
-        }
-        Err(_) => false,
-    };
-    let url = crate::ticktick::build_authorize_url(&client_id, &challenge);
-    let opened = crate::ticktick::open_in_browser(&url).is_ok();
-    Ok(TickTickAuthorize {
-        authorize_url: url,
-        listen_ok,
-        opened,
-    })
-}
-
-#[tauri::command]
-pub async fn ticktick_finish_oauth(
-    callback_url: String,
-    client_secret: Option<String>,
-) -> Result<(), String> {
-    match crate::ticktick::oauth_callback_kind(&callback_url) {
-        "setting" => {
-            let msg = "oauth redirect setting".to_string();
-            crate::ticktick::set_oauth_last_error(msg.clone());
-            return Err(msg);
-        }
-        "invalid" => {
-            let msg = "missing oauth code".to_string();
-            crate::ticktick::set_oauth_last_error(msg.clone());
-            return Err(msg);
-        }
-        _ => {}
-    }
-    if let Some(secret) = crate::ticktick::incoming_secret_to_store(client_secret.as_deref()) {
-        crate::keychain::set_ticktick_client_secret(&secret)?;
-    }
-    let code = crate::ticktick::oauth_code_from_callback(&callback_url)?;
-    match crate::ticktick::complete_oauth_with_code(
-        &crate::ticktick::ReqwestTickTick::manual(),
-        &code,
-    ) {
-        Ok(()) => {
-            crate::ticktick::clear_oauth_last_error();
-            Ok(())
-        }
-        Err(e) => {
-            let public = crate::ticktick::public_oauth_error(&e);
-            crate::ticktick::set_oauth_last_error(public.clone());
-            Err(public)
-        }
-    }
-}
-
-#[tauri::command]
-pub fn ticktick_disconnect() -> Result<(), String> {
-    crate::keychain::clear_ticktick_tokens()?;
-    with_db(|conn| {
-        conn.execute("DELETE FROM ticktick_cache", [])
-            .map_err(crate::db_error::map_rusqlite)?;
-        Ok(())
-    })
-}
-
-#[tauri::command]
-pub async fn ticktick_sync() -> Result<crate::ticktick::TickTickSyncResult, String> {
-    tauri::async_runtime::spawn_blocking(ticktick_sync_blocking)
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-fn ticktick_sync_blocking() -> Result<crate::ticktick::TickTickSyncResult, String> {
-    let now = now_secs();
-    let access = crate::keychain::get_ticktick_access_token()?;
-    let settings = load_settings();
-    let maps = crate::ticktick::TickTickRoleMaps::from_settings(&settings);
-    let day = day_str_for_ts(now);
-    let day_start = start_of_named_day(&day).unwrap_or(now);
-    let day_end = end_of_local_day(day_start);
-    with_db(|conn| {
-        if let Some(until) = crate::ticktick::ticktick_backoff_until(conn)? {
-            if now < until {
-                return Err(DbOpError::Rejected("ticktick_backoff".into()));
-            }
-        }
-        match crate::ticktick::sync_projects(
-            &crate::ticktick::ReqwestTickTick::manual(),
-            conn,
-            &maps,
-            &access,
-            now,
-        ) {
-            Ok(_) => {
-                let cache = crate::ticktick::load_ticktick_cache(conn)?;
-                Ok(crate::ticktick::sync_result_from_cache(
-                    &cache, day_start, day_end,
-                ))
-            }
-            Err(e) if e == "429" => {
-                crate::ticktick::set_ticktick_backoff(conn, now + 60)?;
-                Err(DbOpError::Rejected("ticktick_429".into()))
-            }
-            Err(e) => Err(DbOpError::Fatal(e)),
-        }
-    })
-}
-
-#[tauri::command]
-pub async fn ticktick_tree(refresh: Option<bool>) -> Result<crate::ticktick::TickTickTree, String> {
-    tauri::async_runtime::spawn_blocking(move || ticktick_tree_blocking(refresh))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-fn ticktick_tree_blocking(refresh: Option<bool>) -> Result<crate::ticktick::TickTickTree, String> {
-    let now = now_secs();
-    if refresh.unwrap_or(false) {
-        let access = crate::keychain::get_ticktick_access_token()?;
-        let tree =
-            crate::ticktick::fetch_tree(&crate::ticktick::ReqwestTickTick::manual(), &access, now)?;
-        with_db(|conn| crate::ticktick::store_tree(conn, &tree).map_err(DbOpError::Fatal))?;
-        return Ok(tree);
-    }
-    with_db(|conn| {
-        Ok(crate::ticktick::load_tree(conn)
-            .map_err(DbOpError::Fatal)?
-            .unwrap_or_default())
-    })
-}
-
 // ---- Cloud backup ---------------------------------------------------------
 
 #[derive(Serialize)]
@@ -2774,8 +2538,7 @@ fn sync_conn() -> Result<Connection, String> {
     Ok(conn)
 }
 
-/// Cached status only. Opening 设置 must not hit the network — the same rule
-/// that made 设置 → TickTick hang before `ticktick_tree` was split.
+/// Cached status only. Opening 设置 must not hit the network.
 #[tauri::command]
 pub fn sync_status() -> Result<SyncStatusView, String> {
     let settings = load_settings();

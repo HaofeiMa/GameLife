@@ -299,9 +299,6 @@ export interface AppSettings {
   silentStart: boolean;
   adminApps: string[];
   categoryGuides: CategoryGuides;
-  ticktickClientId: string;
-  ticktickProjectRoles: Record<string, string>;
-  ticktickColumnRoles: Record<string, string>;
   /** system | light | dark — see src/lib/theme.ts */
   theme: string;
   /** Unused by the UI; kept so old config.json still loads. */
@@ -338,15 +335,6 @@ export interface DayTask {
   role: string;
   start: number;
   end: number;
-}
-
-export interface TickTickTask {
-  id: string;
-  title: string;
-  role: string;
-  start: number;
-  end: number;
-  allDay: boolean;
 }
 
 export interface PlanMark {
@@ -539,80 +527,6 @@ export function requestScreenRecording(): Promise<boolean> {
 
 export function openPrivacySettings(kind: "accessibility" | "screen"): Promise<void> {
   return invoke("open_privacy_settings", { kind });
-}
-
-export interface TickTickStatus {
-  connected: boolean;
-  lastSync: number | null;
-  lastError: string | null;
-  secretPresent: boolean;
-  todayTasks: TickTickTask[];
-}
-
-export interface TickTickAuthorize {
-  authorizeUrl: string;
-  listenOk: boolean;
-  opened: boolean;
-}
-
-export function ticktickStatus(): Promise<TickTickStatus> {
-  return invoke("ticktick_status");
-}
-
-export function ticktickSetClientSecret(secret: string): Promise<void> {
-  return invoke("ticktick_set_client_secret", { secret });
-}
-
-export function ticktickBeginOauth(
-  clientId?: string | null,
-  clientSecret?: string | null,
-): Promise<TickTickAuthorize> {
-  return invoke("ticktick_begin_oauth", { clientId, clientSecret });
-}
-
-export function ticktickFinishOauth(
-  callbackUrl: string,
-  clientSecret?: string | null,
-): Promise<void> {
-  return invoke("ticktick_finish_oauth", { callbackUrl, clientSecret });
-}
-
-export function ticktickDisconnect(): Promise<void> {
-  return invoke("ticktick_disconnect");
-}
-
-export interface TickTickSyncResult {
-  count: number;
-  truncated: boolean;
-}
-
-export function ticktickSync(): Promise<TickTickSyncResult> {
-  return invoke("ticktick_sync");
-}
-
-export interface TickTickTreeColumn {
-  id: string;
-  name: string;
-}
-
-export interface TickTickTreeProject {
-  id: string;
-  name: string;
-  columns: TickTickTreeColumn[];
-}
-
-export interface TickTickTree {
-  fetchedAt: number;
-  projects: TickTickTreeProject[];
-}
-
-/**
- * The cached project/column structure. Pass `refresh` to hit the API;
- * without it this reads the local cache and returns immediately, which is
- * what keeps opening 设置 → TickTick instant.
- */
-export function ticktickTree(refresh = false): Promise<TickTickTree> {
-  return invoke("ticktick_tree", { refresh });
 }
 
 /**
