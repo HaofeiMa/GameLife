@@ -27,6 +27,7 @@ import {
   deleteList,
   deleteTask,
   duplicateTask,
+  getDayView,
   listTaskBoard,
   moveTask,
   parseTaskLine,
@@ -38,6 +39,7 @@ import {
   type ParsedTaskView,
   type TaskListView,
   type TaskView,
+  type TodaySlot,
 } from "../lib/api";
 import { dayStartUnix, planBlocks } from "../lib/calendar";
 import {
@@ -57,8 +59,11 @@ import {
   dropRange,
   hitCalendarTs,
   moveRangeToDrop,
+  resizeRange,
+  type CalEdge,
 } from "../lib/taskCalendar";
 import { lastCopiedPayload, parseTaskCopy, serializeTaskCopy } from "../lib/taskClipboard";
+import { ribbonCells } from "../lib/slotRibbon";
 import { ranksAfterDrag } from "../lib/taskReorder";
 import { LIST_MAX, LIST_MIN } from "../lib/taskSplit";
 import { assignPlanLanes, planLaneSpan } from "../lib/timelinePlan";
@@ -75,11 +80,30 @@ type MenuState =
 
 type CalDrag = {
   task: TaskView;
-  mode: "move" | "place";
+  mode: "move" | "place" | "resize";
+  edge?: CalEdge;
   grabOffset: number;
   start: number;
   end: number;
 };
+
+function nextCalRange(drag: CalDrag, ts: number): { start: number; end: number } {
+  if (drag.mode === "place") return dropRange(ts);
+  if (drag.mode === "resize" && drag.edge) {
+    return resizeRange(
+      drag.task.start ?? ts,
+      drag.task.end ?? ts + 1800,
+      drag.edge,
+      ts,
+    );
+  }
+  return moveRangeToDrop(
+    drag.task.start ?? ts,
+    drag.task.end ?? ts + 1800,
+    ts,
+    drag.grabOffset,
+  );
+}
 
 function nextListSort(tasks: TaskView[], listId: string): number {
   let max = -1;
@@ -182,6 +206,26 @@ export function Tasks() {
   );
   const daysRef = useRef(days);
   daysRef.current = days;
+  const [ribbons, setRibbons] = useState<Record<string, TodaySlot[]>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(
+      days.map((day) =>
+        getDayView(day)
+          .then((view) => [day, view.slots] as const)
+          .catch(() => [day, [] as TodaySlot[]] as const),
+      ),
+    ).then((rows) => {
+      if (cancelled) return;
+      const next: Record<string, TodaySlot[]> = {};
+      for (const [day, slots] of rows) next[day] = slots;
+      setRibbons(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [days]);
 
   const addToast = useCallback((text: string) => {
     const id = ++toastIdRef.current;
@@ -219,22 +263,32 @@ export function Tasks() {
       if (!drag) return;
       const ts = hitTs(e);
       if (ts == null) return;
-      const next =
-        drag.mode === "place"
-          ? dropRange(ts)
-          : moveRangeToDrop(
-              drag.task.start ?? ts,
-              drag.task.end ?? ts + 1800,
-              ts,
-              drag.grabOffset,
-            );
+      const next = nextCalRange(drag, ts);
       setCalDrag({ ...drag, start: next.start, end: next.end });
     },
     [hitTs],
   );
 
   const beginCalDragAt = useCallback(
-    (task: TaskView, clientX: number, clientY: number, fromBlock: boolean) => {
+    (
+      task: TaskView,
+      clientX: number,
+      clientY: number,
+      fromBlock: boolean,
+      edge?: CalEdge | null,
+    ) => {
+      if (fromBlock && edge && task.start != null && task.end != null) {
+        const range = resizeRange(task.start, task.end, edge, hitTs({ clientX, clientY }) ?? task.start);
+        setCalDrag({
+          task,
+          mode: "resize",
+          edge,
+          grabOffset: 0,
+          start: range.start,
+          end: range.end,
+        });
+        return;
+      }
       const ts = hitTs({ clientX, clientY });
       if (task.start != null && task.end != null) {
         const grabOffset = fromBlock && ts != null ? ts - task.start : 0;
@@ -260,12 +314,17 @@ export function Tasks() {
   );
 
   const beginCalDrag = useCallback(
-    (task: TaskView, e: ReactPointerEvent<HTMLElement>, fromBlock: boolean) => {
+    (
+      task: TaskView,
+      e: ReactPointerEvent<HTMLElement>,
+      fromBlock: boolean,
+      edge?: CalEdge | null,
+    ) => {
       if (e.button !== 0) return;
       if ((e.target as HTMLElement).closest("input")) return;
       e.preventDefault();
       e.stopPropagation();
-      beginCalDragAt(task, e.clientX, e.clientY, fromBlock);
+      beginCalDragAt(task, e.clientX, e.clientY, fromBlock, edge);
     },
     [beginCalDragAt],
   );
@@ -282,15 +341,7 @@ export function Tasks() {
       const ts = hitTs(e);
       setCalDrag(null);
       if (ts == null) return;
-      const next =
-        drag.mode === "place"
-          ? dropRange(ts)
-          : moveRangeToDrop(
-              drag.task.start ?? ts,
-              drag.task.end ?? ts + 1800,
-              ts,
-              drag.grabOffset,
-            );
+      const next = nextCalRange(drag, ts);
       if (drag.task.start === next.start && drag.task.end === next.end) return;
       void (async () => {
         try {
@@ -1062,6 +1113,10 @@ export function Tasks() {
               }
               gridRef={gridRef}
               onBlockDown={beginCalDrag}
+              onBlockMenu={(task, x, y) =>
+                setMenu({ kind: "task", task, x, y })
+              }
+              ribbons={ribbons}
             />
           </Card>
         </div>
@@ -1079,6 +1134,8 @@ function TaskCalendar({
   preview,
   gridRef,
   onBlockDown,
+  onBlockMenu,
+  ribbons,
 }: {
   days: string[];
   today: string;
@@ -1090,7 +1147,10 @@ function TaskCalendar({
     task: TaskView,
     e: ReactPointerEvent<HTMLElement>,
     fromBlock: boolean,
+    edge?: CalEdge | null,
   ) => void;
+  onBlockMenu: (task: TaskView, x: number, y: number) => void;
+  ribbons: Record<string, TodaySlot[]>;
 }) {
   const hours = Array.from({ length: 24 }, (_, h) => h);
   const height = 24 * CAL_HOUR_H;
@@ -1134,6 +1194,8 @@ function TaskCalendar({
               lists={lists}
               preview={preview}
               onBlockDown={onBlockDown}
+              onBlockMenu={onBlockMenu}
+              slots={ribbons[day] ?? []}
             />
           ))}
         </div>
@@ -1149,6 +1211,8 @@ function CalendarDayColumn({
   lists,
   preview,
   onBlockDown,
+  onBlockMenu,
+  slots,
 }: {
   day: string;
   today: string;
@@ -1159,7 +1223,10 @@ function CalendarDayColumn({
     task: TaskView,
     e: ReactPointerEvent<HTMLElement>,
     fromBlock: boolean,
+    edge?: CalEdge | null,
   ) => void;
+  onBlockMenu: (task: TaskView, x: number, y: number) => void;
+  slots: TodaySlot[];
 }) {
   const dayStart = dayStartUnix(day);
   const dayEnd = dayStart + 86400;
@@ -1211,6 +1278,8 @@ function CalendarDayColumn({
     return hit?.id ?? `${item.title}-${item.rowStart}`;
   };
 
+  const cells = ribbonCells(slots, dayStart);
+
   return (
     <div
       className="relative min-w-0 flex-1"
@@ -1227,6 +1296,17 @@ function CalendarDayColumn({
           style={{ top: h * CAL_HOUR_H }}
         />
       ))}
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-1">
+        {cells.map((cat, i) => (
+          <div
+            key={i}
+            style={{
+              height: CAL_HOUR_H / 4,
+              background: cat ? categoryColor(cat) : undefined,
+            }}
+          />
+        ))}
+      </div>
       {items.map((mark) => {
         const cat = categoryOf(mark.role);
         const span = planLaneSpan(mark, items, lanes);
@@ -1237,9 +1317,15 @@ function CalendarDayColumn({
           <div
             key={`${id}-${mark.rowStart}-${mark.lane}`}
             title={mark.title}
+            data-task-id={task?.id}
             onPointerDown={(e) => {
               if (!task || isPreview) return;
               onBlockDown(task, e, true);
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              if (!task || isPreview) return;
+              onBlockMenu(task, e.clientX, e.clientY);
             }}
             className={cn(
               "absolute overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[11px] leading-tight",
@@ -1255,6 +1341,24 @@ function CalendarDayColumn({
               borderLeft: `3px solid ${categoryColor(cat)}`,
             }}
           >
+            {!isPreview && task && (
+              <>
+                <div
+                  className="absolute inset-x-0 top-0 h-1.5 cursor-ns-resize"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    onBlockDown(task, e, true, "start");
+                  }}
+                />
+                <div
+                  className="absolute inset-x-0 bottom-0 h-1.5 cursor-ns-resize"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    onBlockDown(task, e, true, "end");
+                  }}
+                />
+              </>
+            )}
             <span className="line-clamp-6 font-semibold text-foreground/85">
               {mark.title}
             </span>

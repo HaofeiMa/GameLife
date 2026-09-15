@@ -1,6 +1,8 @@
 import { addDays, dayStartUnix } from "./calendar";
+import { alignRange } from "./taskSchedule";
 
 export type CalSpan = 3 | 7;
+export type CalEdge = "start" | "end";
 
 export const CAL_HOUR_H = 36;
 export const CAL_GUTTER = 40;
@@ -36,6 +38,19 @@ export function moveRangeToDrop(
   const dur = Math.max(900, end - start);
   const next = Math.floor((dropTs - grabOffset) / 900) * 900;
   return { start: next, end: next + dur };
+}
+
+export function resizeRange(
+  start: number,
+  end: number,
+  edge: CalEdge,
+  dropTs: number,
+): { start: number; end: number } {
+  const at = Math.floor(dropTs / 900) * 900;
+  if (edge === "start") {
+    return alignRange(Math.min(at, end - 900), end);
+  }
+  return alignRange(start, Math.max(at, start + 900));
 }
 
 export function hitCalendarTs(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calendarDays, dropRange } from "./taskCalendar";
+import { calendarDays, dropRange, resizeRange } from "./taskCalendar";
 
 describe("calendarDays", () => {
   it("three days are today and the next two", () => {
@@ -20,5 +20,13 @@ describe("calendarDays", () => {
 describe("dropRange", () => {
   it("drop range is thirty minutes snapped to a slot", () => {
     expect(dropRange(100)).toEqual({ start: 0, end: 1800 });
+  });
+});
+
+describe("resizeRange", () => {
+  it("resize start does not pass the end", () => {
+    const r = resizeRange(0, 3600, "start", 4000);
+    expect(r.end - r.start).toBeGreaterThanOrEqual(900);
+    expect(r.end).toBe(3600);
   });
 });
