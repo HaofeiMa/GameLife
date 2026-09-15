@@ -17,6 +17,7 @@ import type {
   SyncStatus,
   TodaySlot,
   TodayView,
+  TaskBoardView,
   WeekView,
   WishView,
 } from "../api";
@@ -63,6 +64,35 @@ function daysInMonth(year: number, month: number): number {
 
 const TODAY = isoFrom(new Date());
 const DAY_START = Math.floor(atLocalMidnight(TODAY).getTime() / 1000);
+
+export const PREVIEW_TASK_BOARD: TaskBoardView = {
+  lists: [
+    { id: "list-mainline", name: "主线任务", sort: 0, role: "mainline" },
+    { id: "list-side", name: "支线任务", sort: 1, role: "side" },
+    { id: "list-chore", name: "杂项", sort: 2, role: "chore" },
+    { id: "list-longterm", name: "长期规划", sort: 3, role: "longterm" },
+  ],
+  tasks: [
+    {
+      id: "task-preview-1",
+      listId: "list-mainline",
+      title: "写方法节",
+      done: false,
+      start: DAY_START + 10 * 3600,
+      end: DAY_START + 12 * 3600,
+      range: null,
+    },
+    {
+      id: "task-preview-2",
+      listId: "list-side",
+      title: "整理引用",
+      done: false,
+      start: null,
+      end: null,
+      range: null,
+    },
+  ],
+};
 
 type Role = TodaySlot["dominant"];
 

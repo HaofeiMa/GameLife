@@ -48,6 +48,11 @@ export interface TaskView {
   range: string | null;
 }
 
+export interface TaskBoardView {
+  lists: TaskListView[];
+  tasks: TaskView[];
+}
+
 export interface ParsedTaskView {
   title: string;
   listId: string;
@@ -378,8 +383,8 @@ export function setQuests(quests: QuestView[]): Promise<void> {
   return invoke("set_quests", { quests });
 }
 
-export function listTasks(): Promise<TodayView> {
-  return invoke("list_tasks");
+export function listTaskBoard(): Promise<TaskBoardView> {
+  return invoke("list_task_board");
 }
 
 export function upsertTask(task: TaskView): Promise<void> {
@@ -397,8 +402,32 @@ export function parseTaskLine(
   return invoke("parse_task_line", { line, currentListId });
 }
 
-export function createList(name: string): Promise<TaskListView> {
-  return invoke("create_list", { name });
+export function createList(name: string, role: string): Promise<TaskListView> {
+  return invoke("create_list", { name, role });
+}
+
+export function renameList(id: string, name: string): Promise<void> {
+  return invoke("rename_list", { id, name });
+}
+
+export function deleteList(id: string): Promise<void> {
+  return invoke("delete_list", { id });
+}
+
+export function deleteTask(id: string): Promise<void> {
+  return invoke("delete_task", { id });
+}
+
+export function moveTask(id: string, listId: string): Promise<void> {
+  return invoke("move_task", { id, listId });
+}
+
+export function rescheduleTask(
+  id: string,
+  start: number | null,
+  end: number | null,
+): Promise<void> {
+  return invoke("reschedule_task", { id, start, end });
 }
 
 export function continuePreviousWorkday(): Promise<string> {

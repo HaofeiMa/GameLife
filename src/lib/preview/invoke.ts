@@ -10,6 +10,7 @@ import {
   previewDayView,
   previewMonth,
   previewRhythm,
+  PREVIEW_TASK_BOARD,
 } from "./fixtures";
 
 export async function previewInvoke<T>(
@@ -18,8 +19,9 @@ export async function previewInvoke<T>(
 ): Promise<T> {
   switch (cmd) {
     case "get_today":
-    case "list_tasks":
       return PREVIEW_TODAY as T;
+    case "list_task_board":
+      return PREVIEW_TASK_BOARD as T;
     case "get_day_view":
       return previewDayView(String(args?.day ?? PREVIEW_TODAY.day)) as T;
     case "get_week":
@@ -60,6 +62,14 @@ export async function previewInvoke<T>(
     case "update_wish":
     case "archive_wish":
     case "end_today":
+    case "upsert_task":
+    case "toggle_task_done":
+    case "create_list":
+    case "rename_list":
+    case "delete_list":
+    case "delete_task":
+    case "move_task":
+    case "reschedule_task":
     case "sync_status":
     case "sync_now_cmd":
       return PREVIEW_SYNC_STATUS as T;

@@ -17,6 +17,7 @@ import { SETTINGS_CHANGED_EVENT } from "./lib/settingsEvents";
 import { cn } from "./lib/utils";
 import { Shop } from "./pages/Shop";
 import { Settings } from "./pages/Settings";
+import { Tasks } from "./pages/Tasks";
 import { Today } from "./pages/Today";
 import { Stats } from "./pages/Stats";
 
@@ -48,7 +49,13 @@ function CollapsedStat({
 function initialTab(): RailTabId {
   if (import.meta.env.VITE_PREVIEW === "1") {
     const tab = new URLSearchParams(window.location.search).get("tab");
-    if (tab === "today" || tab === "week" || tab === "shop" || tab === "settings") {
+    if (
+      tab === "today" ||
+      tab === "tasks" ||
+      tab === "week" ||
+      tab === "shop" ||
+      tab === "settings"
+    ) {
       return tab;
     }
   }
@@ -258,6 +265,7 @@ export function App() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         {tab === "today" && <Today />}
+        {tab === "tasks" && <Tasks />}
           {tab === "week" && (
             <Stats
               onPickDay={(day) => {
