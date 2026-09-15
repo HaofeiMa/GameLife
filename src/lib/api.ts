@@ -229,6 +229,8 @@ export interface WishView {
 
 export interface VisionProviderSettings {
   id: string;
+  /** "custom" | "codex". Empty/missing means a pre-migration preset. */
+  kind?: string;
   baseUrl: string;
   model: string;
 }
@@ -306,9 +308,8 @@ export interface AppSettings {
 }
 
 export interface ProviderKeyStatus {
-  opencodeGo: boolean;
-  openai: boolean;
-  custom: boolean;
+  keys: Record<string, boolean>;
+  codexLoggedIn: boolean;
 }
 
 export const BUILTIN_NEVER_CAPTURE = [
@@ -335,6 +336,7 @@ export interface TickTickTask {
   role: string;
   start: number;
   end: number;
+  allDay: boolean;
 }
 
 export interface PlanMark {
@@ -534,6 +536,7 @@ export interface TickTickStatus {
   lastSync: number | null;
   lastError: string | null;
   secretPresent: boolean;
+  todayTasks: TickTickTask[];
 }
 
 export interface TickTickAuthorize {

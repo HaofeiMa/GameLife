@@ -1,7 +1,7 @@
 # GameLife 交接文档
 
 日期：**2026-09-14**（续）
-仓库：`/Volumes/MobileSSD/Program/My/GameLife`（外置盘 MobileSSD，**先确认已挂载**）
+仓库：`/Volumes/MobileSSD/MyProjects/GameLife`（外置盘 MobileSSD，**先确认已挂载**）
 分支：`main`，**HEAD = `a89ac0a`**
 状态：跨平台六批 + spec + 身份别名 **已提交**（`9550d96`…`a89ac0a`）。工作区剩下的是 **UI / hint 重设计**，未纳入上述 commit。
 
@@ -212,7 +212,7 @@ Windows 11 仍要本机打：WebView2 + NSIS/WiX 后 `npm install && npm run tau
 ## 8. 接手后建议的第一串命令
 
 ```bash
-cd /Volumes/MobileSSD/Program/My/GameLife
+cd /Volumes/MobileSSD/MyProjects/GameLife
 git status --short                 # 确认未提交状态
 cargo test --offline -p gamelife   # 基线应为 217 passed / 1 ignored
 

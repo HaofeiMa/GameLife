@@ -1,3 +1,5 @@
+import type { TickTickTask } from "./api";
+
 export const TICKTICK_ROLE_COLUMNS = [
   ["mainline", "主线"],
   ["side", "支线"],
@@ -78,4 +80,41 @@ export function formatTicktickLastSync(
     hour12: false,
   });
   return `上次同步 ${time}`;
+}
+
+export const TICKTICK_TASK_ROLES = [
+  "mainline",
+  "side",
+  "longterm",
+  "chore",
+] as const;
+
+export type TickTickTaskRole = (typeof TICKTICK_TASK_ROLES)[number];
+
+export type TickTickTaskGroups = Record<TickTickTaskRole, TickTickTask[]>;
+
+export function groupTicktickTodayTasks(tasks: TickTickTask[]): TickTickTaskGroups {
+  const groups: TickTickTaskGroups = {
+    mainline: [],
+    side: [],
+    longterm: [],
+    chore: [],
+  };
+  for (const task of tasks) {
+    const role = normalizeProjectRole(task.role);
+    if (role === "ignore") continue;
+    groups[role].push(task);
+  }
+  return groups;
+}
+
+export function ticktickTaskTimeLabel(task: TickTickTask): string {
+  if (task.allDay) return "全天";
+  const fmt = (ts: number) =>
+    new Date(ts * 1000).toLocaleTimeString("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  return `${fmt(task.start)}–${fmt(task.end)}`;
 }

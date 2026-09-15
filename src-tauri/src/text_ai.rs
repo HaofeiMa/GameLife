@@ -2,7 +2,7 @@ use gamelife_core::{
     nonempty_guides, truncate_guide, CategoryGuides, ListRole, Policy, TaskSnapshot,
 };
 
-use crate::vision::{VisionEndpoint, USER_AGENT, VISION_TIMEOUT_SECS};
+use crate::vision::{complete_json, VisionCallError, VisionEndpoint, VISION_TIMEOUT_SECS};
 
 pub struct SampleLine {
     pub app: String,
@@ -143,42 +143,13 @@ fn call_text_json_timed(
     if prompt.trim().is_empty() {
         return Err(TextAiError::EmptySummary);
     }
-    if endpoint.api_key.trim().is_empty() || endpoint.base_url.trim().is_empty() {
-        return Err(TextAiError::Client);
+    let _ = timeout_secs;
+    match complete_json(endpoint, prompt, None) {
+        Ok(body) => Ok(body),
+        Err(VisionCallError::Transport) => Err(TextAiError::Transport),
+        Err(VisionCallError::Client) => Err(TextAiError::Client),
+        Err(VisionCallError::Parse) => Err(TextAiError::Parse),
     }
-    let url = format!(
-        "{}/chat/completions",
-        endpoint.base_url.trim_end_matches('/')
-    );
-    let body = serde_json::json!({
-        "model": endpoint.model,
-        "response_format": { "type": "json_object" },
-        "messages": [{ "role": "user", "content": prompt }]
-    });
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(timeout_secs))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|_| TextAiError::Transport)?;
-    let resp = client
-        .post(&url)
-        .header("x-opencode-session", "gamelife")
-        .bearer_auth(&endpoint.api_key)
-        .json(&body)
-        .send()
-        .map_err(|_| TextAiError::Transport)?;
-    let status = resp.status();
-    if status.is_server_error() {
-        return Err(TextAiError::Transport);
-    }
-    if !status.is_success() {
-        return Err(TextAiError::Client);
-    }
-    let json: serde_json::Value = resp.json().map_err(|_| TextAiError::Parse)?;
-    let content = json["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or(TextAiError::Parse)?;
-    Ok(content.to_string())
 }
 
 pub fn call_text_task_match(

@@ -1,0 +1,18 @@
+---
+description: Cloud snapshot backup, merged.db, and deferred settlement
+globs: src-tauri/src/sync.rs,src-tauri/src/settle.rs,src-tauri/src/resolve.rs,src-tauri/src/db.rs,src-tauri/src/sampler.rs,src-tauri/src/config.rs,src/lib/cloudSync.ts
+alwaysApply: false
+---
+
+# Cloud backup
+
+Spec: `docs/superpowers/specs/2026-09-14-cloud-sync-design.md`. Plan: `docs/superpowers/plans/2026-09-14-cloud-sync.md`. T15 / T16 are not started.
+
+- Live `gamelife.db` is the only judgment input. The remote is a copy. `merged.db` is a derived read-only view.
+- `VACUUM INTO` copies everything. `SYNCED_TABLES` is counts only. Delete `NEVER_SYNCED_TABLES` from the **copy**; trim `app_meta` to `device_id`. Default `aggregate` also drops `samples` and nulls capture fields. `secrets.json` and `screenshots/` never upload.
+- `sync.enabled = false` ⇒ no outbound request. Sampler checks every 20 ticks; failure must not block sampling or judgment. Quit runs `sync_on_exit` then exits.
+- Network sync commands are `async`. Restore stages a sibling file; never swap the live DB under the sampler.
+- Do not `db::migrate` a foreign snapshot (it would mint this machine's `device_id`). Stamp it with the remote directory name.
+- `Immediate` (≤1 device): `resolve_slot` pays as each slot finalises. `Deferred` (≥2): write slot + rollups, **no** reward rows, no holding pen. `settle_due_days` recomputes the whole day from the canonical sequence with the same `gamelife-core` functions. Stop at the first not-ready day. Ownership picks which merged row survives; it is not who pays.
+- Order: upload → set mode from the **remote** registry → `rebuild_merged` → settle. A failed rebuild must not settle.
+- `SETTLE_GRACE_HOURS = 36` is a constant, not a settings field yet.

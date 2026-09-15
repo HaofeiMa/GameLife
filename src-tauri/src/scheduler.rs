@@ -75,13 +75,30 @@ pub fn purge_expired_screenshots(
     retention: ScreenshotRetention,
     now: i64,
 ) -> Result<(), DbOpError> {
-    let Some(ttl) = retention_ttl_secs(retention) else {
-        return Ok(());
-    };
     let Some(dir) = screenshots_dir() else {
         return Ok(());
     };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    purge_expired_screenshots_in(conn, retention, now, &dir)
+}
+
+/// The sweep, against an explicit directory.
+///
+/// The directory is a parameter so the caller can say which one, rather than
+/// the function reaching for `HOME` on its own. That matters beyond tidiness:
+/// the tests used to redirect `HOME` to a temporary directory, and a global
+/// environment variable shared by a parallel test run is a race — one test's
+/// sweep would look in another test's directory, find nothing, and leave the
+/// row it was supposed to clear pointing at a file that no longer exists.
+pub fn purge_expired_screenshots_in(
+    conn: &Connection,
+    retention: ScreenshotRetention,
+    now: i64,
+    dir: &Path,
+) -> Result<(), DbOpError> {
+    let Some(ttl) = retention_ttl_secs(retention) else {
+        return Ok(());
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(());
     };
     for entry in entries.flatten() {
@@ -138,7 +155,14 @@ pub fn decide_capture(
 pub use crate::platform::{app_support_dir, screenshots_dir};
 
 fn screenshot_path_for(day: &str, slot_start_ts: i64, ts: i64) -> Option<PathBuf> {
-    screenshots_dir().map(|d| d.join(format!("{day}_{slot_start_ts}_{ts}.jpg")))
+    screenshots_dir().map(|d| screenshot_path_in(&d, day, slot_start_ts, ts))
+}
+
+/// Where a slot's capture goes, in an explicit directory. Split out so the
+/// capture tests can point it at a temporary directory instead of redirecting
+/// `HOME` — see `purge_expired_screenshots_in`.
+fn screenshot_path_in(dir: &Path, day: &str, slot_start_ts: i64, ts: i64) -> PathBuf {
+    dir.join(format!("{day}_{slot_start_ts}_{ts}.jpg"))
 }
 
 pub fn metadata_decidable(
@@ -190,13 +214,12 @@ pub fn maybe_vision_for_gray_zone(
     screenshot_path: &Path,
     ctx: VisionContext,
     never: &[String],
-    primary: Option<&vision::VisionEndpoint>,
-    fallback: Option<&vision::VisionEndpoint>,
+    chain: &[vision::VisionEndpoint],
 ) -> Option<VisionResult> {
     if metadata_decidable || capture != CaptureStatus::Captured {
         return None;
     }
-    vision::analyze_screenshot_with_fallback(screenshot_path, primary, fallback, ctx, never).ok()
+    vision::analyze_screenshot_with_chain(screenshot_path, chain, ctx, never).ok()
 }
 
 pub fn apply_screenshot_retention(path: &Path, retention: ScreenshotRetention) {
@@ -801,6 +824,7 @@ pub fn tick_capture(
         screen_recording,
         capture_context,
         capture_fn,
+        screenshots_dir().as_deref(),
     )
 }
 
@@ -814,6 +838,7 @@ fn tick_capture_impl(
     screen_recording: bool,
     capture_context: impl Fn() -> CaptureContext,
     capture_fn: impl Fn(&Path) -> Result<(), ()>,
+    screenshots: Option<&Path>,
 ) -> Result<(), DbOpError> {
     let row: Option<(i64, String)> = conn
         .query_row(
@@ -874,7 +899,8 @@ fn tick_capture_impl(
         return Ok(());
     }
 
-    let next = if let Some(path) = screenshot_path_for(day, slot_start_ts, now) {
+    let next = if let Some(path) = screenshots.map(|d| screenshot_path_in(d, day, slot_start_ts, now))
+    {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -1495,6 +1521,32 @@ pub fn finalize_slot_end(
     retention: ScreenshotRetention,
     credited_before: i64,
 ) -> Result<(), DbOpError> {
+    finalize_slot_end_in(
+        conn,
+        day,
+        slot_start,
+        slot_end,
+        retention,
+        credited_before,
+        screenshots_dir().as_deref(),
+    )
+}
+
+/// `finalize_slot_end`, with the screenshots directory made explicit.
+///
+/// The retention sweep at the end of the slot's life is the app's ongoing one
+/// — the sampler only sweeps at startup — so a test that reaches this function
+/// with a retention that expires files needs to say *which* directory it means
+/// rather than redirect `HOME` and hope no parallel test redirects it too.
+fn finalize_slot_end_in(
+    conn: &mut Connection,
+    day: &str,
+    slot_start: i64,
+    slot_end: i64,
+    retention: ScreenshotRetention,
+    credited_before: i64,
+    screenshots: Option<&Path>,
+) -> Result<(), DbOpError> {
     if slot_is_final(conn, day, slot_start)? {
         return Ok(());
     }
@@ -1550,7 +1602,7 @@ pub fn finalize_slot_end(
 
     let never = merged_never_capture(&policy);
     let settings = crate::config::load_settings();
-    let (primary, fallback) = vision::endpoints_from_settings(&settings, |id| {
+    let chain = vision::endpoints_from_settings(&settings, |id| {
         crate::keychain::get_provider_api_key(id).ok()
     });
 
@@ -1586,7 +1638,7 @@ pub fn finalize_slot_end(
         );
     let mut matched_text = false;
     if gray && !summary.is_empty() {
-        if let Some(ep) = primary.as_ref().or(fallback.as_ref()) {
+        if let Some(ep) = chain.first() {
             let prompt = build_text_ai_prompt(&tasks, &policy.category_guides, &policy, &summary);
             if let Ok(raw) = call_text_json(ep, &prompt) {
                 if tasks.is_empty() {
@@ -1622,8 +1674,7 @@ pub fn finalize_slot_end(
                     Path::new(path),
                     ctx,
                     &never,
-                    primary.as_ref(),
-                    fallback.as_ref(),
+                    &chain,
                 )
             }
             _ => None,
@@ -1667,7 +1718,9 @@ pub fn finalize_slot_end(
 
     let status = slot_status(conn, day, slot_start)?.unwrap_or_default();
     apply_capture_retention(conn, day, slot_start, retention, &status)?;
-    purge_expired_screenshots(conn, retention, now_secs())?;
+    if let Some(dir) = screenshots {
+        purge_expired_screenshots_in(conn, retention, now_secs(), dir)?;
+    }
     Ok(())
 }
 
@@ -2520,6 +2573,7 @@ mod tests {
             true,
             || capture_ctx("Cursor"),
             |_| Err(()),
+            None,
         )
         .unwrap();
         let status: String = conn
@@ -2550,11 +2604,11 @@ mod tests {
 
     #[test]
     fn tick_capture_marks_captured_when_capture_succeeds() {
+        // The capture directory is passed in rather than reached for through
+        // `HOME`: this test writes a real file, and a shared environment
+        // variable is not a way to say where.
         let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().to_path_buf();
-        unsafe {
-            std::env::set_var("HOME", &home);
-        }
+        let shots = dir.path().join("screenshots");
 
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
@@ -2591,6 +2645,7 @@ mod tests {
                 secure_input: false,
             },
             test_capture_ok,
+            Some(&shots),
         )
         .unwrap();
         let status: String = conn
@@ -3405,8 +3460,10 @@ mod tests {
     #[test]
     fn purge_expired_screenshots_removes_old_files() {
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", dir.path()) };
-        let shots = screenshots_dir().unwrap();
+        // No `HOME` redirection: the directory is passed in, so a parallel
+        // test cannot make this sweep look somewhere else. That race is what
+        // used to leave the row below pointing at a file already deleted.
+        let shots = dir.path().join("screenshots");
         std::fs::create_dir_all(&shots).unwrap();
         let old = shots.join("old.jpg");
         std::fs::write(&old, b"x").unwrap();
@@ -3421,7 +3478,7 @@ mod tests {
             params![old.to_string_lossy().to_string()],
         )
         .unwrap();
-        purge_expired_screenshots(&conn, ScreenshotRetention::Days3, now).unwrap();
+        purge_expired_screenshots_in(&conn, ScreenshotRetention::Days3, now, &shots).unwrap();
         assert!(!old.exists());
         let path: Option<String> = conn
             .query_row(

@@ -9,8 +9,7 @@ use tauri::State;
 use gamelife_core::{
     distraction_runs, first_core_hour, format_estimated_minutes, hit_rate, is_weekday,
     judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line, streak_at_risk,
-    sum_activity,
-    validate_lists, wow_delta, xp_shop_unlocked, ListRole,
+    sum_activity, ticktick_day_list, validate_lists, wow_delta, xp_shop_unlocked, ListRole,
     ParseContext, Policy, QuestDraft, Task, TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
     PRESET_MAINLINE_ID, SLOT_SECS,
 };
@@ -25,8 +24,7 @@ use crate::db::{
 };
 use crate::db_error::DbOpError;
 use crate::keychain::{
-    get_openai_api_key, get_provider_api_key, set_openai_api_key,
-    set_provider_api_key as write_provider_api_key,
+    get_provider_api_key, set_openai_api_key, set_provider_api_key as write_provider_api_key,
 };
 use crate::macos;
 use crate::sampler::PauseControl;
@@ -247,6 +245,7 @@ pub struct TickTickTaskView {
     pub role: String,
     pub start: i64,
     pub end: i64,
+    pub all_day: bool,
 }
 
 #[derive(Serialize)]
@@ -1365,6 +1364,9 @@ fn load_plan_marks(
     let cache = crate::ticktick::load_ticktick_cache(conn)?;
     let mut by_id: BTreeMap<String, PlanMark> = BTreeMap::new();
     for task in &cache {
+        if task.all_day {
+            continue;
+        }
         insert_plan_mark(
             &mut by_id,
             task.id.clone(),
@@ -1378,24 +1380,27 @@ fn load_plan_marks(
     Ok(by_id.into_values().collect())
 }
 
+fn ticktick_task_view(task: &gamelife_core::TimedTask) -> TickTickTaskView {
+    TickTickTaskView {
+        id: task.id.clone(),
+        title: task.title.clone(),
+        role: list_role_sql(task.role).to_string(),
+        start: task.start,
+        end: task.end,
+        all_day: task.all_day,
+    }
+}
+
 fn load_ticktick_day_tasks(
     conn: &Connection,
     day_start: i64,
     day_end: i64,
 ) -> Result<Vec<TickTickTaskView>, DbOpError> {
-    let mut tasks: Vec<TickTickTaskView> = crate::ticktick::load_ticktick_cache(conn)?
+    let cache = crate::ticktick::load_ticktick_cache(conn)?;
+    Ok(ticktick_day_list(&cache, day_start, day_end)
         .into_iter()
-        .filter(|task| timed_overlaps_day(task.start, task.end, day_start, day_end))
-        .map(|task| TickTickTaskView {
-            id: task.id,
-            title: task.title,
-            role: list_role_sql(task.role).to_string(),
-            start: task.start,
-            end: task.end,
-        })
-        .collect();
-    tasks.sort_by_key(|task| (task.start, task.end, task.title.clone()));
-    Ok(tasks)
+        .map(ticktick_task_view)
+        .collect())
 }
 
 fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
@@ -2287,6 +2292,8 @@ pub fn get_settings() -> Result<AppSettings, String> {
 
 #[tauri::command]
 pub fn save_settings(settings: AppSettings, update_policy: Option<bool>) -> Result<(), String> {
+    let mut settings = settings;
+    crate::config::normalize_vision_providers(&mut settings);
     write_settings_file(&settings)?;
     if !update_policy.unwrap_or(true) {
         return Ok(());
@@ -2310,31 +2317,42 @@ pub fn set_api_key(key: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn has_api_key() -> Result<bool, String> {
-    Ok(get_openai_api_key().is_ok())
+    let status = provider_key_status()?;
+    Ok(status.codex_logged_in || status.keys.values().any(|v| *v))
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderKeyStatus {
-    pub opencode_go: bool,
-    pub openai: bool,
-    pub custom: bool,
+    pub keys: BTreeMap<String, bool>,
+    pub codex_logged_in: bool,
 }
 
 #[tauri::command]
 pub fn set_provider_api_key(provider: String, key: String) -> Result<(), String> {
-    match provider.as_str() {
-        "opencode-go" | "openai" | "custom" => write_provider_api_key(&provider, &key),
-        _ => Err("unknown provider".into()),
+    let id = provider.trim();
+    if id.is_empty() {
+        return Err("unknown provider".into());
     }
+    if id == crate::config::PROVIDER_CODEX || id == crate::config::PROVIDER_OPENAI {
+        return Err("Codex 使用本机命令行授权，不需要 API Key".into());
+    }
+    write_provider_api_key(id, &key)
 }
 
 #[tauri::command]
 pub fn provider_key_status() -> Result<ProviderKeyStatus, String> {
+    let settings = load_settings();
+    let mut keys = BTreeMap::new();
+    for p in &settings.vision_providers {
+        if crate::config::is_codex_provider(p) {
+            continue;
+        }
+        keys.insert(p.id.clone(), get_provider_api_key(&p.id).is_ok());
+    }
     Ok(ProviderKeyStatus {
-        opencode_go: get_provider_api_key("opencode-go").is_ok(),
-        openai: get_openai_api_key().is_ok(),
-        custom: get_provider_api_key("custom").is_ok(),
+        keys,
+        codex_logged_in: crate::codex_auth::logged_in(),
     })
 }
 
@@ -2359,16 +2377,20 @@ pub async fn test_vision_provider(provider: Option<String>) -> Result<ProviderTe
         .vision_providers
         .iter()
         .find(|p| p.id == id)
+        .cloned()
         .ok_or_else(|| "未找到该提供商配置".to_string())?;
-    let api_key =
-        get_provider_api_key(&id).map_err(|_| "还没有保存 API Key".to_string())?;
-    if spec.base_url.trim().is_empty() || spec.model.trim().is_empty() {
-        return Err("请先填写 Base URL 和模型".into());
-    }
-    let endpoint = crate::vision::VisionEndpoint {
-        base_url: spec.base_url.clone(),
-        model: spec.model.clone(),
-        api_key,
+    let Some(endpoint) = crate::vision::endpoint_from_provider(
+        &spec,
+        &|pid: &str| get_provider_api_key(pid).ok(),
+        &crate::codex_auth::load_session(),
+    ) else {
+        if crate::config::is_codex_provider(&spec) {
+            return Err("本机还没有 Codex 登录。请在终端运行 codex login 后点刷新。".into());
+        }
+        if spec.base_url.trim().is_empty() || spec.model.trim().is_empty() {
+            return Err("请先填写 Base URL 和模型".into());
+        }
+        return Err("还没有保存 API Key".into());
     };
     match crate::text_ai::call_provider_test(&endpoint) {
         Ok(body) => Ok(ProviderTestResult {
@@ -2386,6 +2408,7 @@ pub struct TickTickStatus {
     pub last_sync: Option<i64>,
     pub last_error: Option<String>,
     pub secret_present: bool,
+    pub today_tasks: Vec<TickTickTaskView>,
 }
 
 #[derive(Serialize)]
@@ -2399,12 +2422,22 @@ pub struct TickTickAuthorize {
 #[tauri::command]
 pub fn ticktick_status() -> Result<TickTickStatus, String> {
     let connected = crate::keychain::get_ticktick_access_token().is_ok();
-    let last_sync = with_db(|conn| crate::ticktick::ticktick_fetched_at(conn)).ok().flatten();
+    let now = now_secs();
+    let day = day_str_for_ts(now);
+    let day_start = start_of_named_day(&day).unwrap_or(now);
+    let day_end = end_of_local_day(day_start);
+    let (last_sync, today_tasks) = with_db(|conn| {
+        let last_sync = crate::ticktick::ticktick_fetched_at(conn)?;
+        let today_tasks = load_ticktick_day_tasks(conn, day_start, day_end)?;
+        Ok((last_sync, today_tasks))
+    })
+    .unwrap_or((None, Vec::new()));
     Ok(TickTickStatus {
         connected,
         last_sync,
         last_error: crate::ticktick::oauth_last_error(),
         secret_present: crate::ticktick::client_secret_present(),
+        today_tasks,
     })
 }
 
@@ -3435,5 +3468,23 @@ mod tests {
         assert_eq!(view.ticktick_tasks.len(), 1);
         assert_eq!(view.ticktick_tasks[0].title, "A");
         assert_eq!(view.ticktick_tasks[0].role, "mainline");
+        assert!(!view.ticktick_tasks[0].all_day);
+
+        conn.execute(
+            "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at, all_day)
+             VALUES ('tt-all', 'p', '全天', 'mainline', ?1, ?2, 1, 1)",
+            params![day_start, day_start + 86_400],
+        )
+        .unwrap();
+        let view = build_day_view(&conn, day).unwrap();
+        assert_eq!(view.plan_marks.len(), 1, "all-day must not become a plan mark");
+        assert_eq!(view.ticktick_tasks.len(), 2);
+        let all_day = view
+            .ticktick_tasks
+            .iter()
+            .find(|t| t.id == "tt-all")
+            .expect("all-day listed");
+        assert!(all_day.all_day);
+        assert_eq!(all_day.title, "全天");
     }
 }

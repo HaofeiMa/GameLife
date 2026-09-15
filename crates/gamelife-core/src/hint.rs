@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(hint_sample(&by_title, &p, &[]), Hint::Admin);
 
         let mut by_path = sample("iTerm2", "✳ gamelife-ui-redesign", 5);
-        by_path.document_path = Some("/Volumes/MobileSSD/Program/My/GameLife".into());
+        by_path.document_path = Some("/Volumes/MobileSSD/MyProjects/GameLife".into());
         assert_eq!(hint_sample(&by_path, &p, &[]), Hint::Admin);
 
         let unrelated = sample("Google Chrome", "新闻", 5);

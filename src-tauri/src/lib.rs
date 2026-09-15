@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod config;
+pub mod codex_auth;
 // Per-platform observation backends. `observe::imp` is the seam the app sees;
 // these are only named here so their files are compiled on their own platform.
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -74,6 +75,13 @@ fn start_tray_tooltip_updater(app: AppHandle) {
     });
 }
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+fn tray_template_icon() -> Option<tauri::image::Image<'static>> {
+    let img = image::load_from_memory(include_bytes!("../icons/trayTemplate.png")).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(tauri::image::Image::new_owned(rgba.into_raw(), width, height))
+}
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -176,12 +184,12 @@ pub fn run() {
                 ],
             )?;
 
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .ok_or("missing default window icon")?;
+            let icon = tray_template_icon()
+                .or_else(|| app.default_window_icon().cloned())
+                .ok_or("missing tray icon")?;
             let tray = TrayIconBuilder::with_id("main")
                 .icon(icon)
+                .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {

@@ -220,6 +220,8 @@ pub struct TimedTask {
     pub start: i64,
     pub end: i64,
     pub done: bool,
+    /// TickTick all-day / date-only tasks. Listed on 今日, never judged.
+    pub all_day: bool,
 }
 
 fn overlapping_timed<'a>(
@@ -229,8 +231,36 @@ fn overlapping_timed<'a>(
 ) -> Vec<&'a TimedTask> {
     tasks
         .iter()
-        .filter(|t| !t.done && t.start < day_end && t.end > day_start)
+        .filter(|t| {
+            !t.done && !t.all_day && t.start < day_end && t.end > day_start
+        })
         .collect()
+}
+
+/// Start or end falls on `[day_start, day_end)`, or an all-day window overlaps it.
+pub fn ticktick_listed_on_day(task: &TimedTask, day_start: i64, day_end: i64) -> bool {
+    if task.done {
+        return false;
+    }
+    if task.all_day {
+        return task.start < day_end && task.end > day_start;
+    }
+    let start_on_day = task.start >= day_start && task.start < day_end;
+    let end_on_day = task.end > day_start && task.end <= day_end;
+    start_on_day || end_on_day
+}
+
+pub fn ticktick_day_list(
+    tasks: &[TimedTask],
+    day_start: i64,
+    day_end: i64,
+) -> Vec<&TimedTask> {
+    let mut listed: Vec<&TimedTask> = tasks
+        .iter()
+        .filter(|t| ticktick_listed_on_day(t, day_start, day_end))
+        .collect();
+    listed.sort_by_key(|t| (t.start, t.end, t.title.as_str()));
+    listed
 }
 
 pub fn ticktick_overlapping_count(tasks: &[TimedTask], day_start: i64, day_end: i64) -> usize {
@@ -370,6 +400,7 @@ mod tests {
                 start: 1000,
                 end: 1900,
                 done: false,
+                all_day: false,
             })
             .collect();
         assert!(ticktick_judgment_set(&tasks, 0, 86400).is_empty());
@@ -386,6 +417,7 @@ mod tests {
                 start: 1000,
                 end: 1900,
                 done: false,
+                all_day: false,
             },
             TimedTask {
                 id: "b".into(),
@@ -394,6 +426,7 @@ mod tests {
                 start: 100_000,
                 end: 101_000,
                 done: false,
+                all_day: false,
             },
             TimedTask {
                 id: "c".into(),
@@ -402,9 +435,64 @@ mod tests {
                 start: 1000,
                 end: 1900,
                 done: true,
+                all_day: false,
             },
         ];
         assert_eq!(ticktick_overlapping_count(&tasks, 0, 86400), 1);
         assert_eq!(ticktick_judgment_set(&tasks, 0, 86400).len(), 1);
+    }
+
+    fn listed(
+        id: &str,
+        start: i64,
+        end: i64,
+        all_day: bool,
+    ) -> TimedTask {
+        TimedTask {
+            id: id.into(),
+            title: id.into(),
+            role: ListRole::Mainline,
+            start,
+            end,
+            done: false,
+            all_day,
+        }
+    }
+
+    #[test]
+    fn all_day_tasks_are_listed_but_never_judged() {
+        let day_start = 0;
+        let day_end = 86_400;
+        let all_day = listed("all", day_start, day_end, true);
+        let timed = listed("timed", 10 * 3600, 11 * 3600, false);
+        let tasks = vec![all_day.clone(), timed.clone()];
+        assert_eq!(ticktick_overlapping_count(&tasks, day_start, day_end), 1);
+        assert_eq!(
+            ticktick_judgment_set(&tasks, day_start, day_end)
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["timed"]
+        );
+        let listed_ids: Vec<_> = ticktick_day_list(&tasks, day_start, day_end)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(listed_ids, vec!["all", "timed"]);
+    }
+
+    #[test]
+    fn day_list_keeps_tasks_whose_start_or_end_falls_on_the_day() {
+        let day_start = 86_400;
+        let day_end = 172_800;
+        let starts_today = listed("start", day_start + 3600, day_end + 3600, false);
+        let ends_today = listed("end", day_start - 3600, day_start + 3600, false);
+        let yesterday = listed("old", 0, 3600, false);
+        let tasks = vec![starts_today, ends_today, yesterday];
+        let ids: Vec<_> = ticktick_day_list(&tasks, day_start, day_end)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["end", "start"]);
     }
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Render the four rail tabs with VITE_PREVIEW=1 and write PNGs for the README.
+ * Render the four rail tabs plus settings sub-pages with VITE_PREVIEW=1
+ * and write PNGs for the README.
  */
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -86,16 +87,52 @@ try {
     ["shop", "shop.png"],
     ["settings", "settings.png"],
   ];
+  async function settle() {
+    await page.waitForSelector("h1", { timeout: 10_000 });
+    await new Promise((r) => setTimeout(r, 800));
+  }
+
   for (const [tab, file] of tabs) {
     await page.goto(`${origin}/?tab=${tab}`, {
       waitUntil: "networkidle",
     });
-    await page.waitForSelector("h1", { timeout: 10_000 });
-    await new Promise((r) => setTimeout(r, 800));
+    await settle();
     const dest = join(outDir, file);
     await page.screenshot({ path: dest, type: "png" });
     console.log("wrote", dest);
   }
+
+  async function captureSettingsTab(label, file, after) {
+    await page.setViewportSize({ width: 1100, height: 720 });
+    await page.goto(`${origin}/?tab=settings`, { waitUntil: "networkidle" });
+    await settle();
+    await page.getByRole("tab", { name: label, exact: true }).click();
+    await new Promise((r) => setTimeout(r, 800));
+    if (after) await after();
+    const height = await page.evaluate(() => {
+      const scroller = document.querySelector("main .overflow-y-auto");
+      const header = document.querySelector("main header");
+      const needed =
+        (header?.getBoundingClientRect().height ?? 86) +
+        (scroller?.scrollHeight ?? 720) +
+        8;
+      return Math.min(Math.max(Math.ceil(needed), 720), 2400);
+    });
+    await page.setViewportSize({ width: 1100, height });
+    await new Promise((r) => setTimeout(r, 300));
+    const dest = join(outDir, file);
+    await page.screenshot({ path: dest, type: "png" });
+    console.log("wrote", dest, "h=" + height);
+  }
+
+  await captureSettingsTab("TickTick", "settings-ticktick.png", async () => {
+    const expand = page.getByLabel("展开分组");
+    if ((await expand.count()) > 0) {
+      await expand.first().click();
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  });
+  await captureSettingsTab("云端", "settings-cloud.png");
   await browser.close();
 } finally {
   vite.kill("SIGTERM");

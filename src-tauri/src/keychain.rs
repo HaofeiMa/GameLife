@@ -15,11 +15,10 @@ pub const KEYCHAIN_ACCOUNT_REFRESH: &str = "ticktick-refresh";
 
 static SECRETS_LOCK: Mutex<()> = Mutex::new(());
 
-pub fn service_for_provider(id: &str) -> &'static str {
+pub fn service_for_provider(id: &str) -> String {
     match id {
-        "opencode-go" => KEYCHAIN_SERVICE_OPENCODE_GO,
-        "custom" => KEYCHAIN_SERVICE_CUSTOM,
-        _ => KEYCHAIN_SERVICE,
+        "openai" => KEYCHAIN_SERVICE.to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -98,11 +97,11 @@ fn with_store<T>(f: impl FnOnce(&Path) -> Result<T, String>) -> Result<T, String
 }
 
 pub fn get_provider_api_key(provider: &str) -> Result<String, String> {
-    with_store(|path| get_in(path, service_for_provider(provider)))
+    with_store(|path| get_in(path, &service_for_provider(provider)))
 }
 
 pub fn set_provider_api_key(provider: &str, key: &str) -> Result<(), String> {
-    with_store(|path| set_in(path, service_for_provider(provider), key))
+    with_store(|path| set_in(path, &service_for_provider(provider), key))
 }
 
 pub fn get_openai_api_key() -> Result<String, String> {
@@ -160,7 +159,7 @@ mod tests {
         );
         assert_eq!(service_for_provider("openai"), KEYCHAIN_SERVICE);
         assert_eq!(service_for_provider("custom"), KEYCHAIN_SERVICE_CUSTOM);
-        assert_eq!(service_for_provider("unknown"), KEYCHAIN_SERVICE);
+        assert_eq!(service_for_provider("unknown"), "unknown");
     }
 
     #[test]

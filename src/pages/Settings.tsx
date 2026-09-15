@@ -1,4 +1,4 @@
-import { ChevronRight, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import appIcon from "../../src-tauri/icons/128x128@2x.png";
 import { PageHeader } from "../components/PageHeader";
@@ -59,22 +59,34 @@ import {
   callbackPasteKind,
   oauthErrorMessage,
   oauthWaitingHint,
-  primaryProviderHasKey,
   policySignature,
   SECRET_MASK,
   secretToPersist,
   showSecretMask,
   ticktickSecretReady,
 } from "../lib/secretField";
+import {
+  addCodexPanel,
+  addCustomPanel,
+  chainHasUsable,
+  customPanelTitle,
+  isCodexProvider,
+  migrateVisionProviders,
+  moveProvider,
+  withVisionProviders,
+} from "../lib/providers";
 import { notifySettingsChanged } from "../lib/settingsEvents";
 import {
   columnRoleKey,
   formatTicktickLastSync,
+  groupTicktickTodayTasks,
   nextRoleMap,
   TICKTICK_ROLE_COLUMNS,
+  TICKTICK_TASK_ROLES,
   ticktickRoleLabel,
   ticktickSyncButtonLabel,
   ticktickSyncErrorMessage,
+  ticktickTaskTimeLabel,
 } from "../lib/ticktickBoard";
 import { cn } from "../lib/utils";
 
@@ -339,56 +351,107 @@ function ProviderEditor({
   keyPresent,
   keyValue,
   busy,
+  codexLoggedIn,
+  canMoveUp,
+  canMoveDown,
+  onMove,
+  onRemove,
   onPatch,
   onKeyChange,
   onTest,
+  onRefreshCodex,
 }: {
   title: string;
   spec: VisionProviderSettings;
   keyPresent: boolean;
   keyValue: string;
   busy: boolean;
+  codexLoggedIn: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (delta: number) => void;
+  onRemove: () => void;
   onPatch: (patch: Partial<VisionProviderSettings>) => void;
   onKeyChange: (value: string) => void;
   onTest: () => void;
+  onRefreshCodex: () => void;
 }) {
+  const codex = isCodexProvider(spec);
   return (
     <Section
       title={title}
       caption={
-        <span className={keyPresent ? "text-success" : undefined}>
-          {keyPresent ? "已保存" : "未配置"}
+        <span className={codex ? (codexLoggedIn ? "text-success" : undefined) : keyPresent ? "text-success" : undefined}>
+          {codex ? (codexLoggedIn ? "已授权" : "未登录") : keyPresent ? "已保存" : "未配置"}
         </span>
       }
     >
-      <Field label="Base URL">
-        <Input
-          value={spec.baseUrl}
-          disabled={busy}
-          placeholder="https://…"
-          onChange={(e) => onPatch({ baseUrl: e.target.value })}
-        />
-      </Field>
-      <Field label="模型">
-        <Input
-          value={spec.model}
-          disabled={busy}
-          placeholder="模型 ID"
-          onChange={(e) => onPatch({ model: e.target.value })}
-        />
-      </Field>
-      <SecretField
-        label="API Key"
-        present={keyPresent}
-        draft={keyValue}
-        busy={busy}
-        placeholder="新 Key（保存时写入本机）"
-        onDraftChange={onKeyChange}
-      />
-      {keyPresent && (
-        <Button variant="outline" size="sm" disabled={busy} onClick={onTest}>
-          测试连接
+      <div className="flex justify-end gap-1">
+        <Button variant="ghost" size="icon-sm" disabled={busy || !canMoveUp} onClick={() => onMove(-1)} aria-label="上移">
+          <ChevronUp className="size-4" />
         </Button>
+        <Button variant="ghost" size="icon-sm" disabled={busy || !canMoveDown} onClick={() => onMove(1)} aria-label="下移">
+          <ChevronDown className="size-4" />
+        </Button>
+        <Button variant="ghost" size="icon-sm" disabled={busy} onClick={onRemove} aria-label="删除">
+          <X className="size-4" />
+        </Button>
+      </div>
+      {codex ? (
+        <>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            使用本机 <code className="font-mono">codex login</code>{" "}
+            的会话，不必填写 API Key。模型需能看图，判定会传截图。
+          </p>
+          <Field label="模型">
+            <Input
+              value={spec.model}
+              disabled={busy}
+              placeholder="gpt-5.4"
+              onChange={(e) => onPatch({ model: e.target.value })}
+            />
+          </Field>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" disabled={busy} onClick={onRefreshCodex}>
+              刷新登录状态
+            </Button>
+            <Button variant="outline" size="sm" disabled={busy || !codexLoggedIn} onClick={onTest}>
+              测试连接
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <Field label="Base URL">
+            <Input
+              value={spec.baseUrl}
+              disabled={busy}
+              placeholder="https://…"
+              onChange={(e) => onPatch({ baseUrl: e.target.value })}
+            />
+          </Field>
+          <Field label="模型">
+            <Input
+              value={spec.model}
+              disabled={busy}
+              placeholder="模型 ID"
+              onChange={(e) => onPatch({ model: e.target.value })}
+            />
+          </Field>
+          <SecretField
+            label="API Key"
+            present={keyPresent}
+            draft={keyValue}
+            busy={busy}
+            placeholder="新 Key（保存时写入本机）"
+            onDraftChange={onKeyChange}
+          />
+          {keyPresent && (
+            <Button variant="outline" size="sm" disabled={busy} onClick={onTest}>
+              测试连接
+            </Button>
+          )}
+        </>
       )}
     </Section>
   );
@@ -398,15 +461,10 @@ function ProviderEditor({
 
 export function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [keys, setKeys] = useState<Record<string, string>>({
-    "opencode-go": "",
-    openai: "",
-    custom: "",
-  });
+  const [keys, setKeys] = useState<Record<string, string>>({});
   const [keyStatus, setKeyStatus] = useState<ProviderKeyStatus>({
-    opencodeGo: false,
-    openai: false,
-    custom: false,
+    keys: {},
+    codexLoggedIn: false,
   });
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -420,6 +478,7 @@ export function Settings() {
     lastSync: null,
     lastError: null,
     secretPresent: false,
+    todayTasks: [],
   });
   const [callbackDraft, setCallbackDraft] = useState("");
   const [authorizeUrl, setAuthorizeUrl] = useState("");
@@ -447,7 +506,12 @@ export function Settings() {
   useEffect(() => {
     getSettings()
       .then((s) => {
-        setSettings(s);
+        const visionProviders = migrateVisionProviders(
+          s.visionProviders,
+          s.primaryProvider,
+          s.fallbackProvider,
+        );
+        setSettings(withVisionProviders(s, visionProviders));
         lastPolicySig.current = policySignature(s);
         setLoadError(null);
       })
@@ -568,22 +632,12 @@ export function Settings() {
     );
   }
 
-  function provider(id: string): VisionProviderSettings {
-    return (
-      settings!.visionProviders.find((p) => p.id === id) ?? {
-        id,
-        baseUrl: "",
-        model: "",
-      }
-    );
-  }
-
   function patchProvider(id: string, patch: Partial<VisionProviderSettings>) {
     if (!settings) return;
     const exists = settings.visionProviders.some((p) => p.id === id);
     const visionProviders = exists
       ? settings.visionProviders.map((p) => (p.id === id ? { ...p, ...patch } : p))
-      : [...settings.visionProviders, { id, baseUrl: "", model: "", ...patch }];
+      : [...settings.visionProviders, { id, baseUrl: "", model: "", kind: "custom", ...patch }];
     setSettings({ ...settings, visionProviders });
   }
 
@@ -622,10 +676,11 @@ export function Settings() {
     setSaving(true);
     setMsg(null);
     try {
-      for (const id of ["opencode-go", "openai", "custom"] as const) {
-        const typed = secretToPersist(keys[id] ?? "");
+      for (const p of settings.visionProviders) {
+        if (isCodexProvider(p)) continue;
+        const typed = secretToPersist(keys[p.id] ?? "");
         if (!typed) continue;
-        await setProviderApiKey(id, typed);
+        await setProviderApiKey(p.id, typed);
       }
       const tt = secretToPersist(ticktickSecret);
       if (tt) {
@@ -640,11 +695,11 @@ export function Settings() {
       notifySettingsChanged();
       const confirmed = await providerKeyStatus();
       setKeyStatus(confirmed);
-      setKeys({ "opencode-go": "", openai: "", custom: "" });
+      setKeys({});
       const nextTt = await ticktickStatus();
       setTtStatus(nextTt);
-      if (!primaryProviderHasKey(settings.primaryProvider, confirmed)) {
-        setMsg("设置已写入，但主用 API Key 尚未保存，请重新填写后保存");
+      if (!chainHasUsable(trimmed.visionProviders, confirmed.keys, confirmed.codexLoggedIn)) {
+        setMsg("设置已写入，但还没有可用的 API。请填写自定义 Key，或先在终端运行 codex login。");
       } else {
         setMsg("已保存");
       }
@@ -810,6 +865,7 @@ export function Settings() {
         lastSync: null,
         lastError: null,
         secretPresent: ttStatus.secretPresent,
+        todayTasks: [],
       });
       setTree(null);
       setTruncated(false);
@@ -904,7 +960,7 @@ export function Settings() {
       setSyncNote(
         result.truncated
           ? "同步完成（当天时段任务超过 20）"
-          : `同步完成（${result.count} 条时段任务）`,
+          : `同步完成（${result.count} 条任务）`,
       );
     } catch (e) {
       setSyncNote(ticktickSyncErrorMessage(String(e)));
@@ -951,6 +1007,7 @@ export function Settings() {
     : []) {
     roleCounts[role] = (roleCounts[role] ?? 0) + 1;
   }
+  const todayGroups = groupTicktickTodayTasks(ttStatus.todayTasks ?? []);
 
   return (
     <>
@@ -1054,72 +1111,94 @@ export function Settings() {
             <div className="flex flex-col gap-3">
               <Section
                 title="判定与视觉"
-                caption="Key 只保存在本机 secrets.json（权限 600），不进 config.json。主用失败仅在超时、网络错误或 HTTP 5xx 时改走 fallback。"
+                caption="按从上到下的顺序尝试。仅超时、网络错误或 HTTP 5xx 才试下一张。自定义 Key 只保存在本机 secrets.json（权限 600）。"
               >
-                {!primaryProviderHasKey(settings.primaryProvider, keyStatus) && (
+                {!chainHasUsable(
+                  settings.visionProviders,
+                  keyStatus.keys,
+                  keyStatus.codexLoggedIn,
+                ) && (
                   <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    主用提供商还没有 API Key。只填 URL / 模型不够，请在下方密码框粘贴 Key 后点「保存设置」。
+                    还没有可用的 API。请填写自定义 Key 后点「保存设置」，或在终端运行 codex login 后刷新。
                   </p>
                 )}
-                <Field label="主用">
-                  <Select
-                    value={settings.primaryProvider}
-                    disabled={formLocked}
-                    onChange={(e) =>
-                      setSettings({ ...settings, primaryProvider: e.target.value })
-                    }
-                  >
-                    <option value="opencode-go">OpenCode Go</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="custom">自定义</option>
-                  </Select>
-                </Field>
-                <Field label="回退">
-                  <Select
-                    value={settings.fallbackProvider}
-                    disabled={formLocked}
-                    onChange={(e) =>
-                      setSettings({ ...settings, fallbackProvider: e.target.value })
-                    }
-                  >
-                    <option value="none">无</option>
-                    <option value="opencode-go">OpenCode Go</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="custom">自定义</option>
-                  </Select>
-                </Field>
               </Section>
 
-              <ProviderEditor
-                title="OpenCode Go"
-                spec={provider("opencode-go")}
-                keyPresent={keyStatus.opencodeGo}
-                keyValue={keys["opencode-go"] ?? ""}
-                busy={formLocked || testing}
-                onPatch={(patch) => patchProvider("opencode-go", patch)}
-                onKeyChange={(v) => setKeys({ ...keys, "opencode-go": v })}
-                onTest={() => void handleTestProvider("opencode-go")}
-              />
-              <ProviderEditor
-                title="OpenAI / Codex 兼容"
-                spec={provider("openai")}
-                keyPresent={keyStatus.openai}
-                keyValue={keys.openai ?? ""}
-                busy={formLocked || testing}
-                onPatch={(patch) => patchProvider("openai", patch)}
-                onKeyChange={(v) => setKeys({ ...keys, openai: v })}
-                onTest={() => void handleTestProvider("openai")}
-              />
-              <ProviderEditor
-                title="自定义"
-                spec={provider("custom")}
-                keyPresent={keyStatus.custom}
-                keyValue={keys.custom ?? ""}
-                busy={formLocked || testing}
-                onPatch={(patch) => patchProvider("custom", patch)}
-                onKeyChange={(v) => setKeys({ ...keys, custom: v })}
-                onTest={() => void handleTestProvider("custom")}
-              />
+              {settings.visionProviders.map((spec, index) => (
+                <ProviderEditor
+                  key={spec.id}
+                  title={
+                    isCodexProvider(spec)
+                      ? "Codex"
+                      : customPanelTitle(settings.visionProviders, spec.id)
+                  }
+                  spec={spec}
+                  keyPresent={Boolean(keyStatus.keys[spec.id])}
+                  keyValue={keys[spec.id] ?? ""}
+                  busy={formLocked || testing}
+                  codexLoggedIn={keyStatus.codexLoggedIn}
+                  canMoveUp={index > 0}
+                  canMoveDown={index < settings.visionProviders.length - 1}
+                  onMove={(delta) =>
+                    setSettings(
+                      withVisionProviders(
+                        settings,
+                        moveProvider(settings.visionProviders, index, delta),
+                      ),
+                    )
+                  }
+                  onRemove={() =>
+                    setSettings(
+                      withVisionProviders(
+                        settings,
+                        settings.visionProviders.filter((p) => p.id !== spec.id),
+                      ),
+                    )
+                  }
+                  onPatch={(patch) => patchProvider(spec.id, patch)}
+                  onKeyChange={(v) => setKeys({ ...keys, [spec.id]: v })}
+                  onTest={() => void handleTestProvider(spec.id)}
+                  onRefreshCodex={() => {
+                    void providerKeyStatus().then(setKeyStatus);
+                  }}
+                />
+              ))}
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={formLocked}
+                  onClick={() =>
+                    setSettings(
+                      withVisionProviders(
+                        settings,
+                        addCustomPanel(settings.visionProviders),
+                      ),
+                    )
+                  }
+                >
+                  <Plus className="size-3.5" />
+                  添加自定义 API
+                </Button>
+                {!settings.visionProviders.some(isCodexProvider) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={formLocked}
+                    onClick={() =>
+                      setSettings(
+                        withVisionProviders(
+                          settings,
+                          addCodexPanel(settings.visionProviders),
+                        ),
+                      )
+                    }
+                  >
+                    添加 Codex
+                  </Button>
+                )}
+              </div>
             </div>
           )}
 
@@ -1532,6 +1611,46 @@ export function Settings() {
                     {formatTicktickLastSync(ttStatus.lastSync, Math.floor(Date.now() / 1000))}
                     。同步会拉取全部清单与分组，并自动最多每 30 分钟一次。
                   </p>
+                  <div>
+                    <p className="text-xs font-medium">当天任务</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      按映射角色列出当天未完成的任务名。全天或只有日期的也会出现在这里，但不进入判定。
+                    </p>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {TICKTICK_TASK_ROLES.map((role) => {
+                      const list = todayGroups[role];
+                      return (
+                        <div
+                          key={role}
+                          className="rounded-lg border px-3 py-2"
+                        >
+                          <p className="text-[11px] font-medium">
+                            {ticktickRoleLabel(role)}
+                            <span className="ml-1 tabular-nums text-muted-foreground">
+                              {list.length}
+                            </span>
+                          </p>
+                          {list.length === 0 ? (
+                            <p className="mt-1 text-[11px] text-muted-foreground">
+                              无
+                            </p>
+                          ) : (
+                            <ul className="mt-1 space-y-1">
+                              {list.map((task) => (
+                                <li key={task.id} className="min-w-0">
+                                  <p className="truncate text-[12px]">{task.title}</p>
+                                  <p className="text-[10px] tabular-nums text-muted-foreground">
+                                    {ticktickTaskTimeLabel(task)}
+                                  </p>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                   {truncated && (
                     <p className="text-[11px] text-warning">
                       当天有时段任务超过 20，请在 TickTick 勾完或改期。

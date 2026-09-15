@@ -24,7 +24,7 @@
 - `policy_seed_version=2` 之后清空的 distraction 不再补回。
 - 测试禁止 `std::env::set_var("HOME", …)`。不要改无关测试里已有的 `set_var`。
 - 改 `crates/gamelife-core`：`cargo test --offline -p gamelife-core` 必须绿。
-- 改 `src-tauri/`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife` 必须编译并跑过。
+- 改 `src-tauri/`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife` 必须编译并跑过。
 - 不做 Chrome/Safari/Arc 阅读应用，不把 Arc 补进 Trusted，不把 GitHub/ChatGPT 进科研白名单。
 
 ---
@@ -989,7 +989,7 @@ Grep `metadata_decidable(` 更新每一处，包括测试。
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::metadata_not_decidable_for_title_only_strong_core`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::metadata_not_decidable_for_title_only_strong_core`
 
 Expected: FAIL（少参数或自动 Core 仍看 strong_core）
 
@@ -1035,7 +1035,7 @@ Expected: FAIL（少参数或自动 Core 仍看 strong_core）
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife`
 
 Expected: PASS
 

@@ -11,6 +11,7 @@ function task(id: string, hourStart: number, hourEnd: number, role = "mainline")
     role,
     start: DAY_START + hourStart * 3600,
     end: DAY_START + hourEnd * 3600,
+    allDay: false,
   };
 }
 

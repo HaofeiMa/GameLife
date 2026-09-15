@@ -75,8 +75,12 @@ export async function previewInvoke<T>(
     case "open_privacy_settings":
     case "ticktick_set_client_secret":
     case "ticktick_disconnect":
-    case "ticktick_sync":
       return undefined as T;
+    case "ticktick_sync":
+      return {
+        count: PREVIEW_TICKTICK_STATUS.todayTasks.length,
+        truncated: false,
+      } as T;
     default:
       console.warn(`[preview] unhandled invoke: ${cmd}`);
       return undefined as T;

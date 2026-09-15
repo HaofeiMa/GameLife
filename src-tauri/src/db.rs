@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS ticktick_cache (
   role TEXT NOT NULL,
   start INTEGER NOT NULL,
   end INTEGER NOT NULL,
-  fetched_at INTEGER NOT NULL
+  fetched_at INTEGER NOT NULL,
+  all_day INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS app_day_stats (
   day TEXT NOT NULL,
@@ -206,7 +207,8 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
                role TEXT NOT NULL,
                start INTEGER NOT NULL,
                end INTEGER NOT NULL,
-               fetched_at INTEGER NOT NULL
+               fetched_at INTEGER NOT NULL,
+               all_day INTEGER NOT NULL DEFAULT 0
              );
              CREATE TABLE IF NOT EXISTS app_day_stats (
                day TEXT NOT NULL,
@@ -243,6 +245,12 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
             .map_err(map_rusqlite)?;
     }
     add_column_if_missing(conn, "wishes", "archived", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(
+        conn,
+        "ticktick_cache",
+        "all_day",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     // Phase two needs to know which device edited a wish last, because the two
     // databases' `wishes.id` values are global and two devices editing the same
     // wish must converge on the newer row (§5.2).

@@ -44,7 +44,7 @@ export function compareDayTasks(
   slots: TodaySlot[],
 ): DayComparison {
   const plans = tasks
-    .filter((t) => t.role === "mainline" && t.end > t.start)
+    .filter((t) => t.role === "mainline" && !t.allDay && t.end > t.start)
     .slice()
     .sort((a, b) => a.start - b.start);
 

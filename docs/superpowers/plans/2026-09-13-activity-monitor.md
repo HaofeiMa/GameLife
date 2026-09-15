@@ -35,8 +35,8 @@
 - API Key 与 TickTick token / Client Secret 只进钥匙串，不进 `config.json`。
 - 统计一律 `SUM(activity_*)` 或样本 15s；禁止 `dominant × 15` 当周/月总量。
 - 日汇总与槽决议同一事务；失败则槽不得标 final。
-- 改 `src-tauri/`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife` 必须编译并跑过。
-- 改 `gamelife-core`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core`。
+- 改 `src-tauri/`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife` 必须编译并跑过。
+- 改 `gamelife-core`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core`。
 - 改 `src/`：`npx vitest run --dir src`。
 - 测试禁止新增 `std::env::set_var("HOME", …)`。
 - 界面中文。能量在 UI 称「能量」，账本字段仍是 `xp_delta`。不出现 Quest。
@@ -193,7 +193,7 @@ fn nonempty_guides_skips_blank() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- policy::tests::old_policy_json_without_new_fields_deserializes`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- policy::tests::old_policy_json_without_new_fields_deserializes`
 
 Expected: FAIL（字段不存在或反序列化失败）
 
@@ -203,7 +203,7 @@ Expected: FAIL（字段不存在或反序列化失败）
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- policy`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- policy`
 
 Expected: PASS。再跑 `cargo test --offline -p gamelife-core` 确认字面量已齐。
 
@@ -306,7 +306,7 @@ fn builtin_gamelife_is_side_when_not_in_admin_list() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- hint::tests::admin_app_beats_trusted_but_loses_to_distraction`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- hint::tests::admin_app_beats_trusted_but_loses_to_distraction`
 
 Expected: FAIL（无 `Hint::Admin` 或不匹配）
 
@@ -324,7 +324,7 @@ if matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.admin_
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- hint vision_ctx judge::tests`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- hint vision_ctx judge::tests`
 
 Expected: PASS
 
@@ -420,7 +420,7 @@ fn mainline_snapshot_title_grounds_path() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- task::tests::tokenize_title_drops_hash_and_short_tokens`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- task::tests::tokenize_title_drops_hash_and_short_tokens`
 
 Expected: FAIL
 
@@ -430,11 +430,11 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core`
 
 Expected: PASS
 
-再：`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- scheduler::`
+再：`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- scheduler::`
 
 Expected: PASS（签名已改）
 
@@ -543,7 +543,7 @@ for s in &mut samples {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- judge::tests::empty_snapshots_still_auto_core_when_grounded`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- judge::tests::empty_snapshots_still_auto_core_when_grounded`
 
 Expected: FAIL（仍因 `tasks_empty` 把 credited 置 0）
 
@@ -553,7 +553,7 @@ Expected: FAIL（仍因 `tasks_empty` 把 credited 置 0）
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- judge::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- judge::`
 
 Expected: PASS。若旧测试依赖「空任务 credited=0」，改为断言「无落地则非自动 Core」，不要恢复空任务门。
 
@@ -676,7 +676,7 @@ fn support_does_not_pay() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- task_ai::tests::category_null_is_none`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- task_ai::tests::category_null_is_none`
 
 Expected: FAIL
 
@@ -686,7 +686,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- task_ai`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- task_ai`
 
 Expected: PASS
 
@@ -738,7 +738,7 @@ fn metadata_decidable_admin_blocks_auto_core_skip_vision() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::metadata_decidable_admin_blocks_auto_core_skip_vision`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::metadata_decidable_admin_blocks_auto_core_skip_vision`
 
 Expected: FAIL（参数未改或 admin 未计入）
 
@@ -748,7 +748,7 @@ Expected: FAIL（参数未改或 admin 未计入）
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::metadata_decidable`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::metadata_decidable`
 
 Expected: PASS
 
@@ -830,7 +830,7 @@ fn more_than_twenty_timed_tasks_yields_empty_set() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- task::tests::more_than_twenty_timed_tasks_yields_empty_set`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- task::tests::more_than_twenty_timed_tasks_yields_empty_set`
 
 Expected: FAIL
 
@@ -840,7 +840,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- task task_parse`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- task task_parse`
 
 Expected: PASS
 
@@ -930,7 +930,7 @@ fn migrate_creates_monitor_tables_and_version_3() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- db::tests::migrate_creates_monitor_tables_and_version_3`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- db::tests::migrate_creates_monitor_tables_and_version_3`
 
 Expected: FAIL（无模块则先放 `commands::tests` 并 `use crate::db::migrate`）
 
@@ -940,7 +940,7 @@ Expected: FAIL（无模块则先放 `commands::tests` 并 `use crate::db::migrat
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- migrate_creates_monitor_tables_and_version_3`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- migrate_creates_monitor_tables_and_version_3`
 
 Expected: PASS。全量 `cargo test --offline -p gamelife` 也要绿（旧 migrate 测试若断言 version==2 改为 3）。
 
@@ -1050,7 +1050,7 @@ fn old_config_json_defaults_rail_labels_true() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- config::tests::old_config_json_defaults_rail_labels_true`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- config::tests::old_config_json_defaults_rail_labels_true`
 
 Expected: FAIL
 
@@ -1060,7 +1060,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- config:: keychain::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- config:: keychain::`
 
 Expected: PASS
 
@@ -1156,7 +1156,7 @@ OpenTask 字段 serde rename：`#[serde(rename_all = "camelCase")]` 以匹配 `s
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- ticktick::tests::skips_all_day_and_completed`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- ticktick::tests::skips_all_day_and_completed`
 
 Expected: FAIL
 
@@ -1166,7 +1166,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- ticktick::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- ticktick::`
 
 Expected: PASS
 
@@ -1289,7 +1289,7 @@ RFC 7636 附录的 verifier/challenge 对必须一字不差。
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- ticktick::tests::pkce_challenge_is_s256_unpadded`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- ticktick::tests::pkce_challenge_is_s256_unpadded`
 
 Expected: FAIL
 
@@ -1305,7 +1305,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- ticktick::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- ticktick::`
 
 Expected: PASS。`cargo test --offline -p gamelife` 必须整包绿。
 
@@ -1380,7 +1380,7 @@ fn pin_snapshot_uses_ticktick_cache_not_local_tasks() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::pin_snapshot_uses_ticktick_cache_not_local_tasks`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::pin_snapshot_uses_ticktick_cache_not_local_tasks`
 
 Expected: FAIL（仍钉本地 LOCAL）
 
@@ -1392,7 +1392,7 @@ Expected: FAIL（仍钉本地 LOCAL）
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::pin_snapshot_uses_ticktick_cache_not_local_tasks`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- scheduler::tests::pin_snapshot_uses_ticktick_cache_not_local_tasks`
 
 Expected: PASS。`cargo test --offline -p gamelife` 全绿。
 
@@ -1479,7 +1479,7 @@ Scheduler：用假的不联网路径——可单测 `build_text_ai_prompt` 足�
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- text_ai::tests::prompt_omits_empty_guides_and_protected_lines_already_filtered`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- text_ai::tests::prompt_omits_empty_guides_and_protected_lines_already_filtered`
 
 Expected: FAIL
 
@@ -1489,7 +1489,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- text_ai::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- text_ai::`
 
 Expected: PASS。`cargo test --offline -p gamelife` 全绿。
 
@@ -1599,7 +1599,7 @@ resolve：内存 DB migrate，造 samples+hints 经 finalize 或直接 `resolve_
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- app_stats::tests::protected_sample_only_adds_protected_seconds`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- app_stats::tests::protected_sample_only_adds_protected_seconds`
 
 Expected: FAIL
 
@@ -1609,9 +1609,9 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- app_stats`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- app_stats`
 
-再：`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- resolve::`
+再：`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- resolve::`
 
 Expected: PASS
 
@@ -1719,7 +1719,7 @@ commands 测：migrate 内存库，插入两个槽 activity 8m core + 7m side，
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- reports::tests::distraction_run_needs_three_slots`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- reports::tests::distraction_run_needs_three_slots`
 
 Expected: FAIL
 
@@ -1731,9 +1731,9 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core -- reports`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core -- reports`
 
-再：`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife`
+再：`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife`
 
 Expected: PASS
 
@@ -1956,7 +1956,7 @@ Expected: FAIL
 
 Run: `npx vitest run --dir src`
 
-再：`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife`
+再：`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife`
 
 Expected: PASS
 
@@ -2122,8 +2122,8 @@ EOF
 Run:
 
 ```bash
-CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core
-CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife
+CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core
+CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife
 npx vitest run --dir src
 rg -n "新建列表|自然语言|计划\|实际|FullCalendar|dnd-kit" src/pages/Today.tsx src/App.tsx src/pages/Week.tsx || true
 ```

@@ -23,16 +23,6 @@ export function ticktickSecretReady(
   return { ok: false, error: "请填写 Client Secret 后再连接" };
 }
 
-export function primaryProviderHasKey(
-  primary: string,
-  status: { opencodeGo: boolean; openai: boolean; custom: boolean },
-): boolean {
-  if (primary === "opencode-go") return status.opencodeGo;
-  if (primary === "openai") return status.openai;
-  if (primary === "custom") return status.custom;
-  return false;
-}
-
 export function oauthErrorMessage(raw: string): string {
   const lower = raw.toLowerCase();
   if (

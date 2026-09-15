@@ -6,6 +6,8 @@ import {
   normalizeProjectRole,
   ticktickSyncButtonLabel,
   ticktickSyncErrorMessage,
+  ticktickTaskTimeLabel,
+  groupTicktickTodayTasks,
 } from "./ticktickBoard";
 
 describe("normalizeProjectRole", () => {
@@ -56,5 +58,66 @@ describe("columnRoleKey", () => {
   it("scopes a column id to its project", () => {
     expect(columnRoleKey("p1", "today")).toBe("p1:today");
     expect(columnRoleKey("p1", "today")).not.toBe(columnRoleKey("p2", "today"));
+  });
+});
+
+describe("groupTicktickTodayTasks", () => {
+  it("buckets titles by mapped role and skips unknown roles", () => {
+    const groups = groupTicktickTodayTasks([
+      {
+        id: "1",
+        title: "主线稿",
+        role: "mainline",
+        start: 100,
+        end: 200,
+        allDay: false,
+      },
+      {
+        id: "2",
+        title: "全天杂项",
+        role: "chore",
+        start: 0,
+        end: 86400,
+        allDay: true,
+      },
+      {
+        id: "3",
+        title: "不该出现",
+        role: "core",
+        start: 100,
+        end: 200,
+        allDay: false,
+      },
+    ]);
+    expect(groups.mainline.map((t) => t.title)).toEqual(["主线稿"]);
+    expect(groups.chore.map((t) => t.title)).toEqual(["全天杂项"]);
+    expect(groups.side).toEqual([]);
+    expect(groups.longterm).toEqual([]);
+  });
+});
+
+describe("ticktickTaskTimeLabel", () => {
+  it("says 全天 for all-day tasks and a clock range otherwise", () => {
+    expect(
+      ticktickTaskTimeLabel({
+        id: "1",
+        title: "a",
+        role: "mainline",
+        start: 0,
+        end: 86400,
+        allDay: true,
+      }),
+    ).toBe("全天");
+    const start = Date.UTC(2026, 8, 15, 7, 0, 0) / 1000;
+    const end = Date.UTC(2026, 8, 15, 8, 0, 0) / 1000;
+    const label = ticktickTaskTimeLabel({
+      id: "2",
+      title: "b",
+      role: "mainline",
+      start,
+      end,
+      allDay: false,
+    });
+    expect(label).toMatch(/^\d{2}:\d{2}–\d{2}:\d{2}$/);
   });
 });

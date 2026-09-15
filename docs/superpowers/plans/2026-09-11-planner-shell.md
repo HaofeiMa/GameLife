@@ -21,8 +21,8 @@
 - 商店单事务；同一 `redemption_id` 不双扣；同时最多一段未结束的能量娱乐会话。
 - 无系统通知、不申请通知权限、无音效。Habitica GPL 资源不用。
 - `document_path` 不得从窗口标题伪造。
-- 改 `src-tauri/`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife` 必须编译并跑过。
-- 改 `gamelife-core`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core`。
+- 改 `src-tauri/`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife` 必须编译并跑过。
+- 改 `gamelife-core`：`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core`。
 - 改 `src/`：`npx vitest run --dir src`。
 - 测试禁止新增 `std::env::set_var("HOME", …)`。
 - 界面中文。能量在 UI 称「能量」，账本字段仍是 `xp_delta`。不出现 Quest、不出现时间轴导航。
@@ -186,7 +186,7 @@ fn align_snaps_to_900() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core task::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core task::`
 
 Expected: FAIL（module 不存在或函数未定义）
 
@@ -196,7 +196,7 @@ Expected: FAIL（module 不存在或函数未定义）
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core task::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core task::`
 
 Expected: PASS
 
@@ -286,7 +286,7 @@ fn garbage_stays_unscheduled() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core task_parse::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core task_parse::`
 
 Expected: FAIL
 
@@ -296,7 +296,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core task_parse::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core task_parse::`
 
 Expected: PASS
 
@@ -366,7 +366,7 @@ fn existing_core_tick_unchanged() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core ledger::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core ledger::`
 
 Expected: FAIL on new tests
 
@@ -376,7 +376,7 @@ Expected: FAIL on new tests
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core ledger::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core ledger::`
 
 Expected: PASS
 
@@ -472,7 +472,7 @@ fn apply_mainline_sets_core() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core task_ai::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core task_ai::`
 
 Expected: FAIL
 
@@ -482,7 +482,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core`
 
 Expected: PASS（整包，因 JudgeOutput 字段变更）
 
@@ -545,7 +545,7 @@ tasks: &[TaskSnapshot { id: "t1".into(), title: "HDP".into(), role: ListRole::Ma
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core judge::tests::empty_tasks_zero_credit_even_with_quest_evidence`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core judge::tests::empty_tasks_zero_credit_even_with_quest_evidence`
 
 Expected: FAIL（仍按 quest 发币）或编译失败缺 `tasks`
 
@@ -555,7 +555,7 @@ Expected: FAIL（仍按 quest 发币）或编译失败缺 `tasks`
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife-core`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife-core`
 
 Expected: PASS
 
@@ -636,7 +636,7 @@ fn migrate_v2_adds_task_tables_and_seed_wishes() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- db::tests::migrate_v2_adds_task_tables_and_seed_wishes`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- db::tests::migrate_v2_adds_task_tables_and_seed_wishes`
 
 Expected: FAIL
 
@@ -646,7 +646,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- db::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- db::`
 
 Expected: PASS
 
@@ -706,7 +706,7 @@ fn side_seconds_insert_discount_ticks() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- resolve::tests::side_seconds_insert_discount_ticks`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- resolve::tests::side_seconds_insert_discount_ticks`
 
 Expected: FAIL
 
@@ -716,7 +716,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife`
 
 Expected: PASS
 
@@ -793,7 +793,7 @@ fn empty_summary_means_skip() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- text_ai::`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- text_ai::`
 
 Expected: FAIL
 
@@ -803,7 +803,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife`
+Run: `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife`
 
 Expected: PASS
 
@@ -995,7 +995,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npx vitest run --dir src` 与 `CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife -- commands::`
+Run: `npx vitest run --dir src` 与 `CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife -- commands::`
 
 Expected: PASS（若 commands 测试因 WeekView 字段失败则一并修夹具）
 
@@ -1059,7 +1059,7 @@ Expected: FAIL
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run --dir src`  
-`CARGO_TARGET_DIR=/Volumes/MobileSSD/Program/My/GameLife/target cargo test --offline -p gamelife`
+`CARGO_TARGET_DIR=/Volumes/MobileSSD/MyProjects/GameLife/target cargo test --offline -p gamelife`
 
 Expected: PASS
 

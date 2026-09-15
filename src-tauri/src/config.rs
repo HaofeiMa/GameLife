@@ -10,7 +10,11 @@ use crate::scheduler::{app_support_dir, ScreenshotRetention};
 pub const PROVIDER_OPENCODE_GO: &str = "opencode-go";
 pub const PROVIDER_OPENAI: &str = "openai";
 pub const PROVIDER_CUSTOM: &str = "custom";
+pub const PROVIDER_CODEX: &str = "codex";
 pub const PROVIDER_NONE: &str = "none";
+pub const KIND_CUSTOM: &str = "custom";
+pub const KIND_CODEX: &str = "codex";
+pub const DEFAULT_CODEX_MODEL: &str = "gpt-5.4";
 
 pub const THEME_SYSTEM: &str = "system";
 
@@ -21,6 +25,9 @@ pub const SCOPE_SAMPLES: &str = "samples";
 #[serde(rename_all = "camelCase")]
 pub struct VisionProviderSettings {
     pub id: String,
+    /// `"custom"` | `"codex"`. Empty means a pre-migration preset.
+    #[serde(default)]
+    pub kind: String,
     pub base_url: String,
     pub model: String,
 }
@@ -136,7 +143,7 @@ fn default_primary_provider() -> String {
 }
 
 fn default_fallback_provider() -> String {
-    PROVIDER_OPENAI.into()
+    PROVIDER_CODEX.into()
 }
 
 fn default_true() -> bool {
@@ -155,22 +162,132 @@ pub fn default_vision_providers() -> Vec<VisionProviderSettings> {
     vec![
         VisionProviderSettings {
             id: PROVIDER_OPENCODE_GO.into(),
+            kind: KIND_CUSTOM.into(),
             base_url: "https://opencode.ai/zen/go/v1".into(),
             model: "deepseek-v4-flash-vision-exp".into(),
         },
         VisionProviderSettings {
-            id: PROVIDER_OPENAI.into(),
-            base_url: std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
-            model: std::env::var("OPENAI_VISION_MODEL")
-                .unwrap_or_else(|_| "gpt-4o-mini".into()),
-        },
-        VisionProviderSettings {
-            id: PROVIDER_CUSTOM.into(),
+            id: PROVIDER_CODEX.into(),
+            kind: KIND_CODEX.into(),
             base_url: String::new(),
-            model: String::new(),
+            model: DEFAULT_CODEX_MODEL.into(),
         },
     ]
+}
+
+pub fn is_codex_provider(p: &VisionProviderSettings) -> bool {
+    let kind = p.kind.trim();
+    if kind == KIND_CODEX {
+        return true;
+    }
+    if kind == KIND_CUSTOM {
+        return false;
+    }
+    p.id == PROVIDER_OPENAI || p.id == PROVIDER_CODEX
+}
+
+fn mapped_provider_id(id: &str) -> &str {
+    if id == PROVIDER_OPENAI {
+        PROVIDER_CODEX
+    } else {
+        id
+    }
+}
+
+fn as_codex(p: &VisionProviderSettings) -> VisionProviderSettings {
+    let model = if p.model.trim().is_empty() || p.model == "gpt-4o-mini" {
+        DEFAULT_CODEX_MODEL
+    } else {
+        p.model.as_str()
+    };
+    VisionProviderSettings {
+        id: PROVIDER_CODEX.into(),
+        kind: KIND_CODEX.into(),
+        base_url: String::new(),
+        model: model.into(),
+    }
+}
+
+fn as_custom(p: &VisionProviderSettings) -> VisionProviderSettings {
+    VisionProviderSettings {
+        id: p.id.clone(),
+        kind: KIND_CUSTOM.into(),
+        base_url: p.base_url.clone(),
+        model: p.model.clone(),
+    }
+}
+
+fn normalize_one(p: &VisionProviderSettings) -> VisionProviderSettings {
+    if is_codex_provider(p) {
+        as_codex(p)
+    } else {
+        as_custom(p)
+    }
+}
+
+fn kinds_already_set(providers: &[VisionProviderSettings]) -> bool {
+    !providers.is_empty() && providers.iter().all(|p| !p.kind.trim().is_empty())
+}
+
+/// Rebuild the ordered API panel list from an old primary/fallback + three-slot config.
+pub fn migrate_vision_providers(
+    providers: &[VisionProviderSettings],
+    primary: &str,
+    fallback: &str,
+) -> Vec<VisionProviderSettings> {
+    if kinds_already_set(providers) {
+        return providers.to_vec();
+    }
+    let mut rest: Vec<VisionProviderSettings> = providers
+        .iter()
+        .map(normalize_one)
+        .filter(|p| {
+            if p.kind != KIND_CUSTOM || p.id != PROVIDER_CUSTOM {
+                return true;
+            }
+            !p.base_url.trim().is_empty() || !p.model.trim().is_empty()
+        })
+        .collect();
+    let mut seen_codex = false;
+    rest.retain(|p| {
+        if p.kind != KIND_CODEX {
+            return true;
+        }
+        if seen_codex {
+            return false;
+        }
+        seen_codex = true;
+        true
+    });
+    let mut ordered = Vec::new();
+    for wanted in [mapped_provider_id(primary), mapped_provider_id(fallback)] {
+        if wanted.is_empty() || wanted == PROVIDER_NONE {
+            continue;
+        }
+        if let Some(i) = rest.iter().position(|p| p.id == wanted) {
+            ordered.push(rest.remove(i));
+        }
+    }
+    ordered.append(&mut rest);
+    ordered
+}
+
+pub fn normalize_vision_providers(settings: &mut AppSettings) {
+    settings.vision_providers = migrate_vision_providers(
+        &settings.vision_providers,
+        &settings.primary_provider,
+        &settings.fallback_provider,
+    );
+    settings.primary_provider = settings
+        .vision_providers
+        .first()
+        .map(|p| p.id.clone())
+        .unwrap_or_default();
+    settings.fallback_provider = settings
+        .vision_providers
+        .get(1)
+        .map(|p| p.id.clone())
+        .unwrap_or_else(|| PROVIDER_NONE.into());
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -203,15 +320,10 @@ pub fn default_settings() -> AppSettings {
 }
 
 pub fn with_vision_defaults(mut settings: AppSettings) -> AppSettings {
-    for preset in default_vision_providers() {
-        if !settings
-            .vision_providers
-            .iter()
-            .any(|p| p.id == preset.id)
-        {
-            settings.vision_providers.push(preset);
-        }
+    if settings.vision_providers.is_empty() {
+        settings.vision_providers = default_vision_providers();
     }
+    normalize_vision_providers(&mut settings);
     if settings.primary_provider.trim().is_empty() {
         settings.primary_provider = default_primary_provider();
     }
@@ -272,7 +384,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn old_config_json_gets_vision_preset_defaults() {
+    fn old_config_json_gets_custom_then_codex_defaults() {
         let json = r#"{
             "screenshotRetention":"none",
             "sampleKeepDays":7,
@@ -287,20 +399,77 @@ mod tests {
         let s = with_vision_defaults(parsed);
         assert_eq!(s.trusted_apps, vec!["Cursor"]);
         assert_eq!(s.primary_provider, PROVIDER_OPENCODE_GO);
-        assert_eq!(s.fallback_provider, PROVIDER_OPENAI);
-        assert!(s
-            .vision_providers
-            .iter()
-            .any(|p| p.id == PROVIDER_OPENCODE_GO));
-        assert!(s.vision_providers.iter().any(|p| p.id == PROVIDER_OPENAI));
-        assert!(s.vision_providers.iter().any(|p| p.id == PROVIDER_CUSTOM));
-        let go = s
-            .vision_providers
-            .iter()
-            .find(|p| p.id == PROVIDER_OPENCODE_GO)
-            .unwrap();
+        assert_eq!(s.fallback_provider, PROVIDER_CODEX);
+        assert_eq!(s.vision_providers.len(), 2);
+        assert_eq!(s.vision_providers[0].id, PROVIDER_OPENCODE_GO);
+        assert_eq!(s.vision_providers[0].kind, KIND_CUSTOM);
+        assert_eq!(s.vision_providers[1].id, PROVIDER_CODEX);
+        assert_eq!(s.vision_providers[1].kind, KIND_CODEX);
+        let go = &s.vision_providers[0];
         assert_eq!(go.base_url, "https://opencode.ai/zen/go/v1");
         assert_eq!(go.model, "deepseek-v4-flash-vision-exp");
+    }
+
+    #[test]
+    fn old_three_slot_config_drops_empty_custom_and_promotes_openai_to_codex() {
+        let parsed: AppSettings = serde_json::from_str(
+            r#"{
+            "screenshotRetention":"none",
+            "sampleKeepDays":7,
+            "loginAtStartup":true,
+            "trustedApps":[],
+            "distractionRules":[],
+            "sideProjectRules":[],
+            "readingApps":[],
+            "neverCaptureApps":[],
+            "primaryProvider":"opencode-go",
+            "fallbackProvider":"openai",
+            "visionProviders":[
+                {"id":"opencode-go","baseUrl":"https://opencode.ai/zen/go/v1","model":"deepseek-v4-flash-vision-exp"},
+                {"id":"openai","baseUrl":"https://api.openai.com/v1","model":"gpt-4o-mini"},
+                {"id":"custom","baseUrl":"","model":""}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let s = with_vision_defaults(parsed);
+        assert_eq!(
+            s.vision_providers
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["opencode-go", "codex"]
+        );
+        assert_eq!(s.vision_providers[1].kind, KIND_CODEX);
+        assert!(s.vision_providers[1].base_url.is_empty());
+    }
+
+    #[test]
+    fn already_kinded_list_keeps_user_order() {
+        let parsed: AppSettings = serde_json::from_str(
+            r#"{
+            "screenshotRetention":"none",
+            "sampleKeepDays":7,
+            "loginAtStartup":true,
+            "trustedApps":[],
+            "distractionRules":[],
+            "sideProjectRules":[],
+            "readingApps":[],
+            "neverCaptureApps":[],
+            "primaryProvider":"opencode-go",
+            "fallbackProvider":"codex",
+            "visionProviders":[
+                {"id":"codex","kind":"codex","baseUrl":"","model":"gpt-5.4"},
+                {"id":"opencode-go","kind":"custom","baseUrl":"https://opencode.ai/zen/go/v1","model":"x"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let s = with_vision_defaults(parsed);
+        assert_eq!(s.vision_providers[0].id, PROVIDER_CODEX);
+        assert_eq!(s.vision_providers[1].id, PROVIDER_OPENCODE_GO);
+        assert_eq!(s.primary_provider, PROVIDER_CODEX);
+        assert_eq!(s.fallback_provider, PROVIDER_OPENCODE_GO);
     }
 
     #[test]

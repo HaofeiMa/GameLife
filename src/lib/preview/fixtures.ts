@@ -252,23 +252,26 @@ export function previewDayView(day: string): DayView {
           {
             id: "tt-1",
             title: "写设计说明",
-            role: "core",
+            role: "mainline",
             start: DAY_START + 9 * 3600,
             end: DAY_START + 11 * 3600,
+            allDay: false,
           },
           {
             id: "tt-2",
             title: "代码评审",
-            role: "core",
+            role: "mainline",
             start: DAY_START + 14 * 3600,
             end: DAY_START + 15 * 3600,
+            allDay: false,
           },
           {
             id: "tt-3",
             title: "组会",
-            role: "admin",
+            role: "chore",
             start: DAY_START + 16 * 3600,
             end: DAY_START + 17 * 3600,
+            allDay: false,
           },
         ]
       : [],
@@ -407,19 +410,20 @@ export const PREVIEW_SETTINGS: AppSettings = {
   readingApps: ["Preview", "Zotero"],
   neverCaptureApps: [],
   primaryProvider: "opencode-go",
-  fallbackProvider: "openai",
+  fallbackProvider: "codex",
   visionProviders: [
     {
       id: "opencode-go",
+      kind: "custom",
       baseUrl: "https://opencode.ai/zen/go/v1",
       model: "deepseek-v4-flash-vision-exp",
     },
     {
-      id: "openai",
-      baseUrl: "https://api.openai.com/v1",
-      model: "gpt-4o-mini",
+      id: "codex",
+      kind: "codex",
+      baseUrl: "",
+      model: "gpt-5.4",
     },
-    { id: "custom", baseUrl: "", model: "" },
   ],
   showRailLabels: true,
   silentStart: true,
@@ -430,15 +434,15 @@ export const PREVIEW_SETTINGS: AppSettings = {
     admin: "",
     entertainment: "",
   },
-  ticktickClientId: "",
-  ticktickProjectRoles: {},
-  ticktickColumnRoles: {},
+  ticktickClientId: "preview-client",
+  ticktickProjectRoles: { "proj-work": "mainline" },
+  ticktickColumnRoles: { "proj-work:col-today": "mainline" },
   theme: "light",
   sync: {
     enabled: true,
     target: "webdav",
-    url: "https://dav.example.com/dav/",
-    username: "haofei",
+    url: "https://dav.jianguoyun.com/dav/",
+    username: "demo@example.com",
     bucket: "",
     region: "auto",
     remotePath: "gamelife",
@@ -453,7 +457,7 @@ export const PREVIEW_SETTINGS: AppSettings = {
 export const PREVIEW_SYNC_STATUS: SyncStatus = {
   enabled: true,
   target: "webdav",
-  url: "https://dav.example.com/dav/",
+  url: "https://dav.jianguoyun.com/dav/",
   scope: "aggregate",
   intervalMinutes: 60,
   lastAt: 1789372197,
@@ -478,9 +482,8 @@ export const PREVIEW_SYNC_STATUS: SyncStatus = {
 };
 
 export const PREVIEW_KEY_STATUS: ProviderKeyStatus = {
-  opencodeGo: false,
-  openai: false,
-  custom: false,
+  keys: { "opencode-go": true },
+  codexLoggedIn: true,
 };
 
 export const PREVIEW_PERMISSIONS: PermissionStatus = {
@@ -496,10 +499,28 @@ export const PREVIEW_OBSERVATION: ObservationStatus = {
 };
 
 export const PREVIEW_TICKTICK_STATUS: TickTickStatus = {
-  connected: false,
-  lastSync: null,
+  connected: true,
+  lastSync: DAY_START + 9 * 3600,
   lastError: null,
-  secretPresent: false,
+  secretPresent: true,
+  todayTasks: [
+    {
+      id: "tt-1",
+      title: "写设计说明",
+      role: "mainline",
+      start: DAY_START + 9 * 3600,
+      end: DAY_START + 11 * 3600,
+      allDay: false,
+    },
+    {
+      id: "tt-3",
+      title: "组会",
+      role: "chore",
+      start: DAY_START,
+      end: DAY_START + 86400,
+      allDay: true,
+    },
+  ],
 };
 
 export const PREVIEW_TICKTICK_TREE: TickTickTree = {

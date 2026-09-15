@@ -4,7 +4,6 @@ import {
   isTicktickAuthorizeUrl,
   oauthErrorMessage,
   oauthWaitingHint,
-  primaryProviderHasKey,
   policySignature,
   SECRET_MASK,
   secretToPersist,
@@ -43,25 +42,6 @@ describe("ticktickSecretReady", () => {
 
   it("lets connect proceed with a stored secret and no new draft", () => {
     expect(ticktickSecretReady("", true)).toEqual({ ok: true, toWrite: null });
-  });
-});
-
-describe("primaryProviderHasKey", () => {
-  it("checks the selected provider, not a sibling", () => {
-    expect(
-      primaryProviderHasKey("opencode-go", {
-        opencodeGo: true,
-        openai: false,
-        custom: false,
-      }),
-    ).toBe(true);
-    expect(
-      primaryProviderHasKey("opencode-go", {
-        opencodeGo: false,
-        openai: true,
-        custom: false,
-      }),
-    ).toBe(false);
   });
 });
 

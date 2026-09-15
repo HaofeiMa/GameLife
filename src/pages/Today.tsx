@@ -38,7 +38,7 @@ import {
   resolvedActivityMinutes,
   weekdayLabel,
 } from "../lib/calendar";
-import { ticktickRoleLabel } from "../lib/ticktickBoard";
+import { ticktickRoleLabel, ticktickTaskTimeLabel } from "../lib/ticktickBoard";
 import { compareDayTasks, COMPARE_STATE_LABEL, type DayComparison } from "../lib/taskCompare";
 import { categoryColor, categoryOf, type CategoryKey } from "../lib/theme";
 import { cn } from "../lib/utils";
@@ -956,7 +956,7 @@ export function Today() {
               <div className="px-[18px] pt-0.5 pb-3.5">
                 {ticktickTasks.length === 0 ? (
                   <EmptyLine>
-                    当天没有带时段的 TickTick 任务。可在设置里点同步任务。
+                    当天没有 TickTick 任务。可在设置里点同步任务。
                   </EmptyLine>
                 ) : (
                   <ul className="space-y-2">
@@ -968,7 +968,7 @@ export function Today() {
                         <div className="min-w-0">
                           <p className="truncate">{task.title}</p>
                           <p className="text-[11px] tabular-nums text-muted-foreground">
-                            {hm(task.start)}–{hm(task.end)}
+                            {ticktickTaskTimeLabel(task)}
                           </p>
                         </div>
                         <Badge tone="outline">{ticktickRoleLabel(task.role)}</Badge>

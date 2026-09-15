@@ -1,7 +1,7 @@
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Local, TimeZone};
 use gamelife_core::{
-    align_range, role_from_hashtag, ticktick_overlapping_count, ticktick_snapshot_id, ListRole,
-    TimedTask, MAX_JUDGMENT_TASKS,
+    align_range, role_from_hashtag, ticktick_day_list, ticktick_overlapping_count,
+    ticktick_snapshot_id, ListRole, TimedTask, MAX_JUDGMENT_TASKS,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -124,29 +124,72 @@ pub fn mapped_task_role(
 }
 
 fn parse_ticktick_datetime(raw: &str) -> Option<DateTime<FixedOffset>> {
-    DateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%z").ok()
+    const FMTS: &[&str] = &[
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S%.f%z",
+    ];
+    for fmt in FMTS {
+        if let Ok(dt) = DateTime::parse_from_str(raw, fmt) {
+            return Some(dt);
+        }
+    }
+    None
+}
+
+fn local_day_bounds(ts: i64, tz: &FixedOffset) -> Option<(i64, i64)> {
+    let date = tz.timestamp_opt(ts, 0).single()?.date_naive();
+    let start = tz
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
+        .single()?
+        .timestamp();
+    let next = date.succ_opt()?;
+    let end = tz
+        .from_local_datetime(&next.and_hms_opt(0, 0, 0)?)
+        .single()?
+        .timestamp();
+    Some((start, end))
+}
+
+fn local_fixed_offset() -> FixedOffset {
+    *Local::now().offset()
 }
 
 pub fn open_task_to_timed(
     task: &OpenTask,
     fallback_role: ListRole,
-    _default_tz: &FixedOffset,
+    local_tz: &FixedOffset,
 ) -> Option<TimedTask> {
-    if task.status == Some(2) || task.is_all_day == Some(true) {
+    if task.status == Some(2) {
         return None;
     }
-    let start_raw = task.start_date.as_deref()?;
-    let due_raw = task.due_date.as_deref()?;
-    let start = parse_ticktick_datetime(start_raw)?;
-    let end = parse_ticktick_datetime(due_raw)?;
-    let (start, end) = align_range(start.timestamp(), end.timestamp());
+    let role = role_from_hashtag(&task.title, fallback_role);
+    let start_dt = task.start_date.as_deref().and_then(parse_ticktick_datetime);
+    let due_dt = task.due_date.as_deref().and_then(parse_ticktick_datetime);
+    let clocked = start_dt
+        .zip(due_dt)
+        .filter(|_| task.is_all_day != Some(true));
+    if let Some((start, end)) = clocked {
+        let (start, end) = align_range(start.timestamp(), end.timestamp());
+        return Some(TimedTask {
+            id: ticktick_snapshot_id(&task.id),
+            title: task.title.clone(),
+            role,
+            start,
+            end,
+            done: false,
+            all_day: false,
+        });
+    }
+    let ts = due_dt.or(start_dt)?.timestamp();
+    let (start, end) = local_day_bounds(ts, local_tz)?;
     Some(TimedTask {
         id: ticktick_snapshot_id(&task.id),
         title: task.title.clone(),
-        role: role_from_hashtag(&task.title, fallback_role),
+        role,
         start,
         end,
         done: false,
+        all_day: true,
     })
 }
 
@@ -232,7 +275,7 @@ pub fn sync_result_from_cache(
     day_end: i64,
 ) -> TickTickSyncResult {
     TickTickSyncResult {
-        count: cache.len(),
+        count: ticktick_day_list(cache, day_start, day_end).len(),
         truncated: ticktick_overlapping_count(cache, day_start, day_end) > MAX_JUDGMENT_TASKS,
     }
 }
@@ -516,8 +559,8 @@ pub fn replace_ticktick_cache(
         .map_err(crate::db_error::map_rusqlite)?;
     for row in rows {
         conn.execute(
-            "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at, all_day)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 row.id,
                 "",
@@ -525,7 +568,8 @@ pub fn replace_ticktick_cache(
                 crate::db::list_role_sql(row.role),
                 row.start,
                 row.end,
-                fetched_at
+                fetched_at,
+                if row.all_day { 1 } else { 0 }
             ],
         )
         .map_err(crate::db_error::map_rusqlite)?;
@@ -551,10 +595,11 @@ pub fn load_ticktick_cache(
     conn: &rusqlite::Connection,
 ) -> Result<Vec<TimedTask>, crate::db_error::DbOpError> {
     let mut stmt = conn
-        .prepare("SELECT id, title, role, start, end FROM ticktick_cache")
+        .prepare("SELECT id, title, role, start, end, COALESCE(all_day, 0) FROM ticktick_cache")
         .map_err(crate::db_error::map_rusqlite)?;
     let rows = stmt
         .query_map([], |r| {
+            let all_day: i64 = r.get(5)?;
             Ok(TimedTask {
                 id: r.get(0)?,
                 title: r.get(1)?,
@@ -562,6 +607,7 @@ pub fn load_ticktick_cache(
                 start: r.get(3)?,
                 end: r.get(4)?,
                 done: false,
+                all_day: all_day != 0,
             })
         })
         .map_err(crate::db_error::map_rusqlite)?;
@@ -760,7 +806,7 @@ pub fn sync_projects(
     let fetched = fetch_all_projects(http, access)?;
     let listed: Vec<String> = fetched.iter().map(|p| p.id.clone()).collect();
     let targets = sync_target_project_ids(&maps.project_roles, &maps.column_roles, &listed);
-    let tz = FixedOffset::east_opt(0).unwrap();
+    let tz = local_fixed_offset();
     let mut timed = Vec::new();
     for project in &fetched {
         if !targets.iter().any(|id| id == &project.id) {
@@ -881,16 +927,17 @@ pub fn set_ticktick_backoff(
 mod tests {
     use super::*;
     use crate::db::migrate;
+    use chrono::TimeZone;
     use gamelife_core::ListRole;
     use rusqlite::Connection;
     use std::collections::BTreeMap;
 
     #[test]
-    fn skips_all_day_and_completed() {
+    fn skips_completed_keeps_all_day_and_clock() {
         let json = r#"{"tasks":[
       {"id":"1","title":"A","status":0,"startDate":"2026-09-13T02:00:00+0000","dueDate":"2026-09-13T03:00:00+0000","timeZone":"UTC"},
       {"id":"2","title":"B","status":2,"startDate":"2026-09-13T02:00:00+0000","dueDate":"2026-09-13T03:00:00+0000"},
-      {"id":"3","title":"C","status":0,"isAllDay":true,"startDate":"2026-09-13T00:00:00+0000","dueDate":"2026-09-13T00:00:00+0000"}
+      {"id":"3","title":"C","status":0,"isAllDay":true,"startDate":"2026-09-13T00:00:00.000+0000","dueDate":"2026-09-13T00:00:00.000+0000"}
     ]}"#;
         let tasks = parse_open_project_data_tasks(json).unwrap();
         let tz = chrono::FixedOffset::east_opt(0).unwrap();
@@ -898,9 +945,76 @@ mod tests {
             .iter()
             .filter_map(|t| open_task_to_timed(t, ListRole::Mainline, &tz))
             .collect();
-        assert_eq!(timed.len(), 1);
+        assert_eq!(timed.len(), 2);
         assert_eq!(timed[0].id, "tt-1");
-        assert!(timed[0].end > timed[0].start);
+        assert!(!timed[0].all_day);
+        assert_eq!(timed[1].id, "tt-3");
+        assert!(timed[1].all_day);
+        let day = tz.with_ymd_and_hms(2026, 9, 13, 0, 0, 0).unwrap();
+        assert_eq!(timed[1].start, day.timestamp());
+        assert_eq!(timed[1].end, day.timestamp() + 86_400);
+    }
+
+    #[test]
+    fn parses_fractional_seconds_and_due_only() {
+        let tz = chrono::FixedOffset::east_opt(0).unwrap();
+        let clock = OpenTask {
+            id: "1".into(),
+            project_id: None,
+            title: "笔试".into(),
+            status: Some(0),
+            start_date: Some("2026-09-15T07:00:00.000+0000".into()),
+            due_date: Some("2026-09-15T08:00:00.000+0000".into()),
+            time_zone: Some("UTC".into()),
+            is_all_day: Some(false),
+            column_id: None,
+        };
+        let got = open_task_to_timed(&clock, ListRole::Mainline, &tz).unwrap();
+        assert!(!got.all_day);
+        let start = tz.with_ymd_and_hms(2026, 9, 15, 7, 0, 0).unwrap().timestamp();
+        let end = tz.with_ymd_and_hms(2026, 9, 15, 8, 0, 0).unwrap().timestamp();
+        assert_eq!(got.start, start);
+        assert_eq!(got.end, end);
+
+        let due_only = OpenTask {
+            id: "2".into(),
+            project_id: None,
+            title: "全天稿".into(),
+            status: Some(0),
+            start_date: None,
+            due_date: Some("2026-09-15T16:00:00.000+0000".into()),
+            time_zone: Some("UTC".into()),
+            is_all_day: None,
+            column_id: None,
+        };
+        let all_day = open_task_to_timed(&due_only, ListRole::Chore, &tz).unwrap();
+        assert!(all_day.all_day);
+        assert_eq!(all_day.role, ListRole::Chore);
+        let day = tz.with_ymd_and_hms(2026, 9, 15, 0, 0, 0).unwrap();
+        assert_eq!(all_day.start, day.timestamp());
+        assert_eq!(all_day.end, day.timestamp() + 86_400);
+    }
+
+    #[test]
+    fn all_day_uses_local_calendar_not_utc_date() {
+        // TickTick stores a China Sep 15 all-day task as 16:00Z on the 14th.
+        let cst = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        let t = OpenTask {
+            id: "15".into(),
+            project_id: None,
+            title: "全天".into(),
+            status: Some(0),
+            start_date: Some("2026-09-14T16:00:00.000+0000".into()),
+            due_date: Some("2026-09-14T16:00:00.000+0000".into()),
+            time_zone: Some("Asia/Shanghai".into()),
+            is_all_day: Some(true),
+            column_id: None,
+        };
+        let got = open_task_to_timed(&t, ListRole::Mainline, &cst).unwrap();
+        assert!(got.all_day);
+        let day = cst.with_ymd_and_hms(2026, 9, 15, 0, 0, 0).unwrap();
+        assert_eq!(got.start, day.timestamp());
+        assert_eq!(got.end, day.timestamp() + 86_400);
     }
 
     #[test]
@@ -1150,6 +1264,7 @@ mod tests {
             start,
             end,
             done: false,
+            all_day: false,
         }
     }
 
@@ -1167,7 +1282,7 @@ mod tests {
 
         let none_today: Vec<_> = (0..21).map(|i| timed(i, 100_000, 101_000)).collect();
         let none = sync_result_from_cache(&none_today, 0, 86400);
-        assert_eq!(none.count, 21);
+        assert_eq!(none.count, 0);
         assert!(
             !none.truncated,
             "cache≥21 with 0 overlapping timed tasks must not be truncated"

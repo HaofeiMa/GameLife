@@ -1,16 +1,17 @@
 ---
-description: App-shell rules for DB, sampler, capture, secrets, and Tauri commands
+description: App-shell rules for DB, sampler, capture, secrets, sync, and Tauri commands
 globs: src-tauri/**/*.rs
 alwaysApply: false
 ---
 
 # src-tauri
 
-- Gate: `cargo test --offline -p gamelife` must **run**. `--no-run` is not enough.
-- Secrets live in `secrets.json` via `keychain.rs` (mode 0600). Never write API keys or TickTick tokens into `config.json`.
+- Gate: `cargo test --offline -p gamelife` must **run**. `--no-run` is not enough. Build with Homebrew cargo; rustup is only for `tools/platform-check`.
+- Secrets live in `secrets.json` via `keychain.rs` (mode 0600). Never write API keys, TickTick tokens, or sync passwords into `config.json`.
 - `capture_context()` runs once, inside `tick_capture_impl`, immediately before `capture_window` — not on the 15s sample loop.
-- Network commands are `async`: `ticktick_tree` (only with `refresh: true`), `ticktick_sync`, OAuth begin/finish, `test_vision_provider`. Opening 设置 reads the cached tree.
-- `resolve_slot` writes `slots` + `ledger` + `app_day_stats` / `host_day_stats` in one transaction. A `final` slot must not lack its rollup.
+- Network commands are `async`: `ticktick_tree` (only with `refresh: true`), `ticktick_sync`, OAuth begin/finish, `test_vision_provider`, `sync_now_cmd`, `sync_test_connection`, `sync_list_devices`, `sync_restore`. Opening 设置 reads cached TickTick tree and `sync_status`.
+- `resolve_slot` writes `slots` + `app_day_stats` / `host_day_stats` in one transaction. Ledger rows only in `Immediate` mode. A `final` slot must not lack its rollup.
 - Swallow only `DbOpError::AlreadyApplied` on ledger inserts. IO/FULL/CORRUPT must surface.
 - `macos/browser.rs` is the only remaining `osascript` (Chrome / Safari / Arc URL). Everything else is native API.
-- Tests must not call `std::env::set_var("HOME", …)`.
+- `user_version` stays 3. `device_id` is an additive column + insert trigger. Do not run `db::migrate` on another device's snapshot.
+- Tests must not call `std::env::set_var("HOME", …)`. Inject directories (as `SyncContext.scratch` already does).
