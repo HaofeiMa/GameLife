@@ -275,36 +275,26 @@ pub fn clear_schedule(task: &mut Task) {
     task.remind_offsets.clear();
 }
 
-pub fn in_judgment_set(task: &Task, _list: &TaskList, day_start: i64, day_end: i64) -> bool {
-    if task.done {
-        return false;
-    }
-    let (Some(start), Some(end)) = (task.start, task.end) else {
-        return false;
-    };
-    start < day_end && end > day_start
+pub fn in_judgment_set(task: &Task, _list: &TaskList, _day_start: i64, _day_end: i64) -> bool {
+    !task.done
 }
 
 pub fn judgment_tasks<'a>(
     tasks: &'a [Task],
     lists: &[TaskList],
-    day_start: i64,
-    day_end: i64,
+    _day_start: i64,
+    _day_end: i64,
 ) -> Result<Vec<&'a Task>, TaskListError> {
     validate_lists(lists)?;
-    let selected: Vec<&Task> = tasks
+    Ok(tasks
         .iter()
         .filter(|task| {
             lists
                 .iter()
                 .find(|l| l.id == task.list_id)
-                .is_some_and(|list| in_judgment_set(task, list, day_start, day_end))
+                .is_some_and(|list| in_judgment_set(task, list, 0, 0))
         })
-        .collect();
-    if selected.len() > MAX_JUDGMENT_TASKS {
-        return Err(TaskListError::TooManyJudgment);
-    }
-    Ok(selected)
+        .collect())
 }
 
 pub fn schedule_from_drop(ts: i64) -> (i64, i64) {
@@ -323,30 +313,18 @@ pub fn move_range_to_day(
     align_range(new_day_start + offset, new_day_start + offset + dur)
 }
 
+pub fn snapshots_open(tasks: &[Task], lists: &[TaskList]) -> Vec<TaskSnapshot> {
+    let selected: Vec<&Task> = tasks.iter().filter(|task| !task.done).collect();
+    snapshot_of(&selected, lists)
+}
+
 pub fn snapshots_for_day(
     tasks: &[Task],
     lists: &[TaskList],
-    day_start: i64,
-    day_end: i64,
+    _day_start: i64,
+    _day_end: i64,
 ) -> Vec<TaskSnapshot> {
-    match judgment_tasks(tasks, lists, day_start, day_end) {
-        Ok(selected) => snapshot_of(&selected, lists),
-        Err(TaskListError::TooManyJudgment) => {
-            let mut selected: Vec<&Task> = tasks
-                .iter()
-                .filter(|task| {
-                    lists
-                        .iter()
-                        .find(|l| l.id == task.list_id)
-                        .is_some_and(|list| in_judgment_set(task, list, day_start, day_end))
-                })
-                .collect();
-            selected.sort_by_key(|t| (t.start, t.id.as_str()));
-            selected.truncate(MAX_JUDGMENT_TASKS);
-            snapshot_of(&selected, lists)
-        }
-        Err(_) => Vec::new(),
-    }
+    snapshots_open(tasks, lists)
 }
 
 pub fn snapshot_of(tasks: &[&Task], lists: &[TaskList]) -> Vec<TaskSnapshot> {
@@ -370,12 +348,92 @@ pub fn parse_task_snapshot_json(json: &str) -> Result<Vec<TaskSnapshot>, String>
 pub fn tokenize_title(title: &str) -> Vec<String> {
     title
         .split(|c: char| {
-            c.is_whitespace() || matches!(c, ',' | '，' | '。' | '；' | ';' | '|' | '/' | '\\')
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    ',' | '，' | '。' | '；' | ';' | '|' | '/' | '\\' | '.' | '_' | '-'
+                )
         })
         .map(str::trim)
         .filter(|tok| tok.chars().count() >= 2 && !tok.contains('#'))
         .map(|tok| tok.to_string())
         .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchRole {
+    None,
+    Mixed,
+    Role(ListRole),
+}
+
+fn token_hit(title: &str, fields: &[&str]) -> bool {
+    let title_l = title.to_lowercase();
+    let title_toks = tokenize_title(title);
+    for tok in &title_toks {
+        let needle = tok.to_lowercase();
+        if fields.iter().any(|f| f.to_lowercase().contains(&needle)) {
+            return true;
+        }
+    }
+    for field in fields {
+        for tok in tokenize_title(field) {
+            if title_l.contains(&tok.to_lowercase()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn match_task_role(
+    app: &str,
+    title: &str,
+    url: Option<&str>,
+    document_path: Option<&str>,
+    snapshots: &[TaskSnapshot],
+) -> MatchRole {
+    let mut fields: Vec<&str> = vec![app, title];
+    if let Some(u) = url {
+        fields.push(u);
+    }
+    if let Some(p) = document_path {
+        fields.push(p);
+    }
+    let mut roles = Vec::new();
+    for snap in snapshots {
+        if token_hit(&snap.title, &fields) && !roles.contains(&snap.role) {
+            roles.push(snap.role);
+        }
+    }
+    match roles.as_slice() {
+        [] => MatchRole::None,
+        [role] => MatchRole::Role(*role),
+        _ => MatchRole::Mixed,
+    }
+}
+
+pub fn select_prompt_snapshots(all: &[TaskSnapshot], haystacks: &[&str]) -> Vec<TaskSnapshot> {
+    let mut out = Vec::new();
+    let mut used = std::collections::BTreeSet::new();
+    let hit = |s: &TaskSnapshot| token_hit(&s.title, haystacks);
+    for s in all.iter().filter(|s| hit(s)) {
+        if used.insert(s.id.clone()) {
+            out.push(s.clone());
+        }
+    }
+    for s in all.iter().filter(|s| s.role == ListRole::Mainline) {
+        if used.insert(s.id.clone()) {
+            out.push(s.clone());
+        }
+    }
+    for s in all {
+        if used.insert(s.id.clone()) {
+            out.push(s.clone());
+        }
+    }
+    out.truncate(MAX_JUDGMENT_TASKS);
+    out
 }
 
 pub fn snapshot_evidence_quests(snapshots: &[TaskSnapshot]) -> Vec<crate::types::Quest> {
@@ -502,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn longterm_without_window_is_not_judged() {
+    fn longterm_without_window_is_judged() {
         let lists = lists();
         let t = Task {
             id: "a".into(),
@@ -517,7 +575,7 @@ mod tests {
             remind_offsets: vec![],
         };
         let day0 = 1_778_083_200;
-        assert!(!in_judgment_set(&t, &lists[2], day0, day0 + 86400));
+        assert!(in_judgment_set(&t, &lists[2], day0, day0 + 86400));
     }
 
     #[test]
@@ -536,10 +594,7 @@ mod tests {
         let many: Vec<Task> = (0..21)
             .map(|i| timed(&format!("{i}"), PRESET_MAINLINE_ID, 1000, 1900))
             .collect();
-        assert_eq!(
-            judgment_tasks(&many, &lists, 0, 86400),
-            Err(TaskListError::TooManyJudgment)
-        );
+        assert_eq!(judgment_tasks(&many, &lists, 0, 86400).unwrap().len(), 21);
     }
 
     #[test]
@@ -622,7 +677,7 @@ mod tests {
             .map(|i| timed(&format!("{i}"), PRESET_MAINLINE_ID, 1000 + i, 1900))
             .collect();
         let snaps = snapshots_for_day(&many, &lists, 0, 86400);
-        assert_eq!(snaps.len(), 20);
+        assert_eq!(snaps.len(), 21);
     }
 
     #[test]
@@ -835,5 +890,81 @@ mod tests {
         assert!(remind_offsets_ok(&[0, 15, 60]));
         assert!(!remind_offsets_ok(&[7]));
         assert!(!remind_offsets_ok(&[0, 0]));
+    }
+
+    #[test]
+    fn snapshots_open_includes_unscheduled_and_other_days() {
+        let lists = lists();
+        let open = Task {
+            id: "u".into(),
+            list_id: PRESET_MAINLINE_ID.into(),
+            title: "inbox".into(),
+            done: false,
+            start: None,
+            end: None,
+            range: None,
+            sort: 0,
+            repeat: RepeatRule::None,
+            remind_offsets: vec![],
+        };
+        let snaps = snapshots_open(&[open], &lists);
+        assert_eq!(snaps.len(), 1);
+    }
+
+    #[test]
+    fn match_same_role_two_titles() {
+        let snaps = vec![
+            TaskSnapshot {
+                id: "a".into(),
+                title: "写论文方法节".into(),
+                role: ListRole::Mainline,
+            },
+            TaskSnapshot {
+                id: "b".into(),
+                title: "写论文讨论".into(),
+                role: ListRole::Mainline,
+            },
+        ];
+        assert_eq!(
+            match_task_role("Overleaf", "方法节.tex", None, None, &snaps),
+            MatchRole::Role(ListRole::Mainline)
+        );
+    }
+
+    #[test]
+    fn match_mixed_roles_is_mixed() {
+        let snaps = vec![
+            TaskSnapshot {
+                id: "a".into(),
+                title: "报销单".into(),
+                role: ListRole::Chore,
+            },
+            TaskSnapshot {
+                id: "b".into(),
+                title: "论文".into(),
+                role: ListRole::Mainline,
+            },
+        ];
+        assert_eq!(
+            match_task_role("Preview", "论文 报销单", None, None, &snaps),
+            MatchRole::Mixed
+        );
+    }
+
+    #[test]
+    fn prompt_snapshots_cap_prefers_hits() {
+        let mut all = Vec::new();
+        for i in 0..25 {
+            all.push(TaskSnapshot {
+                id: format!("{i}"),
+                title: format!("任务{i}"),
+                role: ListRole::Side,
+            });
+        }
+        all[24].title = "HDP train".into();
+        all[24].role = ListRole::Mainline;
+        let picked = select_prompt_snapshots(&all, &["HDP train.py"]);
+        assert_eq!(picked.len(), 20);
+        assert!(picked.iter().any(|s| s.id == "24"));
     }
 }
