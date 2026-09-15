@@ -15,7 +15,7 @@ use gamelife_core::{
     heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity,
     new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
     recompute_streak, schedule_capture, settle_outcome, slot_end_exclusive, slot_start,
-    spans_for_slot, ticktick_judgment_set, vision_quest_label, apply_category_match,
+    spans_for_slot, vision_quest_label, apply_category_match,
     apply_task_match, parse_category_match_json, parse_task_match_json, deltas_from_slot,
     CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest,
     QuestDraft, QuestListError,
@@ -317,7 +317,6 @@ pub fn ensure_slot(
         )
         .optional()
         .map_err(map_rusqlite)?;
-    maybe_refresh_ticktick_cache(conn);
     let snapshot_json = pin_task_snapshot_json(conn, day);
     conn.execute(
         "INSERT INTO slots (day, slot_start, capture_scheduled_at, capture_status, quest_version_id, policy_version_id, credited_core_seconds, observed_seconds, task_snapshot_json)
@@ -338,74 +337,26 @@ pub fn ensure_slot(
     Ok(())
 }
 
-pub fn maybe_refresh_ticktick_cache(conn: &Connection) {
-    if cfg!(test) {
-        return;
-    }
-    let Ok(access) = crate::keychain::get_ticktick_access_token() else {
-        return;
-    };
-    let fetched = crate::ticktick::ticktick_fetched_at(conn).ok().flatten();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    if crate::ticktick::cache_is_fresh(fetched, now) {
-        return;
-    }
-    if let Some(until) = crate::ticktick::ticktick_backoff_until(conn)
-        .ok()
-        .flatten()
-    {
-        if now < until {
-            return;
-        }
-    }
-    if !crate::ticktick::try_begin_ticktick_sync() {
-        return;
-    }
-    let roles = crate::config::load_settings();
-    let maps = crate::ticktick::TickTickRoleMaps::from_settings(&roles);
-    let result = crate::ticktick::sync_projects(
-        &crate::ticktick::ReqwestTickTick::slot_start(),
-        conn,
-        &maps,
-        &access,
-        now,
-    );
-    crate::ticktick::end_ticktick_sync();
-    match result {
-        Ok(_) => {}
-        Err(e) => {
-            if e == "429" {
-                let _ = crate::ticktick::set_ticktick_backoff(conn, now + 60);
-            }
-            eprintln!("ticktick refresh at slot start failed: {e}");
-        }
-    }
-}
-
 fn pin_task_snapshot_json(conn: &Connection, day: &str) -> String {
     let Some(day_start) = start_of_named_day(day) else {
         return "[]".into();
     };
     let day_end = end_of_local_day(day_start);
-    let cache = match crate::ticktick::load_ticktick_cache(conn) {
+    let lists = match crate::db::load_task_lists(conn) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("load_ticktick_cache failed while pinning snapshot: {e:?}");
+            eprintln!("load_task_lists failed while pinning snapshot: {e:?}");
             return "[]".into();
         }
     };
-    let selected = ticktick_judgment_set(&cache, day_start, day_end);
-    let snaps: Vec<TaskSnapshot> = selected
-        .iter()
-        .map(|task| TaskSnapshot {
-            id: task.id.clone(),
-            title: task.title.clone(),
-            role: task.role,
-        })
-        .collect();
+    let tasks = match crate::db::load_tasks(conn) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("load_tasks failed while pinning snapshot: {e:?}");
+            return "[]".into();
+        }
+    };
+    let snaps = gamelife_core::snapshots_for_day(&tasks, &lists, day_start, day_end);
     serde_json::to_string(&snaps).unwrap_or_else(|_| "[]".into())
 }
 
@@ -2367,19 +2318,16 @@ mod tests {
     }
 
     #[test]
-    fn pin_snapshot_uses_ticktick_cache_not_local_tasks() {
+    fn pin_snapshot_uses_local_tasks_not_ticktick_cache() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         let day = "2026-09-13";
         let day_start = start_of_named_day(day).expect("named day");
         let start = day_start + 10 * 3600;
         let end = start + 3600;
-        let _ = conn.execute(
-            "INSERT INTO task_lists (id, name, sort, role) VALUES ('list-mainline','主线任务',0,'mainline')",
-            [],
-        );
         conn.execute(
-            "INSERT INTO tasks (id, list_id, title, done, start, end) VALUES ('task-local','list-mainline','LOCAL',0, ?1, ?2)",
+            "INSERT INTO tasks (id, list_id, title, done, start, end)
+             VALUES ('task-local','list-mainline','LOCAL',0, ?1, ?2)",
             params![start, end],
         )
         .unwrap();
@@ -2390,8 +2338,32 @@ mod tests {
         )
         .unwrap();
         let json = pin_task_snapshot_json(&conn, day);
-        assert!(json.contains("tt-9"), "{json}");
-        assert!(!json.contains("LOCAL"), "{json}");
+        assert!(json.contains("LOCAL"), "{json}");
+        assert!(!json.contains("tt-9"), "{json}");
+    }
+
+    #[test]
+    fn pin_snapshot_skips_done_and_unscheduled() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-13";
+        let day_start = start_of_named_day(day).expect("named day");
+        let start = day_start + 10 * 3600;
+        let end = start + 3600;
+        conn.execute(
+            "INSERT INTO tasks (id, list_id, title, done, start, end)
+             VALUES ('a','list-mainline','DONE',1, ?1, ?2)",
+            params![start, end],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, list_id, title, done, start, end)
+             VALUES ('b','list-mainline','INBOX',0, NULL, NULL)",
+            [],
+        )
+        .unwrap();
+        let json = pin_task_snapshot_json(&conn, day);
+        assert_eq!(json, "[]");
     }
 
     #[test]
