@@ -110,12 +110,21 @@ export async function previewInvoke<T>(
             start: number | null;
             end: number | null;
             range: string | null;
+            sort?: number;
+            repeat?: string;
+            remindOffsets?: number[];
           }
         | undefined;
       if (task) {
-        const i = PREVIEW_TASK_BOARD.tasks.findIndex((row) => row.id === task.id);
-        if (i >= 0) PREVIEW_TASK_BOARD.tasks[i] = task;
-        else PREVIEW_TASK_BOARD.tasks.push(task);
+        const row = {
+          ...task,
+          sort: task.sort ?? PREVIEW_TASK_BOARD.tasks.length,
+          repeat: task.repeat ?? "none",
+          remindOffsets: task.remindOffsets ?? [],
+        };
+        const i = PREVIEW_TASK_BOARD.tasks.findIndex((t) => t.id === task.id);
+        if (i >= 0) PREVIEW_TASK_BOARD.tasks[i] = row;
+        else PREVIEW_TASK_BOARD.tasks.push(row);
       }
       return undefined as T;
     }
@@ -175,8 +184,36 @@ export async function previewInvoke<T>(
         const end = args?.end;
         task.start = typeof start === "number" ? start : null;
         task.end = typeof end === "number" ? end : null;
+        if (task.start == null && task.end == null) {
+          task.repeat = "none";
+          task.remindOffsets = [];
+        }
       }
       return undefined as T;
+    }
+    case "reorder_task": {
+      const task = PREVIEW_TASK_BOARD.tasks.find(
+        (row) => row.id === String(args?.id ?? ""),
+      );
+      if (task) {
+        task.listId = String(args?.listId ?? task.listId);
+        if (typeof args?.sort === "number") task.sort = args.sort;
+      }
+      return undefined as T;
+    }
+    case "duplicate_task": {
+      const src = PREVIEW_TASK_BOARD.tasks.find(
+        (row) => row.id === String(args?.id ?? ""),
+      );
+      if (!src) return undefined as T;
+      const copy = {
+        ...src,
+        id: `task-preview-${Date.now()}`,
+        done: false,
+        sort: Math.max(0, ...PREVIEW_TASK_BOARD.tasks.map((t) => t.sort)) + 1,
+      };
+      PREVIEW_TASK_BOARD.tasks.push(copy);
+      return copy as T;
     }
     default:
       console.warn(`[preview] unhandled invoke: ${cmd}`);

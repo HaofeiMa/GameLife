@@ -81,6 +81,9 @@ export const PREVIEW_TASK_BOARD: TaskBoardView = {
       start: DAY_START + 10 * 3600,
       end: DAY_START + 12 * 3600,
       range: null,
+      sort: 0,
+      repeat: "none",
+      remindOffsets: [],
     },
     {
       id: "task-preview-2",
@@ -90,6 +93,9 @@ export const PREVIEW_TASK_BOARD: TaskBoardView = {
       start: null,
       end: null,
       range: null,
+      sort: 1,
+      repeat: "none",
+      remindOffsets: [],
     },
   ],
 };

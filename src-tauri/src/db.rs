@@ -427,7 +427,7 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
     rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
 }
 
-fn parse_repeat(raw: &str) -> RepeatRule {
+pub(crate) fn parse_repeat(raw: &str) -> RepeatRule {
     match raw {
         "daily" => RepeatRule::Daily,
         "weekly" => RepeatRule::Weekly,

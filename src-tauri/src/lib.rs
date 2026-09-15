@@ -44,7 +44,7 @@ use commands::{
     rename_list, report_misclassification, request_screen_recording, reschedule_task, review_slot,
     save_settings, set_api_key, set_provider_api_key, set_quests, sync_list_devices, sync_now_cmd,
     sync_restore, sync_set_credentials, sync_status, sync_test_connection, test_vision_provider,
-    toggle_task_done, update_wish, upsert_task,
+    toggle_task_done, duplicate_task, reorder_task, update_wish, upsert_task,
 };
 
 use tauri::{
@@ -113,6 +113,8 @@ pub fn run() {
             list_task_board,
             upsert_task,
             toggle_task_done,
+            reorder_task,
+            duplicate_task,
             parse_task_line_cmd,
             create_list,
             rename_list,

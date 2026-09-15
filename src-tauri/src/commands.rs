@@ -9,12 +9,12 @@ use tauri::State;
 use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
 use gamelife_core::{
-    align_range, can_delete_list, distraction_runs, first_core_hour, format_estimated_minutes,
-    hit_rate, is_lock_screen_app, is_weekday, matched_quest_index,
-    matches_app_identity, parse_list_role_strict, parse_task_line, streak_at_risk, sum_activity,
-    validate_lists, wow_delta, xp_shop_unlocked, ParseContext, Policy,
-    QuestDraft, RepeatRule, Task, TaskList, TaskListError, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
-    PRESET_MAINLINE_ID, SLOT_SECS,
+    align_range, can_delete_list, clear_schedule, distraction_runs, first_core_hour,
+    format_estimated_minutes, hit_rate, is_lock_screen_app, is_weekday, matched_quest_index,
+    matches_app_identity, parse_list_role_strict, parse_task_line, remind_offsets_ok,
+    spawn_after_complete, streak_at_risk, sum_activity, validate_lists, wow_delta,
+    xp_shop_unlocked, ParseContext, Policy, QuestDraft, RepeatRule, Task, TaskList, TaskListError,
+    TaskRange, CHEST_SECS, GOLD_DAY_SECS, PRESET_MAINLINE_ID, SLOT_SECS,
 };
 
 use crate::config::{
@@ -266,6 +266,12 @@ pub struct TaskView {
     pub start: Option<i64>,
     pub end: Option<i64>,
     pub range: Option<String>,
+    #[serde(default)]
+    pub sort: i64,
+    #[serde(default)]
+    pub repeat: String,
+    #[serde(default)]
+    pub remind_offsets: Vec<i64>,
 }
 
 #[derive(Serialize)]
@@ -1883,6 +1889,9 @@ fn task_to_view(task: Task) -> TaskView {
             Some(TaskRange::Month) => Some("month".into()),
             None => None,
         },
+        sort: task.sort,
+        repeat: crate::db::repeat_sql(task.repeat).into(),
+        remind_offsets: task.remind_offsets,
     }
 }
 
@@ -1899,9 +1908,9 @@ fn view_to_task(view: &TaskView) -> Task {
             Some("month") => Some(TaskRange::Month),
             _ => None,
         },
-        sort: 0,
-        repeat: RepeatRule::None,
-        remind_offsets: vec![],
+        sort: view.sort,
+        repeat: crate::db::parse_repeat(&view.repeat),
+        remind_offsets: view.remind_offsets.clone(),
     }
 }
 
@@ -1943,6 +1952,48 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
     Ok(())
 }
 
+fn new_task_id() -> String {
+    let mut buf = [0u8; 16];
+    getrandom::getrandom(&mut buf).expect("rng");
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn next_list_sort(conn: &Connection, list_id: &str) -> Result<i64, DbOpError> {
+    let max: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(sort) FROM tasks WHERE list_id = ?1",
+            params![list_id],
+            |r| r.get(0),
+        )
+        .map_err(crate::db_error::map_rusqlite)?;
+    Ok(max.unwrap_or(-1) + 1)
+}
+
+fn upsert_task_in(conn: &Connection, task: TaskView) -> Result<(), DbOpError> {
+    let title = task.title.trim();
+    if title.is_empty() {
+        return Err(DbOpError::Rejected("empty_title".into()));
+    }
+    let mut stored = view_to_task(&task);
+    stored.title = title.to_string();
+    if !remind_offsets_ok(&stored.remind_offsets) {
+        return Err(DbOpError::Rejected("bad_remind".into()));
+    }
+    if stored.start.is_none() && stored.repeat != RepeatRule::None {
+        return Err(DbOpError::Rejected("repeat_needs_schedule".into()));
+    }
+    let existing = load_tasks(conn)?;
+    let is_new = stored.id.trim().is_empty() || !existing.iter().any(|t| t.id == stored.id);
+    if stored.id.trim().is_empty() {
+        stored.id = new_task_id();
+    }
+    if is_new && stored.sort == 0 {
+        stored.sort = next_list_sort(conn, &stored.list_id)?;
+    }
+    persist_task(conn, &stored)?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn list_task_board() -> Result<TaskBoardView, String> {
     with_db_err(|conn| {
@@ -1955,28 +2006,52 @@ pub fn list_task_board() -> Result<TaskBoardView, String> {
 
 #[tauri::command]
 pub fn upsert_task(task: TaskView) -> Result<(), String> {
-    with_db_err(|conn| {
-        let title = task.title.trim();
-        if title.is_empty() {
-            return Err(DbOpError::Rejected("empty_title".into()));
-        }
-        let mut stored = view_to_task(&task);
-        stored.title = title.to_string();
-        if stored.id.trim().is_empty() {
-            stored.id = format!("task-{}", now_secs());
-        }
-        persist_task(conn, &stored)?;
-        Ok(())
-    })
+    with_db_err(|conn| upsert_task_in(conn, task))
 }
 
 #[tauri::command]
 pub fn toggle_task_done(id: String, done: bool) -> Result<(), String> {
+    with_db_err(|conn| toggle_task_done_in(conn, &id, done, now_secs()))
+}
+
+/// Completing a repeating task inserts the next occurrence. Uncomplete only
+/// flips this row — it does not delete a spawned successor.
+fn toggle_task_done_in(
+    conn: &Connection,
+    id: &str,
+    done: bool,
+    now: i64,
+) -> Result<(), DbOpError> {
+    let mut tasks = load_tasks(conn)?;
+    let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
+        return Err(DbOpError::Fatal("task missing".into()));
+    };
+    let was_done = task.done;
+    task.done = done;
+    let stored = task.clone();
+    persist_task(conn, &stored)?;
+    if done && !was_done {
+        let day = day_str_for_ts(now);
+        let today_start = start_of_named_day(&day).unwrap_or(0);
+        let sort = next_list_sort(conn, &stored.list_id)?;
+        if let Some(next) = spawn_after_complete(&stored, new_task_id(), today_start, sort) {
+            persist_task(conn, &next)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reorder_task(id: String, list_id: String, sort: i64) -> Result<(), String> {
     with_db_err(|conn| {
+        let lists = load_task_lists(conn)?;
+        if !lists.iter().any(|l| l.id == list_id) {
+            return Err(DbOpError::Rejected("list_missing".into()));
+        }
         let n = conn
             .execute(
-                "UPDATE tasks SET done = ?1 WHERE id = ?2",
-                params![done as i64, id],
+                "UPDATE tasks SET list_id = ?1, sort = ?2 WHERE id = ?3",
+                params![list_id, sort, id],
             )
             .map_err(crate::db_error::map_rusqlite)?;
         if n == 0 {
@@ -1984,6 +2059,24 @@ pub fn toggle_task_done(id: String, done: bool) -> Result<(), String> {
         }
         Ok(())
     })
+}
+
+#[tauri::command]
+pub fn duplicate_task(id: String) -> Result<TaskView, String> {
+    with_db_err(|conn| duplicate_task_in(conn, &id))
+}
+
+fn duplicate_task_in(conn: &Connection, id: &str) -> Result<TaskView, DbOpError> {
+    let tasks = load_tasks(conn)?;
+    let Some(src) = tasks.iter().find(|t| t.id == id) else {
+        return Err(DbOpError::Fatal("task missing".into()));
+    };
+    let mut copy = src.clone();
+    copy.id = new_task_id();
+    copy.done = false;
+    copy.sort = next_list_sort(conn, &copy.list_id)?;
+    persist_task(conn, &copy)?;
+    Ok(task_to_view(copy))
 }
 
 #[tauri::command(rename = "parse_task_line")]
@@ -2123,20 +2216,22 @@ pub fn move_task(id: String, list_id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn reschedule_task(id: String, start: Option<i64>, end: Option<i64>) -> Result<(), String> {
     with_db_err(|conn| {
-        let (start, end) = match (start, end) {
-            (None, None) => (None, None),
-            (Some(s), Some(e)) => {
-                let (s, e) = align_range(s, e);
-                (Some(s), Some(e))
-            }
-            _ => return Err(DbOpError::Rejected("need_start_and_end".into())),
-        };
         let mut tasks = load_tasks(conn)?;
         let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
             return Err(DbOpError::Fatal("task missing".into()));
         };
-        task.start = start;
-        task.end = end;
+        match (start, end) {
+            (None, None) => clear_schedule(task),
+            (Some(s), Some(e)) => {
+                let (s, e) = align_range(s, e);
+                task.start = Some(s);
+                task.end = Some(e);
+            }
+            _ => return Err(DbOpError::Rejected("need_start_and_end".into())),
+        }
+        if task.start.is_none() && task.repeat != RepeatRule::None {
+            return Err(DbOpError::Rejected("repeat_needs_schedule".into()));
+        }
         let stored = task.clone();
         persist_task(conn, &stored)?;
         Ok(())
@@ -2660,6 +2755,68 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    fn sample_view(id: &str, title: &str) -> TaskView {
+        TaskView {
+            id: id.into(),
+            list_id: PRESET_MAINLINE_ID.into(),
+            title: title.into(),
+            done: false,
+            start: None,
+            end: None,
+            range: None,
+            sort: 0,
+            repeat: "none".into(),
+            remind_offsets: vec![],
+        }
+    }
+
+    #[test]
+    fn completing_daily_inserts_one_future() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let today = start_of_named_day("2026-09-15").expect("named day");
+        let now = today + 10 * 3600;
+        persist_task(
+            &conn,
+            &Task {
+                id: "a".into(),
+                list_id: PRESET_MAINLINE_ID.into(),
+                title: "写方法节".into(),
+                done: false,
+                start: Some(today - 86400 + 10 * 3600),
+                end: Some(today - 86400 + 11 * 3600),
+                range: None,
+                sort: 0,
+                repeat: RepeatRule::Daily,
+                remind_offsets: vec![],
+            },
+        )
+        .unwrap();
+        toggle_task_done_in(&conn, "a", true, now).unwrap();
+        let tasks = load_tasks(&conn).unwrap();
+        let old = tasks.iter().find(|t| t.id == "a").unwrap();
+        assert!(old.done);
+        let spawned = tasks.iter().find(|t| t.id != "a").expect("spawned next");
+        assert!(!spawned.done);
+        assert!(spawned.start.unwrap() >= today);
+        assert_eq!(spawned.repeat, RepeatRule::Daily);
+
+        toggle_task_done_in(&conn, "a", false, now).unwrap();
+        let after = load_tasks(&conn).unwrap();
+        assert_eq!(after.len(), 2);
+        assert!(!after.iter().find(|t| t.id == "a").unwrap().done);
+    }
+
+    #[test]
+    fn upsert_more_than_twenty_open_tasks_ok() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        for i in 0..21 {
+            upsert_task_in(&conn, sample_view(&format!("t{i}"), "x")).unwrap();
+        }
+        assert_eq!(load_tasks(&conn).unwrap().len(), 21);
     }
 
     #[test]

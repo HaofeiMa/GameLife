@@ -9,6 +9,9 @@ function task(partial: Partial<TaskView> & Pick<TaskView, "id" | "title">): Task
     start: null,
     end: null,
     range: null,
+    sort: 0,
+    repeat: "none",
+    remindOffsets: [],
     ...partial,
   };
 }

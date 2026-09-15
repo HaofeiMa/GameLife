@@ -46,6 +46,9 @@ export interface TaskView {
   start: number | null;
   end: number | null;
   range: string | null;
+  sort: number;
+  repeat: string;
+  remindOffsets: number[];
 }
 
 export interface TaskBoardView {
@@ -393,6 +396,14 @@ export function upsertTask(task: TaskView): Promise<void> {
 
 export function toggleTaskDone(id: string, done: boolean): Promise<void> {
   return invoke("toggle_task_done", { id, done });
+}
+
+export function reorderTask(id: string, listId: string, sort: number): Promise<void> {
+  return invoke("reorder_task", { id, listId, sort });
+}
+
+export function duplicateTask(id: string): Promise<TaskView> {
+  return invoke("duplicate_task", { id });
 }
 
 export function parseTaskLine(

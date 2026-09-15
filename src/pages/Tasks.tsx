@@ -391,6 +391,9 @@ export function Tasks() {
         start: scheduled ? parsed!.start : null,
         end: scheduled ? parsed!.end : null,
         range: null,
+        sort: 0,
+        repeat: "none",
+        remindOffsets: [],
       });
       await refresh();
       setLine("");
@@ -1099,6 +1102,9 @@ function CalendarDayColumn({
           start: preview.start,
           end: preview.end,
           range: null,
+          sort: 0,
+          repeat: "none",
+          remindOffsets: [],
         }
       : null;
   const shown = previewTask ? [...visible, previewTask] : visible;
