@@ -42,7 +42,7 @@ macOS 关窗口只是藏到托盘，从托盘选「退出」才会结束进程�
 
 ## 安装（macOS）
 
-1. 从 [Releases](https://github.com/HaofeiMa/GameLife/releases) 下载 `GameLife_0.1.0_aarch64.dmg`（Apple Silicon）。
+1. 从 [Releases](https://github.com/HaofeiMa/GameLife/releases) 下载 `GameLife_0.2.0_aarch64.dmg`（Apple Silicon）。
 2. 拖到「应用程序」。
 3. 打开后到 **系统设置 → 隐私与安全性**，允许：
    - **辅助功能** — 读前台应用和窗口标题
