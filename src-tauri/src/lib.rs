@@ -1,15 +1,13 @@
+pub mod codex_auth;
 pub mod commands;
 pub mod config;
-pub mod codex_auth;
 // Per-platform observation backends. `observe::imp` is the seam the app sees;
 // these are only named here so their files are compiled on their own platform.
-#[cfg(all(unix, not(target_os = "macos")))]
-pub mod linux;
-#[cfg(windows)]
-pub mod windows;
 pub mod db;
 pub mod db_error;
 pub mod keychain;
+#[cfg(all(unix, not(target_os = "macos")))]
+pub mod linux;
 pub mod macos;
 pub mod observe;
 pub mod platform;
@@ -21,15 +19,16 @@ pub mod sync;
 pub mod text_ai;
 pub mod ticktick;
 pub mod vision;
+#[cfg(windows)]
+pub mod windows;
 
-pub use db::{
-    app_db_path, insert_ledger, migrate, open, write_heartbeat,
-    write_heartbeat_at_default_path,
-};
 pub use db::redeem as db_redeem;
-pub use scheduler::ensure_slot;
+pub use db::{
+    app_db_path, insert_ledger, migrate, open, write_heartbeat, write_heartbeat_at_default_path,
+};
 pub use db_error::{map_rusqlite, DbOpError};
 pub use resolve::resolve_slot;
+pub use scheduler::ensure_slot;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -39,15 +38,14 @@ use crate::config::{load_settings, show_window_on_launch};
 use sampler::PauseControl;
 
 use commands::{
-    archive_wish, continue_previous_workday, create_list, create_wish, end_today, freeze,
-    get_app_report, get_month_report, get_permission_status, get_rhythm_report, get_settings,
-    observation_status,
-    get_today, get_day_view, get_week, has_api_key, list_tasks, parse_task_line_cmd,
-    open_privacy_settings, provider_key_status, redeem, report_misclassification, request_screen_recording, review_slot,
-    save_settings, set_api_key, set_provider_api_key, set_quests, test_vision_provider, ticktick_begin_oauth,
-    sync_list_devices, sync_now_cmd, sync_restore, sync_set_credentials, sync_status,
-    sync_test_connection,
-    ticktick_disconnect, ticktick_finish_oauth, ticktick_set_client_secret,
+    archive_wish, continue_previous_workday, create_list, create_wish, delete_list, delete_task,
+    end_today, freeze, get_app_report, get_day_view, get_month_report, get_permission_status,
+    get_rhythm_report, get_settings, get_today, get_week, has_api_key, list_task_board, move_task,
+    observation_status, open_privacy_settings, parse_task_line_cmd, provider_key_status, redeem,
+    rename_list, report_misclassification, request_screen_recording, reschedule_task, review_slot,
+    save_settings, set_api_key, set_provider_api_key, set_quests, sync_list_devices, sync_now_cmd,
+    sync_restore, sync_set_credentials, sync_status, sync_test_connection, test_vision_provider,
+    ticktick_begin_oauth, ticktick_disconnect, ticktick_finish_oauth, ticktick_set_client_secret,
     ticktick_status, ticktick_sync, ticktick_tree, toggle_task_done, update_wish, upsert_task,
 };
 
@@ -60,18 +58,17 @@ use tauri::{
 static ALLOW_EXIT: AtomicBool = AtomicBool::new(false);
 
 fn update_tray_tooltip(app: &AppHandle) {
-    let label = crate::commands::tray_tooltip_for_today_db().unwrap_or_else(|_| "0h 0m / 8h".into());
+    let label =
+        crate::commands::tray_tooltip_for_today_db().unwrap_or_else(|_| "0h 0m / 8h".into());
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(&label));
     }
 }
 
 fn start_tray_tooltip_updater(app: AppHandle) {
-    thread::spawn(move || {
-        loop {
-            update_tray_tooltip(&app);
-            thread::sleep(Duration::from_secs(30));
-        }
+    thread::spawn(move || loop {
+        update_tray_tooltip(&app);
+        thread::sleep(Duration::from_secs(30));
     });
 }
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
@@ -80,7 +77,11 @@ fn tray_template_icon() -> Option<tauri::image::Image<'static>> {
     let img = image::load_from_memory(include_bytes!("../icons/trayTemplate.png")).ok()?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
-    Some(tauri::image::Image::new_owned(rgba.into_raw(), width, height))
+    Some(tauri::image::Image::new_owned(
+        rgba.into_raw(),
+        width,
+        height,
+    ))
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -111,11 +112,16 @@ pub fn run() {
             get_rhythm_report,
             get_app_report,
             set_quests,
-            list_tasks,
+            list_task_board,
             upsert_task,
             toggle_task_done,
             parse_task_line_cmd,
             create_list,
+            rename_list,
+            delete_list,
+            delete_task,
+            move_task,
+            reschedule_task,
             continue_previous_workday,
             review_slot,
             report_misclassification,
@@ -163,14 +169,10 @@ pub fn run() {
             }
 
             let open_i = MenuItem::with_id(app, "open", "打开", true, None::<&str>)?;
-            let pause_30_i =
-                MenuItem::with_id(app, "pause_30", "暂停 30", true, None::<&str>)?;
-            let pause_60_i =
-                MenuItem::with_id(app, "pause_60", "暂停 60", true, None::<&str>)?;
-            let pause_90_i =
-                MenuItem::with_id(app, "pause_90", "暂停 90", true, None::<&str>)?;
-            let end_day_i =
-                MenuItem::with_id(app, "end_day", "结束今天", true, None::<&str>)?;
+            let pause_30_i = MenuItem::with_id(app, "pause_30", "暂停 30", true, None::<&str>)?;
+            let pause_60_i = MenuItem::with_id(app, "pause_60", "暂停 60", true, None::<&str>)?;
+            let pause_90_i = MenuItem::with_id(app, "pause_90", "暂停 90", true, None::<&str>)?;
+            let end_day_i = MenuItem::with_id(app, "end_day", "结束今天", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,

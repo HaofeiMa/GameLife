@@ -6,17 +6,20 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use gamelife_core::{
-    distraction_runs, first_core_hour, format_estimated_minutes, hit_rate, is_weekday,
-    judgment_tasks, matched_quest_index, matches_app_identity, parse_task_line, streak_at_risk,
-    sum_activity, ticktick_day_list, validate_lists, wow_delta, xp_shop_unlocked, ListRole,
-    ParseContext, Policy, QuestDraft, Task, TaskList, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
-    PRESET_MAINLINE_ID, SLOT_SECS,
-};
 use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
+use gamelife_core::{
+    align_range, can_delete_list, distraction_runs, first_core_hour, format_estimated_minutes,
+    hit_rate, is_lock_screen_app, is_weekday, judgment_tasks, matched_quest_index,
+    matches_app_identity, parse_list_role_strict, parse_task_line, streak_at_risk, sum_activity,
+    ticktick_day_list, validate_lists, wow_delta, xp_shop_unlocked, ParseContext, Policy,
+    QuestDraft, Task, TaskList, TaskListError, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
+    PRESET_MAINLINE_ID, SLOT_SECS,
+};
 
-use crate::config::{load_settings, retention_from_str, save_settings as write_settings_file, AppSettings};
+use crate::config::{
+    load_settings, retention_from_str, save_settings as write_settings_file, AppSettings,
+};
 use crate::db::{
     archive_wish as db_archive_wish, insert_wish as db_insert_wish, list_role_sql,
     load_active_session, load_task_lists, load_tasks, migrate, open, redeem as db_redeem,
@@ -30,9 +33,8 @@ use crate::macos;
 use crate::sampler::PauseControl;
 use crate::scheduler::{
     continue_previous_workday_for_day, day_str_for_ts, default_screenshot_retention,
-    list_freeze_candidates, load_policy, load_quests_for_day, previous_quest_day,
-    review_pending_slot, sampling_allowed, save_quests_for_day, start_of_named_day, end_of_local_day,
-    streak_from_db,
+    end_of_local_day, list_freeze_candidates, load_policy, load_quests_for_day, previous_quest_day,
+    review_pending_slot, sampling_allowed, save_quests_for_day, start_of_named_day, streak_from_db,
 };
 
 fn now_secs() -> i64 {
@@ -79,9 +81,7 @@ where
 }
 
 pub fn run_end_today() -> Result<(), String> {
-    with_db(|conn| {
-        crate::scheduler::end_today(conn, now_secs(), default_screenshot_retention())
-    })
+    with_db(|conn| crate::scheduler::end_today(conn, now_secs(), default_screenshot_retention()))
 }
 
 #[derive(Serialize)]
@@ -267,6 +267,13 @@ pub struct TaskView {
     pub start: Option<i64>,
     pub end: Option<i64>,
     pub range: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskBoardView {
+    pub lists: Vec<TaskListView>,
+    pub tasks: Vec<TaskView>,
 }
 
 #[derive(Serialize)]
@@ -483,11 +490,7 @@ pub fn tray_tooltip_for_today_db() -> Result<String, String> {
     })
 }
 
-pub fn tray_tooltip_for_today(
-    conn: &Connection,
-    day: &str,
-    now: i64,
-) -> Result<String, DbOpError> {
+pub fn tray_tooltip_for_today(conn: &Connection, day: &str, now: i64) -> Result<String, DbOpError> {
     let credited_seconds: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(credited_core_seconds), 0) FROM slots
@@ -496,10 +499,7 @@ pub fn tray_tooltip_for_today(
             |r| r.get(0),
         )
         .map_err(crate::db_error::map_rusqlite)?;
-    let mut label = format!(
-        "{} / 8h",
-        format_estimated_minutes(credited_seconds)
-    );
+    let mut label = format!("{} / 8h", format_estimated_minutes(credited_seconds));
     if let Some((name, _ends_at, remaining)) = load_active_session(conn, now)? {
         if let Some(mins) = tray_entertainment_minutes(remaining) {
             label = format!("{label} · {name} {mins}m");
@@ -512,11 +512,13 @@ fn load_active_entertainment(
     conn: &Connection,
     now: i64,
 ) -> Result<Option<EntertainmentView>, DbOpError> {
-    Ok(load_active_session(conn, now)?.map(|(name, ends_at, remaining_secs)| EntertainmentView {
-        name,
-        ends_at,
-        remaining_secs,
-    }))
+    Ok(
+        load_active_session(conn, now)?.map(|(name, ends_at, remaining_secs)| EntertainmentView {
+            name,
+            ends_at,
+            remaining_secs,
+        }),
+    )
 }
 
 fn load_ended_entertainment(
@@ -603,7 +605,11 @@ fn load_redemptions(conn: &Connection, now: i64) -> Result<Vec<RedemptionView>, 
             name,
             ts,
             duration_minutes,
-            kind: if energy { "energy".into() } else { "coin".into() },
+            kind: if energy {
+                "energy".into()
+            } else {
+                "coin".into()
+            },
             spent: if energy { xp_spent } else { coin_spent },
             status,
         });
@@ -646,8 +652,7 @@ fn span_bounds(kind: ReportSpan, anchor: NaiveDate) -> (NaiveDate, NaiveDate) {
             (start, start + chrono::Duration::days(6))
         }
         ReportSpan::Month => {
-            let start = NaiveDate::from_ymd_opt(anchor.year(), anchor.month(), 1)
-                .unwrap_or(anchor);
+            let start = NaiveDate::from_ymd_opt(anchor.year(), anchor.month(), 1).unwrap_or(anchor);
             let end = if anchor.month() == 12 {
                 NaiveDate::from_ymd_opt(anchor.year() + 1, 1, 1).unwrap()
                     - chrono::Duration::days(1)
@@ -907,11 +912,7 @@ struct AppAgg {
 /// afternoon *was* entertainment. Reporting 未列入 there was not just uninformative, it
 /// invited the user to file "Google Chrome" under 娱乐, which would make every Chrome
 /// window entertainment. Ties go to the rule that sits earlier in `hint_sample`.
-fn ruled_list(
-    admin: i64,
-    side: i64,
-    distraction: i64,
-) -> Option<&'static str> {
+fn ruled_list(admin: i64, side: i64, distraction: i64) -> Option<&'static str> {
     let mut best: Option<(i64, &'static str)> = None;
     for (secs, key) in [
         (distraction, "entertainment"),
@@ -959,6 +960,9 @@ fn load_app_aggregates(
     for row in rows {
         let (app, bundle_id, core, support, admin, side, distraction, away, _unobserved, protected) =
             row.map_err(crate::db_error::map_rusqlite)?;
+        if is_lock_screen_app(&app, Some(bundle_id.as_str())) {
+            continue;
+        }
         protected_total += protected;
         let entry = grouped.entry(app).or_insert((0, 0, 0, 0, 0, 0, Vec::new()));
         entry.0 += core;
@@ -1077,7 +1081,11 @@ fn peak_hours_from(by_hour: &[WeekHourRow]) -> Vec<i32> {
         .filter(|h| h.observed > 0)
         .map(|h| (h.core as f64 / h.observed as f64, h.hour))
         .collect();
-    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+    ranked.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+    });
     ranked.into_iter().take(3).map(|(_, hour)| hour).collect()
 }
 
@@ -1119,17 +1127,9 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
         .optional()
         .map_err(crate::db_error::map_rusqlite)?
         .map(|(app, title, document_path, url, bundle_id)| {
-            let quest_match = matched_quest_index(
-                &title,
-                document_path.as_deref(),
-                url.as_deref(),
-                &quests,
-            );
-            let trusted = matches_app_identity(
-                &app,
-                bundle_id.as_deref(),
-                &policy.trusted_apps,
-            );
+            let quest_match =
+                matched_quest_index(&title, document_path.as_deref(), url.as_deref(), &quests);
+            let trusted = matches_app_identity(&app, bundle_id.as_deref(), &policy.trusted_apps);
             LiveWindow {
                 app,
                 title,
@@ -1182,7 +1182,8 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
             params![day],
             |r| r.get::<_, i64>(0),
         )
-        .map_err(crate::db_error::map_rusqlite)? > 0;
+        .map_err(crate::db_error::map_rusqlite)?
+        > 0;
     let at_risk = {
         let weekday = NaiveDate::parse_from_str(day, "%Y-%m-%d")
             .map(is_weekday)
@@ -1201,17 +1202,14 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
     let freeze_candidates = list_freeze_candidates(conn)?;
     let default_freeze_date = freeze_candidates.first().cloned();
     let active_entertainment = load_active_entertainment(conn, now)?;
-    let ended_entertainment =
-        load_ended_entertainment(conn, now, active_entertainment.is_some())?;
+    let ended_entertainment = load_ended_entertainment(conn, now, active_entertainment.is_some())?;
     let ledger_tail = load_ledger_tail(conn, day)?;
     let lists = task_list_views(conn)?;
     let tasks = task_views(conn)?;
     let coin_balance: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(coin_delta), 0) FROM ledger",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COALESCE(SUM(coin_delta), 0) FROM ledger", [], |r| {
+            r.get(0)
+        })
         .map_err(crate::db_error::map_rusqlite)?;
     let activity = activity_to_minutes(&load_day_activity(conn, day)?);
     let app_top = load_app_top(conn, day, 5)?;
@@ -1256,11 +1254,7 @@ fn build_today(conn: &Connection, day: &str, now: i64) -> Result<TodayView, DbOp
     })
 }
 
-fn first_core_label_for_day(
-    conn: &Connection,
-    day: &str,
-    credited_seconds: i64,
-) -> Option<String> {
+fn first_core_label_for_day(conn: &Connection, day: &str, credited_seconds: i64) -> Option<String> {
     if credited_seconds < 900 {
         return None;
     }
@@ -1404,8 +1398,7 @@ fn load_ticktick_day_tasks(
 }
 
 fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
-    let day_start =
-        start_of_named_day(day).ok_or_else(|| DbOpError::Rejected("bad_day".into()))?;
+    let day_start = start_of_named_day(day).ok_or_else(|| DbOpError::Rejected("bad_day".into()))?;
     let day_end = end_of_local_day(day_start);
     let slots = load_today_slots(conn, day)?;
     let pending_count = slots.iter().filter(|s| s.pending).count() as i64;
@@ -1492,16 +1485,20 @@ fn build_week_from(
     now: i64,
     stats: Option<&Connection>,
 ) -> Result<WeekView, DbOpError> {
-    let today_date =
-        NaiveDate::parse_from_str(today, "%Y-%m-%d").map_err(|e| DbOpError::Fatal(e.to_string()))?;
-    let anchor_date =
-        NaiveDate::parse_from_str(anchor, "%Y-%m-%d").map_err(|e| DbOpError::Fatal(e.to_string()))?;
+    let today_date = NaiveDate::parse_from_str(today, "%Y-%m-%d")
+        .map_err(|e| DbOpError::Fatal(e.to_string()))?;
+    let anchor_date = NaiveDate::parse_from_str(anchor, "%Y-%m-%d")
+        .map_err(|e| DbOpError::Fatal(e.to_string()))?;
     let week_start = week_start_for(anchor_date);
     let week_start_str = day_str(week_start);
     // A past week runs Mon–Sun; the current week stops at today, so a
     // future day is never counted as a missed day.
     let week_end = week_start + chrono::Duration::days(6);
-    let range_end = if week_end < today_date { week_end } else { today_date };
+    let range_end = if week_end < today_date {
+        week_end
+    } else {
+        today_date
+    };
     let range_end_str = day_str(range_end);
     let mut by_day: Vec<WeekDayRow> = (0..7)
         .map(|i| {
@@ -1558,16 +1555,13 @@ fn build_week_from(
         )
         .map_err(crate::db_error::map_rusqlite)?;
     let coin_balance: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(coin_delta), 0) FROM ledger",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COALESCE(SUM(coin_delta), 0) FROM ledger", [], |r| {
+            r.get(0)
+        })
         .map_err(crate::db_error::map_rusqlite)?;
     let wishes = load_wishes(conn)?;
     let active_entertainment = load_active_entertainment(conn, now)?;
-    let ended_entertainment =
-        load_ended_entertainment(conn, now, active_entertainment.is_some())?;
+    let ended_entertainment = load_ended_entertainment(conn, now, active_entertainment.is_some())?;
     let redemptions = load_redemptions(conn, now)?;
     let this_credited: i64 = slots
         .iter()
@@ -1584,8 +1578,7 @@ fn build_week_from(
         wow_delta(this_credited / 60, last_credited / 60)
     };
     let credited_map = credited_by_day(&slots);
-    let weekday_credited =
-        weekday_credited_slice(week_start, range_end, today_date, &credited_map);
+    let weekday_credited = weekday_credited_slice(week_start, range_end, today_date, &credited_map);
     Ok(WeekView {
         core: secs_to_minutes(total.core),
         support: secs_to_minutes(total.support),
@@ -1959,8 +1952,26 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
 }
 
 #[tauri::command]
-pub fn list_tasks() -> Result<TodayView, String> {
-    get_today()
+pub fn list_task_board() -> Result<TaskBoardView, String> {
+    with_db_err(|conn| {
+        Ok(TaskBoardView {
+            lists: task_list_views(conn)?,
+            tasks: task_views(conn)?,
+        })
+    })
+}
+
+fn reject_too_many_judgment(conn: &Connection, tasks: &[Task]) -> Result<(), DbOpError> {
+    let lists = load_task_lists(conn)?;
+    let day = day_str_for_ts(now_secs());
+    let Some(day_start) = start_of_named_day(&day) else {
+        return Ok(());
+    };
+    let day_end = end_of_local_day(day_start);
+    if let Err(TaskListError::TooManyJudgment) = judgment_tasks(tasks, &lists, day_start, day_end) {
+        return Err(DbOpError::Rejected("too_many_judgment_tasks".into()));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1975,22 +1986,13 @@ pub fn upsert_task(task: TaskView) -> Result<(), String> {
         if stored.id.trim().is_empty() {
             stored.id = format!("task-{}", now_secs());
         }
-        let lists = load_task_lists(conn)?;
         let mut tasks = load_tasks(conn)?;
         if let Some(existing) = tasks.iter_mut().find(|t| t.id == stored.id) {
             *existing = stored.clone();
         } else {
             tasks.push(stored.clone());
         }
-        let day = day_str_for_ts(now_secs());
-        if let Some(day_start) = start_of_named_day(&day) {
-            let day_end = end_of_local_day(day_start);
-            if let Err(gamelife_core::TaskListError::TooManyJudgment) =
-                judgment_tasks(&tasks, &lists, day_start, day_end)
-            {
-                return Err(DbOpError::Rejected("too_many_judgment_tasks".into()));
-            }
-        }
+        reject_too_many_judgment(conn, &tasks)?;
         persist_task(conn, &stored)?;
         Ok(())
     })
@@ -2043,19 +2045,21 @@ pub fn parse_task_line_cmd(
 }
 
 #[tauri::command]
-pub fn create_list(name: String) -> Result<TaskListView, String> {
+pub fn create_list(name: String, role: String) -> Result<TaskListView, String> {
     with_db_err(|conn| {
         let name = name.trim();
         if name.is_empty() {
             return Err(DbOpError::Rejected("empty_name".into()));
         }
+        let role = parse_list_role_strict(&role)
+            .ok_or_else(|| DbOpError::Rejected("invalid_role".into()))?;
         let mut lists = load_task_lists(conn)?;
         let sort = lists.iter().map(|l| l.sort).max().unwrap_or(-1) + 1;
         let list = TaskList {
             id: format!("list-{}", now_secs()),
             name: name.to_string(),
             sort,
-            role: ListRole::Custom,
+            role,
         };
         lists.push(list.clone());
         validate_lists(&lists).map_err(|_| DbOpError::Rejected("invalid_lists".into()))?;
@@ -2070,6 +2074,101 @@ pub fn create_list(name: String) -> Result<TaskListView, String> {
             sort: list.sort,
             role: list_role_sql(list.role).into(),
         })
+    })
+}
+
+#[tauri::command]
+pub fn rename_list(id: String, name: String) -> Result<(), String> {
+    with_db_err(|conn| {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(DbOpError::Rejected("empty_name".into()));
+        }
+        let n = conn
+            .execute(
+                "UPDATE task_lists SET name = ?1 WHERE id = ?2",
+                params![name, id],
+            )
+            .map_err(crate::db_error::map_rusqlite)?;
+        if n == 0 {
+            return Err(DbOpError::Fatal("list missing".into()));
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn delete_list(id: String) -> Result<(), String> {
+    with_db_err(|conn| {
+        let lists = load_task_lists(conn)?;
+        let tasks = load_tasks(conn)?;
+        can_delete_list(&lists, &tasks, &id).map_err(|e| match e {
+            TaskListError::PresetLocked => DbOpError::Rejected("preset_locked".into()),
+            TaskListError::NotEmpty => DbOpError::Rejected("list_not_empty".into()),
+            TaskListError::NoMainline => DbOpError::Rejected("no_mainline".into()),
+            TaskListError::MissingList => DbOpError::Rejected("list_missing".into()),
+            other => DbOpError::Rejected(format!("{other:?}")),
+        })?;
+        conn.execute("DELETE FROM task_lists WHERE id = ?1", params![id])
+            .map_err(crate::db_error::map_rusqlite)?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn delete_task(id: String) -> Result<(), String> {
+    with_db_err(|conn| {
+        let n = conn
+            .execute("DELETE FROM tasks WHERE id = ?1", params![id])
+            .map_err(crate::db_error::map_rusqlite)?;
+        if n == 0 {
+            return Err(DbOpError::Fatal("task missing".into()));
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn move_task(id: String, list_id: String) -> Result<(), String> {
+    with_db_err(|conn| {
+        let lists = load_task_lists(conn)?;
+        if !lists.iter().any(|l| l.id == list_id) {
+            return Err(DbOpError::Rejected("list_missing".into()));
+        }
+        let n = conn
+            .execute(
+                "UPDATE tasks SET list_id = ?1 WHERE id = ?2",
+                params![list_id, id],
+            )
+            .map_err(crate::db_error::map_rusqlite)?;
+        if n == 0 {
+            return Err(DbOpError::Fatal("task missing".into()));
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn reschedule_task(id: String, start: Option<i64>, end: Option<i64>) -> Result<(), String> {
+    with_db_err(|conn| {
+        let (start, end) = match (start, end) {
+            (None, None) => (None, None),
+            (Some(s), Some(e)) => {
+                let (s, e) = align_range(s, e);
+                (Some(s), Some(e))
+            }
+            _ => return Err(DbOpError::Rejected("need_start_and_end".into())),
+        };
+        let mut tasks = load_tasks(conn)?;
+        let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
+            return Err(DbOpError::Fatal("task missing".into()));
+        };
+        task.start = start;
+        task.end = end;
+        let stored = task.clone();
+        reject_too_many_judgment(conn, &tasks)?;
+        persist_task(conn, &stored)?;
+        Ok(())
     })
 }
 
@@ -2216,9 +2315,7 @@ pub fn open_privacy_settings(kind: String) -> Result<(), String> {
         "accessibility" => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         }
-        "screen" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-        }
+        "screen" => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         _ => return Err("unknown pane".into()),
     };
     crate::platform::open_url(url)
@@ -2464,14 +2561,11 @@ pub async fn ticktick_begin_oauth(
         crate::keychain::set_ticktick_client_secret(&secret)?;
     }
     let client_id = load_settings().ticktick_client_id.trim().to_string();
-    crate::ticktick::oauth_begin_preflight(
-        &client_id,
-        crate::ticktick::client_secret_present(),
-    )
-    .map_err(|e| {
-        crate::ticktick::set_oauth_last_error(e.clone());
-        e
-    })?;
+    crate::ticktick::oauth_begin_preflight(&client_id, crate::ticktick::client_secret_present())
+        .map_err(|e| {
+            crate::ticktick::set_oauth_last_error(e.clone());
+            e
+        })?;
     crate::ticktick::clear_oauth_last_error();
     let verifier = crate::ticktick::pkce_verifier();
     let challenge = crate::ticktick::pkce_challenge(&verifier);
@@ -2514,7 +2608,10 @@ pub async fn ticktick_finish_oauth(
         crate::keychain::set_ticktick_client_secret(&secret)?;
     }
     let code = crate::ticktick::oauth_code_from_callback(&callback_url)?;
-    match crate::ticktick::complete_oauth_with_code(&crate::ticktick::ReqwestTickTick::manual(), &code) {
+    match crate::ticktick::complete_oauth_with_code(
+        &crate::ticktick::ReqwestTickTick::manual(),
+        &code,
+    ) {
         Ok(()) => {
             crate::ticktick::clear_oauth_last_error();
             Ok(())
@@ -2581,17 +2678,13 @@ fn ticktick_sync_blocking() -> Result<crate::ticktick::TickTickSyncResult, Strin
 }
 
 #[tauri::command]
-pub async fn ticktick_tree(
-    refresh: Option<bool>,
-) -> Result<crate::ticktick::TickTickTree, String> {
+pub async fn ticktick_tree(refresh: Option<bool>) -> Result<crate::ticktick::TickTickTree, String> {
     tauri::async_runtime::spawn_blocking(move || ticktick_tree_blocking(refresh))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn ticktick_tree_blocking(
-    refresh: Option<bool>,
-) -> Result<crate::ticktick::TickTickTree, String> {
+fn ticktick_tree_blocking(refresh: Option<bool>) -> Result<crate::ticktick::TickTickTree, String> {
     let now = now_secs();
     if refresh.unwrap_or(false) {
         let access = crate::keychain::get_ticktick_access_token()?;
@@ -2702,8 +2795,7 @@ fn sync_test_connection_blocking() -> Result<String, String> {
     use crate::sync::SyncError;
 
     let settings = load_settings();
-    let target =
-        crate::sync::target_from_settings(&settings.sync).map_err(|e| e.to_string())?;
+    let target = crate::sync::target_from_settings(&settings.sync).map_err(|e| e.to_string())?;
     let base = crate::sync::base_dir(&settings.sync);
     let probe = format!("{base}/.gamelife-probe");
 
@@ -2742,8 +2834,7 @@ fn sync_list_devices_blocking() -> Result<Vec<crate::sync::DeviceEntry>, String>
     use crate::sync::SyncError;
 
     let settings = load_settings();
-    let target =
-        crate::sync::target_from_settings(&settings.sync).map_err(|e| e.to_string())?;
+    let target = crate::sync::target_from_settings(&settings.sync).map_err(|e| e.to_string())?;
     let path = format!("{}/devices.json", crate::sync::base_dir(&settings.sync));
     match target.get(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("devices.json: {e}")),
@@ -2773,6 +2864,35 @@ fn sync_restore_blocking(device_id: String) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::db::{archive_wish, insert_ledger, insert_wish, migrate};
+    use gamelife_core::ListRole;
+
+    #[test]
+    fn create_list_requires_strict_role() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        assert!(parse_list_role_strict("custom").is_none());
+        assert_eq!(parse_list_role_strict("mainline"), Some(ListRole::Mainline));
+    }
+
+    #[test]
+    fn delete_task_removes_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, list_id, title, done, start, end)
+             VALUES ('t1','list-mainline','x',0, NULL, NULL)",
+            [],
+        )
+        .unwrap();
+        let n = conn
+            .execute("DELETE FROM tasks WHERE id = ?1", params!["t1"])
+            .unwrap();
+        assert_eq!(n, 1);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
 
     #[test]
     fn load_wish_for_redeem_rejects_archived_and_missing() {
@@ -2837,8 +2957,8 @@ mod tests {
             [],
         )
         .unwrap();
-        let view =
-            build_today(&conn, "2026-09-11", 1_789_091_100).expect("open slot must not fail get_today");
+        let view = build_today(&conn, "2026-09-11", 1_789_091_100)
+            .expect("open slot must not fail get_today");
         assert_eq!(view.slots.len(), 1);
         assert_eq!(view.slots[0].credited_minutes, 0);
         assert!(!view.slots[0].is_final);
@@ -2890,8 +3010,7 @@ mod tests {
         migrate(&stats).unwrap();
         let day = "2026-09-11";
         let day_start = start_of_named_day(day).unwrap();
-        let json =
-            r#"{"core":1800,"support":0,"admin":0,"side":0,"distraction":0,"away":0,"unobserved":0}"#;
+        let json = r#"{"core":1800,"support":0,"admin":0,"side":0,"distraction":0,"away":0,"unobserved":0}"#;
         stats
             .execute(
                 "INSERT INTO slots (day, slot_start, status, observed_seconds, activity_json)
@@ -2965,8 +3084,8 @@ mod tests {
             [],
         )
         .unwrap();
-        let view =
-            build_week(&conn, "2026-09-11", "2026-09-11", 1_789_091_100).expect("open slot must not fail get_week");
+        let view = build_week(&conn, "2026-09-11", "2026-09-11", 1_789_091_100)
+            .expect("open slot must not fail get_week");
         assert_eq!(view.unobserved, 0);
         assert_eq!(view.by_day.len(), 7);
         assert_eq!(view.by_hour.len(), 24);
@@ -2977,8 +3096,7 @@ mod tests {
     fn build_week_anchor_selects_that_week_only() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        let json =
-            r#"{"core":1800,"support":0,"admin":0,"side":0,"distraction":0,"away":0,"unobserved":0}"#;
+        let json = r#"{"core":1800,"support":0,"admin":0,"side":0,"distraction":0,"away":0,"unobserved":0}"#;
         for day in ["2026-09-09", "2026-09-16"] {
             let start = start_of_named_day(day).unwrap() + 10 * 3600;
             conn.execute(
@@ -3006,8 +3124,7 @@ mod tests {
     fn build_week_current_week_stops_at_today() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        let json =
-            r#"{"core":28800,"support":0,"admin":0,"side":0,"distraction":0,"away":0,"unobserved":0}"#;
+        let json = r#"{"core":28800,"support":0,"admin":0,"side":0,"distraction":0,"away":0,"unobserved":0}"#;
         let saturday = "2026-09-12";
         let start = start_of_named_day(saturday).unwrap() + 10 * 3600;
         conn.execute(
@@ -3276,6 +3393,28 @@ mod tests {
     }
 
     #[test]
+    fn build_today_omits_lock_screen_from_app_top() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-11";
+        conn.execute(
+            "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected)
+             VALUES (?1, 'Cursor', '', 32, 0, 480, 0, 0, 0, 0, 0, 0, 0)",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_day_stats (day, app, bundle_id, samples, idle_seconds, core, support, admin, side, distraction, away, unobserved, protected)
+             VALUES (?1, 'loginwindow', 'com.apple.loginwindow', 40, 0, 0, 0, 0, 0, 0, 600, 0, 0)",
+            params![day],
+        )
+        .unwrap();
+        let view = build_today(&conn, day, start_of_named_day(day).unwrap()).unwrap();
+        assert_eq!(view.app_top.len(), 1);
+        assert_eq!(view.app_top[0].name, "Cursor");
+    }
+
+    #[test]
     fn build_month_rhythm_and_app_reports() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
@@ -3363,11 +3502,7 @@ mod tests {
 
         let rhythm = build_rhythm_report(&conn, "week", day, day).unwrap();
         assert_eq!(rhythm.start_hours.len(), 7);
-        let fri = rhythm
-            .start_hours
-            .iter()
-            .find(|h| h.day == day)
-            .unwrap();
+        let fri = rhythm.start_hours.iter().find(|h| h.day == day).unwrap();
         assert_eq!(fri.hour, Some(8));
         assert!((rhythm.rate_8h - 0.2).abs() < 1e-9);
         assert_eq!(rhythm.distraction_run_count, 1);
@@ -3477,7 +3612,11 @@ mod tests {
         )
         .unwrap();
         let view = build_day_view(&conn, day).unwrap();
-        assert_eq!(view.plan_marks.len(), 1, "all-day must not become a plan mark");
+        assert_eq!(
+            view.plan_marks.len(),
+            1,
+            "all-day must not become a plan mark"
+        );
         assert_eq!(view.ticktick_tasks.len(), 2);
         let all_day = view
             .ticktick_tasks

@@ -285,6 +285,7 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
     let device_id = local_device_id(conn)?;
     tag_device_rows(conn, &device_id)?;
     seed_preset_lists_if_empty(conn)?;
+    rename_legacy_longterm_preset(conn)?;
     seed_example_wishes_if_empty(conn)?;
     Ok(())
 }
@@ -313,6 +314,16 @@ fn seed_preset_lists_if_empty(conn: &Connection) -> Result<(), DbOpError> {
         )
         .map_err(map_rusqlite)?;
     }
+    Ok(())
+}
+
+fn rename_legacy_longterm_preset(conn: &Connection) -> Result<(), DbOpError> {
+    conn.execute(
+        "UPDATE task_lists SET name = '长期规划'
+         WHERE id = 'list-longterm' AND name = '长期计划'",
+        [],
+    )
+    .map_err(map_rusqlite)?;
     Ok(())
 }
 
@@ -370,9 +381,7 @@ pub fn load_task_lists(conn: &Connection) -> Result<Vec<TaskList>, DbOpError> {
 
 pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
     let mut stmt = conn
-        .prepare(
-            "SELECT id, list_id, title, done, start, end, range FROM tasks ORDER BY start, id",
-        )
+        .prepare("SELECT id, list_id, title, done, start, end, range FROM tasks ORDER BY start, id")
         .map_err(map_rusqlite)?;
     let rows = stmt
         .query_map([], |r| {
@@ -674,7 +683,14 @@ pub fn insert_wish(
     conn.execute(
         "INSERT INTO wishes (id, name, kind, price, duration_minutes, archived, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
-        params![wish_id, name.trim(), kind_str, price, duration_minutes, now_unix()],
+        params![
+            wish_id,
+            name.trim(),
+            kind_str,
+            price,
+            duration_minutes,
+            now_unix()
+        ],
     )
     .map_err(map_rusqlite)?;
     Ok(())
@@ -696,8 +712,7 @@ pub fn update_wish(
         )
         .optional()
         .map_err(map_rusqlite)?;
-    let (kind_str, archived) =
-        row.ok_or_else(|| DbOpError::Rejected("wish_missing".into()))?;
+    let (kind_str, archived) = row.ok_or_else(|| DbOpError::Rejected("wish_missing".into()))?;
     if archived != 0 {
         return Err(DbOpError::Rejected("wish_archived".into()));
     }
@@ -757,9 +772,7 @@ pub fn load_active_session(
         )
         .optional()
         .map_err(map_rusqlite)?;
-    Ok(row.map(|(name, ends_at)| {
-        (name, ends_at, entertainment_remaining_secs(now, ends_at))
-    }))
+    Ok(row.map(|(name, ends_at)| (name, ends_at, entertainment_remaining_secs(now, ends_at))))
 }
 
 fn map_redeem_error(e: RedeemError) -> DbOpError {
@@ -783,10 +796,7 @@ fn begin_write_tx(conn: &mut Connection) -> Result<Transaction<'_>, DbOpError> {
         .map_err(map_rusqlite)
 }
 
-fn reject_if_multiple_active_sessions(
-    tx: &Transaction<'_>,
-    now: i64,
-) -> Result<(), DbOpError> {
+fn reject_if_multiple_active_sessions(tx: &Transaction<'_>, now: i64) -> Result<(), DbOpError> {
     let n: i64 = tx
         .query_row(
             "SELECT COUNT(*) FROM entertainment_sessions WHERE ends_at > ?1",
@@ -829,7 +839,9 @@ pub fn redeem(
 ) -> Result<(), DbOpError> {
     let tx = begin_write_tx(conn)?;
     let coin: i64 = tx
-        .query_row("SELECT COALESCE(SUM(coin_delta),0) FROM ledger", [], |r| r.get(0))
+        .query_row("SELECT COALESCE(SUM(coin_delta),0) FROM ledger", [], |r| {
+            r.get(0)
+        })
         .map_err(map_rusqlite)?;
     let xp: i64 = tx
         .query_row(
@@ -852,11 +864,9 @@ pub fn redeem(
     }
     validate_redeem(credited_today, coin, xp, wish).map_err(map_redeem_error)?;
     let active_ends_at: Option<i64> = tx
-        .query_row(
-            "SELECT MAX(ends_at) FROM entertainment_sessions",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT MAX(ends_at) FROM entertainment_sessions", [], |r| {
+            r.get(0)
+        })
         .map_err(map_rusqlite)?;
     if has_entertainment_timer(&wish.kind) && !can_start_entertainment(now, active_ends_at) {
         return Err(DbOpError::Rejected("entertainment_in_progress".into()));
@@ -903,8 +913,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         insert_ledger(&conn, "validated_coin:2026-09-10:1", "2026-09-10", 1, 0).unwrap();
-        let e = insert_ledger(&conn, "validated_coin:2026-09-10:1", "2026-09-10", 1, 0)
-            .unwrap_err();
+        let e =
+            insert_ledger(&conn, "validated_coin:2026-09-10:1", "2026-09-10", 1, 0).unwrap_err();
         assert!(matches!(e, DbOpError::AlreadyApplied));
     }
 
@@ -945,6 +955,26 @@ mod tests {
             .query_row("SELECT ts FROM heartbeat WHERE id = 1", [], |r| r.get(0))
             .unwrap();
         assert!(ts2 >= ts);
+    }
+
+    #[test]
+    fn migrate_renames_legacy_longterm_list() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "UPDATE task_lists SET name = '长期计划' WHERE id = 'list-longterm'",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM task_lists WHERE id = 'list-longterm'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "长期规划");
     }
 
     fn xp_sum(conn: &Connection, day: &str) -> i64 {
@@ -1034,12 +1064,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ends, now + 30 * 60);
-        let e = redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now + 10, "r2")
-            .unwrap_err();
+        let e = redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now + 10, "r2").unwrap_err();
         assert_eq!(e, DbOpError::Rejected("entertainment_in_progress".into()));
         assert_eq!(xp_sum(&conn, day), 40);
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 1);
     }
@@ -1059,7 +1090,9 @@ mod tests {
         };
         redeem(&mut conn, 3600, day, &coin, "杯子", now, "c1").unwrap();
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 0);
         redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
@@ -1074,7 +1107,9 @@ mod tests {
         )
         .unwrap();
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 2);
     }
@@ -1087,11 +1122,12 @@ mod tests {
         insert_ledger(&conn, "validated_xp:2026-09-10:1", day, 0, 50).unwrap();
         let now = 1_700_000_000i64;
         redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
-        let e = redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1")
-            .unwrap_err();
+        let e = redeem(&mut conn, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap_err();
         assert!(matches!(e, DbOpError::AlreadyApplied));
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 1);
         assert_eq!(xp_sum(&conn, day), 40);
@@ -1119,12 +1155,13 @@ mod tests {
         {
             let tx = begin_write_tx(&mut conn).unwrap();
             insert_entertainment_session(&tx, "r1", "video", "视频", now, 30).unwrap();
-            let e = insert_entertainment_session(&tx, "r2", "video", "视频", now, 30)
-                .unwrap_err();
+            let e = insert_entertainment_session(&tx, "r2", "video", "视频", now, 30).unwrap_err();
             assert_eq!(e, DbOpError::Rejected("entertainment_in_progress".into()));
         }
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM entertainment_sessions", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 0);
     }
@@ -1140,8 +1177,7 @@ mod tests {
         let now = 1_700_000_000i64;
         redeem(&mut a, 3600, day, &timed_xp(10), "视频", now, "r1").unwrap();
         let mut b = open(&path).unwrap();
-        let e = redeem(&mut b, 3600, day, &timed_xp(10), "视频", now + 10, "r2")
-            .unwrap_err();
+        let e = redeem(&mut b, 3600, day, &timed_xp(10), "视频", now + 10, "r2").unwrap_err();
         assert_eq!(e, DbOpError::Rejected("entertainment_in_progress".into()));
         assert_eq!(xp_sum(&b, day), 40);
         let n: i64 = b
@@ -1320,7 +1356,9 @@ mod tests {
             .unwrap();
         assert_eq!(path, "/old/screenshot.jpg");
         let doc: Option<String> = conn
-            .query_row("SELECT document_path FROM samples WHERE ts=1", [], |r| r.get(0))
+            .query_row("SELECT document_path FROM samples WHERE ts=1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(doc, None);
         migrate(&conn).unwrap();
@@ -1427,9 +1465,11 @@ mod tests {
         assert_eq!(user_version(&conn), 3);
 
         let id: String = conn
-            .query_row("SELECT value FROM app_meta WHERE key='device_id'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT value FROM app_meta WHERE key='device_id'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(id.len(), 32, "device_id should be 16 random bytes in hex");
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
@@ -1488,9 +1528,11 @@ mod tests {
         // Re-migrating must not mint a second identity.
         migrate(&conn).unwrap();
         let again: String = conn
-            .query_row("SELECT value FROM app_meta WHERE key='device_id'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT value FROM app_meta WHERE key='device_id'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(again, id);
     }
