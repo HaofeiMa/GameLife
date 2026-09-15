@@ -21,6 +21,7 @@ import {
   getDayView,
   getToday,
   reportMisclassification,
+  rescheduleTask,
   reviewSlot,
   type AppTopRow,
   type DayTask,
@@ -39,7 +40,7 @@ import {
   resolvedActivityMinutes,
   weekdayLabel,
 } from "../lib/calendar";
-import { listRoleLabel, taskTimeLabel } from "../lib/taskBoard";
+import { listRoleLabel, taskCommandError, taskTimeLabel } from "../lib/taskBoard";
 import { compareDayTasks, COMPARE_STATE_LABEL, type DayComparison } from "../lib/taskCompare";
 import { categoryColor, categoryOf, type CategoryKey } from "../lib/theme";
 import {
@@ -50,6 +51,7 @@ import {
   splitTimedPlan,
 } from "../lib/timelinePlan";
 import { useTimelineSplit } from "../hooks/useTimelineSplit";
+import { moveSameDay } from "../lib/planDrag";
 import { cn } from "../lib/utils";
 
 const GOLD_DAY_MSG = "黄金日已达成。继续记录，但不再获得硬币或能量。";
@@ -368,6 +370,7 @@ function Timeline({
   showNow,
   onPick,
   scrollRef,
+  onMovePlan,
 }: {
   dayView: DayView;
   slotsByStart: Map<number, TodaySlot>;
@@ -388,13 +391,34 @@ function Timeline({
   showNow: boolean;
   onPick: (slot: TodaySlot) => void;
   scrollRef: React.RefObject<HTMLDivElement | null>;
+  onMovePlan: (id: string, start: number, end: number) => void;
 }) {
   const dayStart = dayView.dayStart;
   const totalHeight = HOURS.length * HOUR_H;
   const timed = splitTimedPlan(dayTasks);
+  const [preview, setPreview] = useState<{
+    id: string;
+    start: number;
+    end: number;
+  } | null>(null);
+  const dragRef = useRef<{
+    id: string;
+    start: number;
+    end: number;
+    originY: number;
+  } | null>(null);
+  const previewRef = useRef(preview);
+  previewRef.current = preview;
+  const displayTasks = preview
+    ? timed.map((task) =>
+        task.id === preview.id
+          ? { ...task, start: preview.start, end: preview.end }
+          : task,
+      )
+    : timed;
   const { items: planItems, laneCount } = assignPlanLanes(
     planBlocks(
-      timed.map((t) => ({
+      displayTasks.map((t) => ({
         start: t.start,
         end: t.end,
         role: t.role,
@@ -427,6 +451,36 @@ function Timeline({
     const target = ((now - dayStart) / 900) * SLOT_H - el.clientHeight / 2;
     el.scrollTop = Math.max(0, target);
   }, [calDay, showNow, now, dayStart, scrollRef]);
+
+  useEffect(() => {
+    if (!preview?.id) return;
+    const draggingId = preview.id;
+    function onMove(e: PointerEvent) {
+      const drag = dragRef.current;
+      if (!drag || drag.id !== draggingId) return;
+      const slots = Math.round((e.clientY - drag.originY) / SLOT_H);
+      const next = moveSameDay(drag.start, drag.end, dayStart, slots);
+      setPreview({ id: drag.id, start: next.start, end: next.end });
+    }
+    function onUp() {
+      const drag = dragRef.current;
+      const current = previewRef.current;
+      dragRef.current = null;
+      setPreview(null);
+      if (!drag || !current) return;
+      if (current.start === drag.start && current.end === drag.end) return;
+      onMovePlan(drag.id, current.start, current.end);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    // preview.id is the drag session key; start/end updates must not rebind.
+  }, [dayStart, onMovePlan, preview?.id]);
 
   return (
     <Card className="flex h-full min-w-0 flex-col overflow-hidden">
@@ -468,11 +522,34 @@ function Timeline({
             {planItems.map((mark) => {
               const cat = categoryOf(mark.role);
               const span = planLaneSpan(mark, planItems, lanes);
+              const task = displayTasks.find(
+                (t) =>
+                  t.start === mark.start &&
+                  t.end === mark.end &&
+                  t.title === mark.title,
+              );
               return (
                 <div
-                  key={`${mark.title}-${mark.rowStart}-${mark.lane}`}
+                  key={`${task?.id ?? mark.title}-${mark.rowStart}-${mark.lane}`}
                   title={`${mark.title} · ${listRoleLabel(mark.role)}`}
-                  className="absolute overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[11px] leading-tight"
+                  onPointerDown={(e) => {
+                    if (e.button !== 0 || !task) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const original = timed.find((row) => row.id === task.id) ?? task;
+                    dragRef.current = {
+                      id: original.id,
+                      start: original.start,
+                      end: original.end,
+                      originY: e.clientY,
+                    };
+                    setPreview({
+                      id: original.id,
+                      start: original.start,
+                      end: original.end,
+                    });
+                  }}
+                  className="absolute cursor-grab overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[11px] leading-tight active:cursor-grabbing"
                   style={{
                     left: `${(mark.lane / lanes) * 100}%`,
                     width: `calc(${(span / lanes) * 100}% - 4px)`,
@@ -737,6 +814,20 @@ export function Today() {
     }
   }, [calDay]);
 
+  const onMovePlan = useCallback(
+    (id: string, start: number, end: number) => {
+      void (async () => {
+        try {
+          await rescheduleTask(id, start, end);
+          await refresh();
+        } catch (e) {
+          setError(taskCommandError(e));
+        }
+      })();
+    },
+    [refresh],
+  );
+
   useEffect(() => {
     consumeStoredCalDay(window.localStorage);
   }, []);
@@ -931,6 +1022,7 @@ export function Today() {
                 showNow={showNow}
                 onPick={setSelected}
                 scrollRef={timelineRef}
+                onMovePlan={onMovePlan}
               />
             </div>
 
