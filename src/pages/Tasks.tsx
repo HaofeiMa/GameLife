@@ -59,13 +59,12 @@ import {
   moveRangeToDrop,
 } from "../lib/taskCalendar";
 import { lastCopiedPayload, parseTaskCopy, serializeTaskCopy } from "../lib/taskClipboard";
+import { ranksAfterDrag } from "../lib/taskReorder";
 import { LIST_MAX, LIST_MIN } from "../lib/taskSplit";
-import { sortTasks, type TaskSort } from "../lib/taskSort";
 import { assignPlanLanes, planLaneSpan } from "../lib/timelinePlan";
 import { categoryColor, categoryColorAt, categoryOf, type CategoryKey } from "../lib/theme";
 import { cn } from "../lib/utils";
 
-const SORT_KEY = "gl-task-sort";
 const CAL_DAYS_KEY = "gl-task-cal-days";
 
 type CalDays = "3" | "7";
@@ -88,22 +87,6 @@ function nextListSort(tasks: TaskView[], listId: string): number {
     if (task.listId === listId && task.sort > max) max = task.sort;
   }
   return max + 1;
-}
-
-function readSort(): TaskSort {
-  try {
-    return window.localStorage.getItem(SORT_KEY) === "title" ? "title" : "time";
-  } catch {
-    return "time";
-  }
-}
-
-function writeSort(sort: TaskSort): void {
-  try {
-    window.localStorage.setItem(SORT_KEY, sort);
-  } catch {
-    /* private mode / quota */
-  }
 }
 
 function readCalDays(): CalDays {
@@ -163,7 +146,6 @@ export function Tasks() {
     tasks: TaskView[];
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [sort, setSort] = useState<TaskSort>(readSort);
   const [calDays, setCalDays] = useState<CalDays>(readCalDays);
   const [moreOpen, setMoreOpen] = useState(false);
   const [showDone, setShowDone] = useState(false);
@@ -185,6 +167,11 @@ export function Tasks() {
   const parseGen = useRef(0);
   const gridRef = useRef<HTMLDivElement>(null);
   const [calDrag, setCalDrag] = useState<CalDrag | null>(null);
+  const [listDrag, setListDrag] = useState<{
+    id: string;
+    overListId: string;
+    beforeId: string | null;
+  } | null>(null);
   const calDragRef = useRef<CalDrag | null>(null);
   calDragRef.current = calDrag;
   const { listWidth, dragging, splitRef, handleProps } = useTaskSplit();
@@ -246,13 +233,9 @@ export function Tasks() {
     [hitTs],
   );
 
-  const beginCalDrag = useCallback(
-    (task: TaskView, e: ReactPointerEvent<HTMLElement>, fromBlock: boolean) => {
-      if (e.button !== 0) return;
-      if ((e.target as HTMLElement).closest("input")) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const ts = hitTs(e);
+  const beginCalDragAt = useCallback(
+    (task: TaskView, clientX: number, clientY: number, fromBlock: boolean) => {
+      const ts = hitTs({ clientX, clientY });
       if (task.start != null && task.end != null) {
         const grabOffset = fromBlock && ts != null ? ts - task.start : 0;
         setCalDrag({
@@ -274,6 +257,17 @@ export function Tasks() {
       }
     },
     [hitTs],
+  );
+
+  const beginCalDrag = useCallback(
+    (task: TaskView, e: ReactPointerEvent<HTMLElement>, fromBlock: boolean) => {
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement).closest("input")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      beginCalDragAt(task, e.clientX, e.clientY, fromBlock);
+    },
+    [beginCalDragAt],
   );
 
   const draggingId = calDrag?.task.id ?? null;
@@ -417,10 +411,125 @@ export function Tasks() {
       else map.set(task.listId, [task]);
     }
     for (const [id, tasks] of map) {
-      map.set(id, sortTasks(tasks, sort));
+      map.set(
+        id,
+        tasks.slice().sort((a, b) => a.sort - b.sort || a.title.localeCompare(b.title, "zh")),
+      );
     }
     return map;
-  }, [board, lists, showDone, sort]);
+  }, [board, lists, showDone]);
+
+  const tasksByListRef = useRef(tasksByList);
+  tasksByListRef.current = tasksByList;
+
+  const beginListDrag = useCallback(
+    (task: TaskView, listId: string, e: ReactPointerEvent<HTMLElement>) => {
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement).closest("input")) return;
+      const originX = e.clientX;
+      const originY = e.clientY;
+      const pointerId = e.pointerId;
+      const row = e.currentTarget;
+      let armed = false;
+      let switched = false;
+
+      function overCalendar(clientX: number, clientY: number) {
+        const grid = gridRef.current;
+        if (!grid) return false;
+        const box = grid.getBoundingClientRect();
+        return (
+          clientX >= box.left &&
+          clientX <= box.right &&
+          clientY >= box.top &&
+          clientY <= box.bottom
+        );
+      }
+
+      function hitDrop(clientX: number, clientY: number) {
+        const stack = document.elementsFromPoint(clientX, clientY);
+        let listHit: string | null = null;
+        let beforeId: string | null = null;
+        for (const node of stack) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (!listHit && node.dataset.listId) listHit = node.dataset.listId;
+          if (
+            !beforeId &&
+            node.dataset.taskId &&
+            node.dataset.taskId !== task.id
+          ) {
+            const owner = node.closest("[data-list-id]")?.getAttribute("data-list-id");
+            if (!listHit || owner === listHit) beforeId = node.dataset.taskId;
+          }
+        }
+        return { listId: listHit, beforeId };
+      }
+
+      function onMove(ev: PointerEvent) {
+        if (switched) return;
+        if (!armed) {
+          if (Math.hypot(ev.clientX - originX, ev.clientY - originY) < 4) return;
+          armed = true;
+          try {
+            row.setPointerCapture(pointerId);
+          } catch {
+            /* already captured */
+          }
+        }
+        if (overCalendar(ev.clientX, ev.clientY)) {
+          switched = true;
+          try {
+            row.releasePointerCapture(pointerId);
+          } catch {
+            /* ignore */
+          }
+          setListDrag(null);
+          beginCalDragAt(task, ev.clientX, ev.clientY, false);
+          return;
+        }
+        const drop = hitDrop(ev.clientX, ev.clientY);
+        setListDrag({
+          id: task.id,
+          overListId: drop.listId ?? listId,
+          beforeId: drop.beforeId,
+        });
+      }
+
+      function onUp(ev: PointerEvent) {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        if (switched) return;
+        if (!armed) {
+          setListDrag(null);
+          return;
+        }
+        const drop = hitDrop(ev.clientX, ev.clientY);
+        const dest = drop.listId ?? listId;
+        const ids = (tasksByListRef.current.get(dest) ?? []).map((item) => item.id);
+        const ranks = ranksAfterDrag(
+          ids.includes(task.id) ? ids : [...ids, task.id],
+          task.id,
+          drop.beforeId,
+        );
+        setListDrag(null);
+        void (async () => {
+          try {
+            for (const rank of ranks) {
+              await reorderTask(rank.id, dest, rank.sort);
+            }
+            await refresh();
+          } catch (err) {
+            addToast(taskCommandError(err));
+          }
+        })();
+      }
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [addToast, beginCalDragAt, refresh],
+  );
 
   async function run(action: () => Promise<void>) {
     try {
@@ -476,28 +585,15 @@ export function Tasks() {
     <PageHeader
       title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">任务</h1>}
       center={
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              const next = sort === "time" ? "title" : "time";
-              setSort(next);
-              writeSort(next);
-            }}
-          >
-            排序
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            className="text-ink-dim"
-            aria-label="更多"
-            onClick={() => setMoreOpen(true)}
-          >
-            <MoreHorizontal className="size-4" />
-          </Button>
-        </div>
+        <Button
+          variant="outline"
+          size="icon"
+          className="text-ink-dim"
+          aria-label="更多"
+          onClick={() => setMoreOpen(true)}
+        >
+          <MoreHorizontal className="size-4" />
+        </Button>
       }
       actions={
         <Segmented
@@ -838,7 +934,14 @@ export function Tasks() {
                 const folded = collapsed.includes(list.id);
                 const Chevron = folded ? ChevronRight : ChevronDown;
                 return (
-                  <section key={list.id} className="pt-1">
+                  <section
+                    key={list.id}
+                    data-list-id={list.id}
+                    className={cn(
+                      "pt-1",
+                      listDrag?.overListId === list.id && "rounded-lg bg-accent/40",
+                    )}
+                  >
                     <button
                       type="button"
                       tabIndex={0}
@@ -880,7 +983,7 @@ export function Tasks() {
                           data-task-id={task.id}
                           tabIndex={0}
                           onFocus={() => setFocusedListId(list.id)}
-                          onPointerDown={(e) => beginCalDrag(task, e, false)}
+                          onPointerDown={(e) => beginListDrag(task, list.id, e)}
                           onContextMenu={(e) => {
                             e.preventDefault();
                             setFocusedListId(list.id);
@@ -891,14 +994,18 @@ export function Tasks() {
                               y: e.clientY,
                             });
                           }}
-                          className="flex cursor-grab items-center gap-2 rounded-[9px] px-2 py-1 text-[12.5px] hover:bg-accent/40 active:cursor-grabbing"
+                          className={cn(
+                            "flex cursor-grab items-center gap-2 rounded-[9px] py-1 pr-1.5 text-[12.5px] hover:bg-accent/40 active:cursor-grabbing",
+                            "pl-[calc(0.375rem+0.875rem+0.5rem)]",
+                            listDrag?.id === task.id && "opacity-50",
+                          )}
                         >
                           <input
                             type="checkbox"
                             checked={task.done}
                             aria-label={`完成 ${task.title}`}
                             className="size-3.5 shrink-0"
-                            style={{ accentColor: "hsl(var(--primary))" }}
+                            style={{ accentColor: roleDot(list.role) }}
                             onChange={(e) => {
                               void run(() =>
                                 toggleTaskDone(task.id, e.target.checked),
