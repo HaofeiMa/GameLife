@@ -37,6 +37,9 @@ impl std::fmt::Display for SyncError {
             SyncError::Db(m) => write!(f, "db: {m}"),
             SyncError::Transport(m) => write!(f, "transport: {m}"),
             SyncError::Auth => write!(f, "远端认证失败"),
+            SyncError::Remote(409) => {
+                write!(f, "远端返回 409：父目录不存在或路径冲突")
+            }
             SyncError::Remote(code) => write!(f, "远端返回 {code}"),
             SyncError::Config(m) => write!(f, "配置: {m}"),
         }
@@ -203,6 +206,25 @@ pub fn webdav_url(base: &str, path: &str) -> String {
     format!("{base}/{}", encoded.join("/"))
 }
 
+/// Intermediate collections that must exist before `PUT path`.
+/// `"gamelife/dev/latest.db"` → `["gamelife", "gamelife/dev"]`.
+fn parent_collections(path: &str) -> Vec<String> {
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(parts.len() - 1);
+    let mut acc = String::new();
+    for part in &parts[..parts.len() - 1] {
+        if !acc.is_empty() {
+            acc.push('/');
+        }
+        acc.push_str(part);
+        out.push(acc.clone());
+    }
+    out
+}
+
 pub struct WebDavTarget {
     pub base_url: String,
     pub username: String,
@@ -247,6 +269,38 @@ impl WebDavTarget {
             .map_err(|e| SyncError::Transport(e.to_string()))?;
         check_status(resp)
     }
+
+    /// RFC 4918: PUT into a missing collection is 409. 测试连接只在
+    /// `remotePath` 下写探针，所以它过了；立即同步接着写
+    /// `{device_id}/latest.db`，父目录还不存在。规格列了 MKCOL，这里补上。
+    ///
+    /// Existing collections: RFC 405, 坚果云 often 409, some hosts 301/308
+    /// onto the trailing-slash URL. All of those mean "the folder is there".
+    fn mkcol(&self, path: &str) -> Result<(), SyncError> {
+        let mut url = webdav_url(&self.base_url, path);
+        if !url.ends_with('/') {
+            url.push('/');
+        }
+        let method = reqwest::Method::from_bytes(b"MKCOL")
+            .map_err(|e| SyncError::Transport(e.to_string()))?;
+        let resp = self
+            .auth(self.client.request(method, &url))
+            .send()
+            .map_err(|e| SyncError::Transport(e.to_string()))?;
+        match resp.status().as_u16() {
+            200 | 201 | 204 => Ok(()),
+            301 | 308 | 405 | 409 => Ok(()),
+            401 | 403 => Err(SyncError::Auth),
+            code => Err(SyncError::Remote(code)),
+        }
+    }
+
+    fn ensure_parents(&self, path: &str) -> Result<(), SyncError> {
+        for dir in parent_collections(path) {
+            self.mkcol(&dir)?;
+        }
+        Ok(())
+    }
 }
 
 fn check_status(
@@ -264,6 +318,7 @@ fn check_status(
 
 impl RemoteTarget for WebDavTarget {
     fn put(&self, path: &str, bytes: &[u8]) -> Result<(), SyncError> {
+        self.ensure_parents(path)?;
         let url = webdav_url(&self.base_url, path);
         self.send(self.client.put(&url).body(bytes.to_vec()))?;
         Ok(())
@@ -1629,7 +1684,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
     use std::sync::{Arc, Mutex};
 
     /// A migrated database holding three titled samples and one slot that
@@ -1899,6 +1955,65 @@ mod tests {
         target.put("a.db", b"x").unwrap();
         target.delete("a.db").unwrap();
         assert!(!server.has("a.db"));
+    }
+
+    #[test]
+    fn parent_collections_walk_each_directory_in_order() {
+        assert!(parent_collections("latest.db").is_empty());
+        assert_eq!(
+            parent_collections("gamelife/dev1/latest.db"),
+            vec!["gamelife".to_string(), "gamelife/dev1".to_string()]
+        );
+        assert_eq!(
+            parent_collections("gamelife/dev1/snapshots/20260914.db"),
+            vec![
+                "gamelife".to_string(),
+                "gamelife/dev1".to_string(),
+                "gamelife/dev1/snapshots".to_string(),
+            ]
+        );
+    }
+
+    /// Real WebDAV (坚果云 / Nextcloud) answers 409 Conflict when a PUT's
+    /// parent collection does not exist. Test connection only writes a probe
+    /// file in `remotePath`, so it succeeds; 立即同步 then PUT
+    /// `{device_id}/latest.db` and `{device_id}/snapshots/{day}.db` and
+    /// that is the 409. The spec lists MKCOL; the client has to issue it.
+    #[test]
+    fn put_creates_missing_parent_collections() {
+        let server = TestDav::start().strict_collections();
+        let target = server.target("u", "p");
+        target
+            .put("gamelife/dev1/snapshots/20260914.db", b"payload")
+            .unwrap();
+        assert!(server.has("gamelife/dev1/snapshots/20260914.db"));
+        let methods = server.methods();
+        assert!(
+            methods.iter().any(|(m, p)| m == "MKCOL" && p.trim_end_matches('/') == "/gamelife"),
+            "missing MKCOL gamelife: {methods:?}"
+        );
+        assert!(
+            methods
+                .iter()
+                .any(|(m, p)| m == "MKCOL" && p.trim_end_matches('/') == "/gamelife/dev1"),
+            "missing MKCOL device dir: {methods:?}"
+        );
+        assert!(
+            methods.iter().any(|(m, p)| {
+                m == "MKCOL" && p.trim_end_matches('/') == "/gamelife/dev1/snapshots"
+            }),
+            "missing MKCOL snapshots: {methods:?}"
+        );
+        assert!(methods.iter().any(|(m, _)| m == "PUT"));
+    }
+
+    #[test]
+    fn mkcol_conflict_means_the_folder_already_exists() {
+        let server = TestDav::start();
+        server.set_mkcol_status(409);
+        let target = server.target("u", "p");
+        target.put("gamelife/dev1/latest.db", b"x").unwrap();
+        assert!(server.has("gamelife/dev1/latest.db"));
     }
 
     /// The exact variant depends on the environment (a sandbox proxy answers
@@ -2528,6 +2643,9 @@ mod tests {
         store: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
         auth: Arc<Mutex<Option<String>>>,
         status: Arc<AtomicU16>,
+        mkcol_status: Arc<AtomicU16>,
+        strict: Arc<AtomicBool>,
+        methods: Arc<Mutex<Vec<(String, String)>>>,
         _thread: std::thread::JoinHandle<()>,
     }
 
@@ -2538,14 +2656,22 @@ mod tests {
             let store = Arc::new(Mutex::new(BTreeMap::new()));
             let auth = Arc::new(Mutex::new(None));
             let status = Arc::new(AtomicU16::new(200));
+            let mkcol_status = Arc::new(AtomicU16::new(0));
+            let strict = Arc::new(AtomicBool::new(false));
+            let collections = Arc::new(Mutex::new(BTreeSet::new()));
+            let methods = Arc::new(Mutex::new(Vec::new()));
 
             let s = Arc::clone(&store);
             let a = Arc::clone(&auth);
             let st = Arc::clone(&status);
+            let mk = Arc::clone(&mkcol_status);
+            let sc = Arc::clone(&strict);
+            let cols = Arc::clone(&collections);
+            let meth = Arc::clone(&methods);
             let thread = std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(mut stream) = stream else { break };
-                    let _ = handle_request(&mut stream, &s, &a, &st);
+                    let _ = handle_request(&mut stream, &s, &a, &st, &mk, &sc, &cols, &meth);
                 }
             });
 
@@ -2554,6 +2680,9 @@ mod tests {
                 store,
                 auth,
                 status,
+                mkcol_status,
+                strict,
+                methods,
                 _thread: thread,
             }
         }
@@ -2570,12 +2699,25 @@ mod tests {
             self.status.store(code, Ordering::SeqCst);
         }
 
+        fn set_mkcol_status(&self, code: u16) {
+            self.mkcol_status.store(code, Ordering::SeqCst);
+        }
+
+        fn strict_collections(self) -> Self {
+            self.strict.store(true, Ordering::SeqCst);
+            self
+        }
+
         fn last_authorization(&self) -> Option<String> {
             self.auth.lock().unwrap().clone()
         }
 
         fn has(&self, key: &str) -> bool {
             self.store.lock().unwrap().contains_key(&format!("/{key}"))
+        }
+
+        fn methods(&self) -> Vec<(String, String)> {
+            self.methods.lock().unwrap().clone()
         }
     }
 
@@ -2584,6 +2726,10 @@ mod tests {
         store: &Mutex<BTreeMap<String, Vec<u8>>>,
         auth: &Mutex<Option<String>>,
         status: &AtomicU16,
+        mkcol_status: &AtomicU16,
+        strict: &AtomicBool,
+        collections: &Mutex<BTreeSet<String>>,
+        methods: &Mutex<Vec<(String, String)>>,
     ) -> std::io::Result<()> {
         let mut buf: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 4096];
@@ -2616,6 +2762,7 @@ mod tests {
             }
         }
         *auth.lock().unwrap() = authorization;
+        methods.lock().unwrap().push((method.clone(), target.clone()));
 
         while buf.len() < head_end + content_length {
             let n = stream.read(&mut chunk)?;
@@ -2632,7 +2779,28 @@ mod tests {
         }
 
         match method.as_str() {
+            "MKCOL" => {
+                let forced_m = mkcol_status.load(Ordering::SeqCst);
+                if forced_m != 0 {
+                    return respond(stream, forced_m, "Forced", b"");
+                }
+                let key = target.trim_end_matches('/').to_string();
+                let mut cols = collections.lock().unwrap();
+                if cols.contains(&key) {
+                    respond(stream, 405, "Method Not Allowed", b"")
+                } else {
+                    cols.insert(key);
+                    respond(stream, 201, "Created", b"")
+                }
+            }
             "PUT" => {
+                if strict.load(Ordering::SeqCst) {
+                    let parents = request_parent_collections(&target);
+                    let cols = collections.lock().unwrap();
+                    if parents.iter().any(|p| !cols.contains(p)) {
+                        return respond(stream, 409, "Conflict", b"");
+                    }
+                }
                 store.lock().unwrap().insert(target, body);
                 respond(stream, 201, "Created", b"")
             }
@@ -2649,6 +2817,22 @@ mod tests {
             }
             _ => respond(stream, 405, "Method Not Allowed", b""),
         }
+    }
+
+    fn request_parent_collections(target: &str) -> Vec<String> {
+        let t = target.trim_end_matches('/');
+        let parts: Vec<&str> = t.split('/').filter(|s| !s.is_empty()).collect();
+        if parts.len() < 2 {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut acc = String::new();
+        for part in &parts[..parts.len() - 1] {
+            acc.push('/');
+            acc.push_str(part);
+            out.push(acc.clone());
+        }
+        out
     }
 
     fn respond(
