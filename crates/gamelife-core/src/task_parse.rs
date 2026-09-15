@@ -108,10 +108,7 @@ fn match_list<'a>(tag: &str, lists: &'a [TaskList]) -> Option<&'a str> {
         return Some(&list.id);
     }
     let role = crate::task::match_role_alias(lower)?;
-    lists
-        .iter()
-        .find(|l| l.role == role)
-        .map(|l| l.id.as_str())
+    lists.iter().find(|l| l.role == role).map(|l| l.id.as_str())
 }
 
 fn take_relative_day(input: &str, now: DateTime<FixedOffset>) -> (i64, String) {
@@ -140,8 +137,8 @@ fn take_relative_day(input: &str, now: DateTime<FixedOffset>) -> (i64, String) {
     ] {
         if let Some(rest) = input.strip_prefix(word) {
             let today = now.weekday();
-            let mut delta = weekday.num_days_from_monday() as i64
-                - today.num_days_from_monday() as i64;
+            let mut delta =
+                weekday.num_days_from_monday() as i64 - today.num_days_from_monday() as i64;
             if delta < 0 {
                 delta += 7;
             }
@@ -283,7 +280,7 @@ fn strip_title(rest: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{preset_lists, TaskList, PRESET_CHORE_ID, PRESET_MAINLINE_ID};
+    use crate::task::{preset_lists, TaskList, PRESET_CHORE_ID, PRESET_LONGTERM_ID, PRESET_MAINLINE_ID};
     use chrono::DateTime;
 
     fn ctx<'a>(lists: &'a [TaskList]) -> ParseContext<'a> {
@@ -328,5 +325,14 @@ mod tests {
         assert!(!p.parse_ok);
         assert_eq!(p.title, "asdfgh");
         assert_eq!(p.start, None);
+    }
+
+    #[test]
+    fn hashtag_longterm_planning_alias() {
+        let lists = preset_lists();
+        let p = parse_task_line("写开题 #长期规划", &ctx(&lists));
+        assert_eq!(p.list_id, PRESET_LONGTERM_ID);
+        assert!(!p.parse_ok);
+        assert_eq!(p.title, "写开题");
     }
 }
