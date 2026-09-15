@@ -62,14 +62,6 @@ export async function previewInvoke<T>(
     case "update_wish":
     case "archive_wish":
     case "end_today":
-    case "upsert_task":
-    case "toggle_task_done":
-    case "create_list":
-    case "rename_list":
-    case "delete_list":
-    case "delete_task":
-    case "move_task":
-    case "reschedule_task":
     case "sync_status":
     case "sync_now_cmd":
       return PREVIEW_SYNC_STATUS as T;
@@ -84,6 +76,108 @@ export async function previewInvoke<T>(
     case "request_screen_recording":
     case "open_privacy_settings":
       return undefined as T;
+    case "parse_task_line": {
+      const line = String(args?.line ?? "");
+      const currentListId =
+        typeof args?.currentListId === "string"
+          ? args.currentListId
+          : (PREVIEW_TASK_BOARD.lists.find((list) => list.role === "mainline")
+              ?.id ?? "list-mainline");
+      const tag = line.match(/#(\S+)/)?.[1] ?? "";
+      const tagged = PREVIEW_TASK_BOARD.lists.find(
+        (list) =>
+          list.name === tag ||
+          (tag === "主线" && list.role === "mainline") ||
+          (tag === "支线" && list.role === "side") ||
+          (tag === "杂项" && list.role === "chore") ||
+          ((tag === "长期" || tag === "长期规划") && list.role === "longterm"),
+      );
+      return {
+        title: line.replace(/#\S+/g, "").replace(/，/g, " ").trim(),
+        listId: tagged?.id ?? currentListId,
+        start: null,
+        end: null,
+        parseOk: false,
+      } as T;
+    }
+    case "upsert_task": {
+      const task = args?.task as
+        | {
+            id: string;
+            listId: string;
+            title: string;
+            done: boolean;
+            start: number | null;
+            end: number | null;
+            range: string | null;
+          }
+        | undefined;
+      if (task) {
+        const i = PREVIEW_TASK_BOARD.tasks.findIndex((row) => row.id === task.id);
+        if (i >= 0) PREVIEW_TASK_BOARD.tasks[i] = task;
+        else PREVIEW_TASK_BOARD.tasks.push(task);
+      }
+      return undefined as T;
+    }
+    case "toggle_task_done": {
+      const id = String(args?.id ?? "");
+      const done = Boolean(args?.done);
+      const task = PREVIEW_TASK_BOARD.tasks.find((row) => row.id === id);
+      if (task) task.done = done;
+      return undefined as T;
+    }
+    case "create_list": {
+      const name = String(args?.name ?? "").trim();
+      const role = String(args?.role ?? "side");
+      const created = {
+        id: `list-preview-${Date.now()}`,
+        name,
+        sort: PREVIEW_TASK_BOARD.lists.length,
+        role,
+      };
+      PREVIEW_TASK_BOARD.lists.push(created);
+      return created as T;
+    }
+    case "rename_list": {
+      const list = PREVIEW_TASK_BOARD.lists.find(
+        (row) => row.id === String(args?.id ?? ""),
+      );
+      if (list) list.name = String(args?.name ?? list.name);
+      return undefined as T;
+    }
+    case "delete_list": {
+      const id = String(args?.id ?? "");
+      PREVIEW_TASK_BOARD.lists = PREVIEW_TASK_BOARD.lists.filter(
+        (row) => row.id !== id,
+      );
+      return undefined as T;
+    }
+    case "delete_task": {
+      const id = String(args?.id ?? "");
+      PREVIEW_TASK_BOARD.tasks = PREVIEW_TASK_BOARD.tasks.filter(
+        (row) => row.id !== id,
+      );
+      return undefined as T;
+    }
+    case "move_task": {
+      const task = PREVIEW_TASK_BOARD.tasks.find(
+        (row) => row.id === String(args?.id ?? ""),
+      );
+      if (task) task.listId = String(args?.listId ?? task.listId);
+      return undefined as T;
+    }
+    case "reschedule_task": {
+      const task = PREVIEW_TASK_BOARD.tasks.find(
+        (row) => row.id === String(args?.id ?? ""),
+      );
+      if (task) {
+        const start = args?.start;
+        const end = args?.end;
+        task.start = typeof start === "number" ? start : null;
+        task.end = typeof end === "number" ? end : null;
+      }
+      return undefined as T;
+    }
     default:
       console.warn(`[preview] unhandled invoke: ${cmd}`);
       return undefined as T;
