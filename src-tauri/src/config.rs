@@ -121,6 +121,8 @@ pub struct AppSettings {
     #[serde(default = "default_true")]
     pub silent_start: bool,
     #[serde(default)]
+    pub task_notifications: bool,
+    #[serde(default)]
     pub admin_apps: Vec<String>,
     #[serde(default)]
     pub category_guides: CategoryGuides,
@@ -309,6 +311,7 @@ pub fn default_settings() -> AppSettings {
         vision_providers: default_vision_providers(),
         show_rail_labels: true,
         silent_start: true,
+        task_notifications: false,
         admin_apps: vec![],
         category_guides: CategoryGuides::default(),
         ticktick_client_id: String::new(),
@@ -480,6 +483,7 @@ mod tests {
         .unwrap();
         assert!(parsed.show_rail_labels);
         assert!(parsed.silent_start);
+        assert!(!parsed.task_notifications);
         assert!(parsed.admin_apps.is_empty());
         assert!(parsed.ticktick_client_id.is_empty());
     }

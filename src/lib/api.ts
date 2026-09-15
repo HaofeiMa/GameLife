@@ -305,6 +305,8 @@ export interface AppSettings {
   visionProviders: VisionProviderSettings[];
   showRailLabels: boolean;
   silentStart: boolean;
+  /** OS banners for scheduled task reminders. Default off. */
+  taskNotifications: boolean;
   adminApps: string[];
   categoryGuides: CategoryGuides;
   /** system | light | dark — see src/lib/theme.ts */

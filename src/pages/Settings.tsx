@@ -778,6 +778,15 @@ export function Settings() {
                     void persistBasic({ ...settings, showRailLabels: v })
                   }
                 />
+                <ToggleRow
+                  title="任务通知"
+                  description="到点用系统横幅提醒已排期任务。默认关闭。"
+                  checked={settings.taskNotifications === true}
+                  disabled={formLocked}
+                  onChange={(v) =>
+                    void persistBasic({ ...settings, taskNotifications: v })
+                  }
+                />
               </Section>
 
               <Section

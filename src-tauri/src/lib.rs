@@ -16,6 +16,7 @@ pub mod sampler;
 pub mod scheduler;
 pub mod settle;
 pub mod sync;
+pub mod task_notify;
 pub mod text_ai;
 pub mod vision;
 #[cfg(windows)]

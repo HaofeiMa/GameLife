@@ -2,8 +2,13 @@ mod browser;
 mod capture;
 mod document;
 mod input;
+mod notify;
 mod snapshot;
 mod window_id;
+pub use notify::{
+    cancel_all_task_notifications, replace_task_notifications, request_authorization,
+    PendingTaskNotification,
+};
 pub use browser::{
     fetch_browser_url, fetch_browser_url_for, url_for, BROWSER_URL_TIMEOUT,
 };

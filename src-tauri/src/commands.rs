@@ -52,6 +52,10 @@ fn map_db_err(e: DbOpError) -> String {
     }
 }
 
+fn ping_task_notifications() {
+    crate::task_notify::sync_now();
+}
+
 fn with_db_err<F, T>(f: F) -> Result<T, String>
 where
     F: FnOnce(&mut Connection) -> Result<T, DbOpError>,
@@ -2006,12 +2010,20 @@ pub fn list_task_board() -> Result<TaskBoardView, String> {
 
 #[tauri::command]
 pub fn upsert_task(task: TaskView) -> Result<(), String> {
-    with_db_err(|conn| upsert_task_in(conn, task))
+    let out = with_db_err(|conn| upsert_task_in(conn, task));
+    if out.is_ok() {
+        ping_task_notifications();
+    }
+    out
 }
 
 #[tauri::command]
 pub fn toggle_task_done(id: String, done: bool) -> Result<(), String> {
-    with_db_err(|conn| toggle_task_done_in(conn, &id, done, now_secs()))
+    let out = with_db_err(|conn| toggle_task_done_in(conn, &id, done, now_secs()));
+    if out.is_ok() {
+        ping_task_notifications();
+    }
+    out
 }
 
 /// Completing a repeating task inserts the next occurrence. Uncomplete only
@@ -2043,7 +2055,7 @@ fn toggle_task_done_in(
 
 #[tauri::command]
 pub fn reorder_task(id: String, list_id: String, sort: i64) -> Result<(), String> {
-    with_db_err(|conn| {
+    let out = with_db_err(|conn| {
         let lists = load_task_lists(conn)?;
         if !lists.iter().any(|l| l.id == list_id) {
             return Err(DbOpError::Rejected("list_missing".into()));
@@ -2058,12 +2070,20 @@ pub fn reorder_task(id: String, list_id: String, sort: i64) -> Result<(), String
             return Err(DbOpError::Fatal("task missing".into()));
         }
         Ok(())
-    })
+    });
+    if out.is_ok() {
+        ping_task_notifications();
+    }
+    out
 }
 
 #[tauri::command]
 pub fn duplicate_task(id: String) -> Result<TaskView, String> {
-    with_db_err(|conn| duplicate_task_in(conn, &id))
+    let out = with_db_err(|conn| duplicate_task_in(conn, &id));
+    if out.is_ok() {
+        ping_task_notifications();
+    }
+    out
 }
 
 fn duplicate_task_in(conn: &Connection, id: &str) -> Result<TaskView, DbOpError> {
@@ -2182,7 +2202,7 @@ pub fn delete_list(id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn delete_task(id: String) -> Result<(), String> {
-    with_db_err(|conn| {
+    let out = with_db_err(|conn| {
         let n = conn
             .execute("DELETE FROM tasks WHERE id = ?1", params![id])
             .map_err(crate::db_error::map_rusqlite)?;
@@ -2190,7 +2210,11 @@ pub fn delete_task(id: String) -> Result<(), String> {
             return Err(DbOpError::Fatal("task missing".into()));
         }
         Ok(())
-    })
+    });
+    if out.is_ok() {
+        ping_task_notifications();
+    }
+    out
 }
 
 #[tauri::command]
@@ -2215,7 +2239,7 @@ pub fn move_task(id: String, list_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn reschedule_task(id: String, start: Option<i64>, end: Option<i64>) -> Result<(), String> {
-    with_db_err(|conn| {
+    let out = with_db_err(|conn| {
         let mut tasks = load_tasks(conn)?;
         let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
             return Err(DbOpError::Fatal("task missing".into()));
@@ -2235,7 +2259,11 @@ pub fn reschedule_task(id: String, start: Option<i64>, end: Option<i64>) -> Resu
         let stored = task.clone();
         persist_task(conn, &stored)?;
         Ok(())
-    })
+    });
+    if out.is_ok() {
+        ping_task_notifications();
+    }
+    out
 }
 
 #[tauri::command]
@@ -2457,7 +2485,12 @@ pub fn get_settings() -> Result<AppSettings, String> {
 pub fn save_settings(settings: AppSettings, update_policy: Option<bool>) -> Result<(), String> {
     let mut settings = settings;
     crate::config::normalize_vision_providers(&mut settings);
+    let prev = load_settings();
     write_settings_file(&settings)?;
+    if !prev.task_notifications && settings.task_notifications {
+        crate::macos::request_authorization();
+    }
+    ping_task_notifications();
     if !update_policy.unwrap_or(true) {
         return Ok(());
     }

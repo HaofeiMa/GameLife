@@ -473,6 +473,7 @@ export const PREVIEW_SETTINGS: AppSettings = {
   showRailLabels: true,
   todayTimelineMode: "gutter",
   silentStart: true,
+  taskNotifications: false,
   adminApps: ["Mail", "Calendar"],
   categoryGuides: {
     mainline: "",

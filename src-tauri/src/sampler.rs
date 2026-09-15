@@ -464,6 +464,7 @@ pub fn run_sampler_loop(db_path: PathBuf, source: &dyn SampleSource) {
         ticks += 1;
         if ticks % SYNC_CHECK_EVERY_TICKS == 0 {
             crate::sync::maybe_spawn_sync(&conn, ts);
+            crate::task_notify::sync_now();
         }
         thread::sleep(interval);
     }
