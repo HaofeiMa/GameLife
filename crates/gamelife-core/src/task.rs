@@ -1,10 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 pub const MAX_JUDGMENT_TASKS: usize = 20;
+pub const UNSCHEDULED_DROP_SECS: i64 = 1800;
 pub const PRESET_MAINLINE_ID: &str = "list-mainline";
 pub const PRESET_SIDE_ID: &str = "list-side";
 pub const PRESET_LONGTERM_ID: &str = "list-longterm";
 pub const PRESET_CHORE_ID: &str = "list-chore";
+pub const PRESET_LIST_IDS: [&str; 4] = [
+    PRESET_MAINLINE_ID,
+    PRESET_SIDE_ID,
+    PRESET_LONGTERM_ID,
+    PRESET_CHORE_ID,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,9 +59,11 @@ pub struct TaskSnapshot {
 #[derive(Debug, PartialEq, Eq)]
 pub enum TaskListError {
     NoMainline,
-    DuplicateMainline,
     EmptyName,
     TooManyJudgment,
+    PresetLocked,
+    NotEmpty,
+    MissingList,
 }
 
 pub fn preset_lists() -> Vec<TaskList> {
@@ -73,7 +82,7 @@ pub fn preset_lists() -> Vec<TaskList> {
         },
         TaskList {
             id: PRESET_LONGTERM_ID.into(),
-            name: "长期计划".into(),
+            name: "长期规划".into(),
             sort: 2,
             role: ListRole::Longterm,
         },
@@ -90,15 +99,46 @@ pub fn validate_lists(lists: &[TaskList]) -> Result<(), TaskListError> {
     if lists.iter().any(|l| l.name.trim().is_empty()) {
         return Err(TaskListError::EmptyName);
     }
-    let mainline = lists
-        .iter()
-        .filter(|l| l.role == ListRole::Mainline)
-        .count();
-    match mainline {
-        0 => Err(TaskListError::NoMainline),
-        1 => Ok(()),
-        _ => Err(TaskListError::DuplicateMainline),
+    if !lists.iter().any(|l| l.role == ListRole::Mainline) {
+        return Err(TaskListError::NoMainline);
     }
+    Ok(())
+}
+
+pub fn is_preset_list_id(id: &str) -> bool {
+    PRESET_LIST_IDS.contains(&id)
+}
+
+pub fn parse_list_role_strict(role: &str) -> Option<ListRole> {
+    match role {
+        "mainline" => Some(ListRole::Mainline),
+        "side" => Some(ListRole::Side),
+        "longterm" => Some(ListRole::Longterm),
+        "chore" => Some(ListRole::Chore),
+        _ => None,
+    }
+}
+
+pub fn can_delete_list(lists: &[TaskList], tasks: &[Task], id: &str) -> Result<(), TaskListError> {
+    if is_preset_list_id(id) {
+        return Err(TaskListError::PresetLocked);
+    }
+    let Some(list) = lists.iter().find(|l| l.id == id) else {
+        return Err(TaskListError::MissingList);
+    };
+    if tasks.iter().any(|t| t.list_id == id) {
+        return Err(TaskListError::NotEmpty);
+    }
+    if list.role == ListRole::Mainline {
+        let mainline = lists
+            .iter()
+            .filter(|l| l.role == ListRole::Mainline)
+            .count();
+        if mainline <= 1 {
+            return Err(TaskListError::NoMainline);
+        }
+    }
+    Ok(())
 }
 
 pub fn align_range(start: i64, end: i64) -> (i64, i64) {
@@ -140,6 +180,48 @@ pub fn judgment_tasks<'a>(
         return Err(TaskListError::TooManyJudgment);
     }
     Ok(selected)
+}
+
+pub fn schedule_from_drop(ts: i64) -> (i64, i64) {
+    let start = ts / 900 * 900;
+    (start, start + UNSCHEDULED_DROP_SECS)
+}
+
+pub fn move_range_to_day(
+    start: i64,
+    end: i64,
+    old_day_start: i64,
+    new_day_start: i64,
+) -> (i64, i64) {
+    let offset = start - old_day_start;
+    let dur = end - start;
+    align_range(new_day_start + offset, new_day_start + offset + dur)
+}
+
+pub fn snapshots_for_day(
+    tasks: &[Task],
+    lists: &[TaskList],
+    day_start: i64,
+    day_end: i64,
+) -> Vec<TaskSnapshot> {
+    match judgment_tasks(tasks, lists, day_start, day_end) {
+        Ok(selected) => snapshot_of(&selected, lists),
+        Err(TaskListError::TooManyJudgment) => {
+            let mut selected: Vec<&Task> = tasks
+                .iter()
+                .filter(|task| {
+                    lists
+                        .iter()
+                        .find(|l| l.id == task.list_id)
+                        .is_some_and(|list| in_judgment_set(task, list, day_start, day_end))
+                })
+                .collect();
+            selected.sort_by_key(|t| (t.start, t.id.as_str()));
+            selected.truncate(MAX_JUDGMENT_TASKS);
+            snapshot_of(&selected, lists)
+        }
+        Err(_) => Vec::new(),
+    }
 }
 
 pub fn snapshot_of(tasks: &[&Task], lists: &[TaskList]) -> Vec<TaskSnapshot> {
@@ -187,7 +269,7 @@ pub fn match_role_alias(tag: &str) -> Option<ListRole> {
     match tag.trim() {
         "主线" | "主线任务" => Some(ListRole::Mainline),
         "支线" | "支线任务" => Some(ListRole::Side),
-        "长期" | "长期计划" => Some(ListRole::Longterm),
+        "长期" | "长期计划" | "长期规划" => Some(ListRole::Longterm),
         "杂项" => Some(ListRole::Chore),
         _ => None,
     }
@@ -231,9 +313,7 @@ fn overlapping_timed<'a>(
 ) -> Vec<&'a TimedTask> {
     tasks
         .iter()
-        .filter(|t| {
-            !t.done && !t.all_day && t.start < day_end && t.end > day_start
-        })
+        .filter(|t| !t.done && !t.all_day && t.start < day_end && t.end > day_start)
         .collect()
 }
 
@@ -250,11 +330,7 @@ pub fn ticktick_listed_on_day(task: &TimedTask, day_start: i64, day_end: i64) ->
     start_on_day || end_on_day
 }
 
-pub fn ticktick_day_list(
-    tasks: &[TimedTask],
-    day_start: i64,
-    day_end: i64,
-) -> Vec<&TimedTask> {
+pub fn ticktick_day_list(tasks: &[TimedTask], day_start: i64, day_end: i64) -> Vec<&TimedTask> {
     let mut listed: Vec<&TimedTask> = tasks
         .iter()
         .filter(|t| ticktick_listed_on_day(t, day_start, day_end))
@@ -335,11 +411,86 @@ mod tests {
     }
 
     #[test]
-    fn preset_has_single_mainline() {
-        validate_lists(&preset_lists()).unwrap();
-        let mut bad = preset_lists();
-        bad[1].role = ListRole::Mainline;
-        assert_eq!(validate_lists(&bad), Err(TaskListError::DuplicateMainline));
+    fn validate_lists_allows_multiple_mainline() {
+        let mut lists = preset_lists();
+        lists.push(TaskList {
+            id: "list-lab".into(),
+            name: "实验".into(),
+            sort: 4,
+            role: ListRole::Mainline,
+        });
+        validate_lists(&lists).unwrap();
+    }
+
+    #[test]
+    fn validate_lists_rejects_zero_mainline() {
+        let lists: Vec<TaskList> = preset_lists()
+            .into_iter()
+            .filter(|l| l.role != ListRole::Mainline)
+            .collect();
+        assert_eq!(validate_lists(&lists), Err(TaskListError::NoMainline));
+    }
+
+    #[test]
+    fn preset_longterm_is_named_planning() {
+        let long = preset_lists()
+            .into_iter()
+            .find(|l| l.id == PRESET_LONGTERM_ID)
+            .unwrap();
+        assert_eq!(long.name, "长期规划");
+    }
+
+    #[test]
+    fn cannot_delete_preset_or_last_mainline_or_nonempty() {
+        let lists = preset_lists();
+        let tasks = vec![timed("a", PRESET_MAINLINE_ID, 1000, 1900)];
+        assert_eq!(
+            can_delete_list(&lists, &tasks, PRESET_MAINLINE_ID),
+            Err(TaskListError::PresetLocked)
+        );
+        assert_eq!(
+            can_delete_list(&lists, &[], PRESET_SIDE_ID),
+            Err(TaskListError::PresetLocked)
+        );
+        let mut extra = lists.clone();
+        extra.push(TaskList {
+            id: "list-lab".into(),
+            name: "实验".into(),
+            sort: 4,
+            role: ListRole::Mainline,
+        });
+        let occupied = vec![timed("a", "list-lab", 1000, 1900)];
+        assert_eq!(
+            can_delete_list(&extra, &occupied, "list-lab"),
+            Err(TaskListError::NotEmpty)
+        );
+        can_delete_list(&extra, &[], "list-lab").unwrap();
+    }
+
+    #[test]
+    fn drop_unscheduled_is_thirty_minutes_aligned() {
+        assert_eq!(schedule_from_drop(100), (0, 1800));
+    }
+
+    #[test]
+    fn move_range_keeps_duration_on_new_day() {
+        let old = 1_778_083_200;
+        let start = old + 10 * 3600;
+        let end = start + 3600;
+        let new_day = old + 86400;
+        let (s, e) = move_range_to_day(start, end, old, new_day);
+        assert_eq!(e - s, 3600);
+        assert_eq!(s - new_day, start - old);
+    }
+
+    #[test]
+    fn snapshots_for_day_caps_at_twenty_instead_of_empty() {
+        let lists = preset_lists();
+        let many: Vec<Task> = (0..21)
+            .map(|i| timed(&format!("{i}"), PRESET_MAINLINE_ID, 1000 + i, 1900))
+            .collect();
+        let snaps = snapshots_for_day(&many, &lists, 0, 86400);
+        assert_eq!(snaps.len(), 20);
     }
 
     #[test]
@@ -442,12 +593,7 @@ mod tests {
         assert_eq!(ticktick_judgment_set(&tasks, 0, 86400).len(), 1);
     }
 
-    fn listed(
-        id: &str,
-        start: i64,
-        end: i64,
-        all_day: bool,
-    ) -> TimedTask {
+    fn listed(id: &str, start: i64, end: i64, all_day: bool) -> TimedTask {
         TimedTask {
             id: id.into(),
             title: id.into(),
