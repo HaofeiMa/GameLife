@@ -1,4 +1,5 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
 import { createPortal } from "react-dom";
 import { cn } from "../../lib/utils";
 
@@ -91,5 +92,42 @@ export function ContextMenuItem({
     >
       {children}
     </button>
+  );
+}
+
+export function ContextMenuSub({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-[12.5px] text-foreground hover:bg-accent"
+      >
+        {label}
+        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute top-0 left-full z-10 min-w-[160px] rounded-[11px] border border-border bg-popover py-1 shadow-[0_10px_26px_-18px_rgba(120,95,60,0.7)]"
+        >
+          {children}
+        </div>
+      )}
+    </div>
   );
 }

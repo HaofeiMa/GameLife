@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from "react";
 import { PageHeader } from "../components/PageHeader";
+import { TaskActionMenu } from "../components/TaskActionMenu";
 import { TaskDateDialog } from "../components/TaskDateDialog";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -25,10 +26,12 @@ import {
   createList,
   deleteList,
   deleteTask,
+  duplicateTask,
   listTaskBoard,
   moveTask,
   parseTaskLine,
   renameList,
+  reorderTask,
   rescheduleTask,
   toggleTaskDone,
   upsertTask,
@@ -55,6 +58,7 @@ import {
   hitCalendarTs,
   moveRangeToDrop,
 } from "../lib/taskCalendar";
+import { lastCopiedPayload, parseTaskCopy, serializeTaskCopy } from "../lib/taskClipboard";
 import { LIST_MAX, LIST_MIN } from "../lib/taskSplit";
 import { sortTasks, type TaskSort } from "../lib/taskSort";
 import { assignPlanLanes, planLaneSpan } from "../lib/timelinePlan";
@@ -77,6 +81,14 @@ type CalDrag = {
   start: number;
   end: number;
 };
+
+function nextListSort(tasks: TaskView[], listId: string): number {
+  let max = -1;
+  for (const task of tasks) {
+    if (task.listId === listId && task.sort > max) max = task.sort;
+  }
+  return max + 1;
+}
 
 function readSort(): TaskSort {
   try {
@@ -321,6 +333,62 @@ export function Tasks() {
     lists.find((list) => list.role === "mainline")?.id ??
     lists[0]?.id ??
     null;
+
+  useEffect(() => {
+    function typingInField(el: EventTarget | null): boolean {
+      return (
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        (el instanceof HTMLElement && el.isContentEditable)
+      );
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.key !== "c" && event.key !== "C" && event.key !== "v" && event.key !== "V") {
+        return;
+      }
+      if (typingInField(event.target) || typingInField(document.activeElement)) return;
+      const tasks = board?.tasks ?? [];
+      if (event.key === "c" || event.key === "C") {
+        const row =
+          document.activeElement instanceof HTMLElement
+            ? document.activeElement.closest("[data-task-id]")
+            : null;
+        const id = row?.getAttribute("data-task-id");
+        const task = tasks.find((item) => item.id === id);
+        if (!task) return;
+        event.preventDefault();
+        const raw = serializeTaskCopy(task);
+        void navigator.clipboard.writeText(raw).catch(() => undefined);
+        return;
+      }
+      const parsed = lastCopiedPayload() ? parseTaskCopy(lastCopiedPayload() ?? "") : null;
+      if (!parsed) return;
+      event.preventDefault();
+      const listId = currentListId ?? parsed.listId;
+      const id = crypto.randomUUID();
+      const sort = nextListSort(tasks, listId);
+      void (async () => {
+        try {
+          await upsertTask({
+            ...parsed,
+            id,
+            listId,
+            done: false,
+            sort: 0,
+          });
+          await reorderTask(id, listId, sort);
+          await refresh();
+        } catch (e) {
+          addToast(taskCommandError(e));
+        }
+      })();
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [addToast, board, currentListId, refresh]);
 
   const runParse = useCallback(
     async (value: string, listId: string | null) => {
@@ -632,41 +700,35 @@ export function Tasks() {
           确定删除「{deleteTarget?.name}」？
         </p>
       </Dialog>
+      <TaskActionMenu
+        open={menu?.kind === "task"}
+        x={menu?.kind === "task" ? menu.x : 0}
+        y={menu?.kind === "task" ? menu.y : 0}
+        task={menu?.kind === "task" ? menu.task : null}
+        lists={lists}
+        onClose={() => setMenu(null)}
+        onDate={openDateDialog}
+        onMove={(task, listId) => {
+          setMenu(null);
+          void run(() => moveTask(task.id, listId));
+        }}
+        onDuplicate={(task) => {
+          setMenu(null);
+          void run(async () => {
+            await duplicateTask(task.id);
+          });
+        }}
+        onAbandon={(task) => {
+          setMenu(null);
+          setAbandonTask(task);
+        }}
+      />
       <ContextMenu
-        open={menu != null}
-        x={menu?.x ?? 0}
-        y={menu?.y ?? 0}
+        open={menu?.kind === "list"}
+        x={menu?.kind === "list" ? menu.x : 0}
+        y={menu?.kind === "list" ? menu.y : 0}
         onClose={() => setMenu(null)}
       >
-        {menu?.kind === "task" && (
-          <>
-            <ContextMenuItem onSelect={() => openDateDialog(menu.task)}>
-              更改日期…
-            </ContextMenuItem>
-            {lists
-              .filter((list) => list.id !== menu.task.listId)
-              .map((list) => (
-                <ContextMenuItem
-                  key={list.id}
-                  onSelect={() => {
-                    setMenu(null);
-                    void run(() => moveTask(menu.task.id, list.id));
-                  }}
-                >
-                  移动到{list.name}
-                </ContextMenuItem>
-              ))}
-            <ContextMenuItem
-              destructive
-              onSelect={() => {
-                setMenu(null);
-                setAbandonTask(menu.task);
-              }}
-            >
-              放弃任务
-            </ContextMenuItem>
-          </>
-        )}
         {menu?.kind === "list" && (
           <>
             <ContextMenuItem
@@ -815,6 +877,7 @@ export function Tasks() {
                       tasks.map((task) => (
                         <div
                           key={task.id}
+                          data-task-id={task.id}
                           tabIndex={0}
                           onFocus={() => setFocusedListId(list.id)}
                           onPointerDown={(e) => beginCalDrag(task, e, false)}
