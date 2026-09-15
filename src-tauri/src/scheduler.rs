@@ -178,7 +178,8 @@ pub fn metadata_decidable(
     if activity.away >= AWAY_DOMINANT_SECS && strong_core < 300 {
         return true;
     }
-    if grounded_strong_core >= STRONG_CORE_AUTO_SECS
+    let _ = grounded_strong_core;
+    if strong_core >= STRONG_CORE_AUTO_SECS
         && activity.side + activity.admin + activity.distraction
             <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
     {
@@ -1284,10 +1285,10 @@ fn load_slot_task_snapshots(
     }
 }
 
-fn hints_for_slot(samples: &[Sample], policy: &Policy, quests: &[Quest]) -> Vec<Hint> {
+fn hints_for_slot(samples: &[Sample], policy: &Policy, snapshots: &[TaskSnapshot]) -> Vec<Hint> {
     samples
         .iter()
-        .map(|sample| hint_sample(sample, policy, quests))
+        .map(|sample| hint_sample(sample, policy, snapshots))
         .collect()
 }
 
@@ -1302,11 +1303,11 @@ fn credited_spans_for_final_slot(
     if credited_limit <= 0 {
         return Ok(vec![]);
     }
-    let (quest_vid, policy_vid) = slot_version_ids(conn, day, slot_start)?;
+    let (_quest_vid, policy_vid) = slot_version_ids(conn, day, slot_start)?;
     let policy = load_policy_for_version(conn, policy_vid)?;
-    let quests = load_quests_for_version(conn, day, quest_vid)?;
     let samples = load_samples_for_slot(conn, day, slot_start, slot_end)?;
-    let hints = hints_for_slot(&samples, &policy, &quests);
+    let snapshots = load_slot_task_snapshots(conn, day, slot_start)?;
+    let hints = hints_for_slot(&samples, &policy, &snapshots);
     let spans = spans_for_slot(&samples, &hints, slot_start, slot_end);
     Ok(credited_core_spans(
         &samples,
@@ -1352,11 +1353,11 @@ pub fn compute_early_coins(
         )?);
     }
 
-    let (quest_vid, policy_vid) = slot_version_ids(conn, day, through_slot_start)?;
+    let (_quest_vid, policy_vid) = slot_version_ids(conn, day, through_slot_start)?;
     let policy = load_policy_for_version(conn, policy_vid)?;
-    let quests = load_quests_for_version(conn, day, quest_vid)?;
     let samples = load_samples_for_slot(conn, day, through_slot_start, through_slot_end)?;
-    let hints = hints_for_slot(&samples, &policy, &quests);
+    let snapshots = load_slot_task_snapshots(conn, day, through_slot_start)?;
+    let hints = hints_for_slot(&samples, &policy, &snapshots);
     let spans = spans_for_slot(&samples, &hints, through_slot_start, through_slot_end);
     all_spans.extend(credited_core_spans(
         &samples,
@@ -2244,14 +2245,14 @@ mod tests {
     }
 
     #[test]
-    fn metadata_not_decidable_for_title_only_strong_core() {
+    fn metadata_decidable_for_title_only_strong_core() {
         let activity = ActivitySeconds {
             core: 800,
             side: 0,
             distraction: 30,
             ..Default::default()
         };
-        assert!(!metadata_decidable(&activity, 800, 0, 0, 900));
+        assert!(metadata_decidable(&activity, 800, 0, 0, 900));
     }
 
     #[test]
@@ -2343,7 +2344,7 @@ mod tests {
     }
 
     #[test]
-    fn pin_snapshot_skips_done_and_unscheduled() {
+    fn pin_snapshot_skips_done_keeps_unscheduled() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         let day = "2026-09-13";
@@ -2363,7 +2364,8 @@ mod tests {
         )
         .unwrap();
         let json = pin_task_snapshot_json(&conn, day);
-        assert_eq!(json, "[]");
+        assert!(json.contains("INBOX"), "{json}");
+        assert!(!json.contains("DONE"), "{json}");
     }
 
     #[test]
@@ -3854,7 +3856,7 @@ mod tests {
         for i in 0..60 {
             conn.execute(
                 "INSERT INTO samples (ts, day, app, title, document_path, idle_seconds, locked, paused)
-                 VALUES (?1, ?2, 'Cursor', 'main.tex', '/x/main.tex', 2, 0, 0)",
+                 VALUES (?1, ?2, 'Cursor', 'main.tex', '/paper/main.tex', 2, 0, 0)",
                 params![ss + i * 15, day],
             )
             .unwrap();

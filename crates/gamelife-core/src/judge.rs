@@ -141,7 +141,7 @@ pub fn analyze_slot_evidence(
     let quests = merged.as_slice();
     let mut hints = Vec::with_capacity(samples.len());
     for sample in samples {
-        hints.push(hint_sample(sample, policy, quests));
+        hints.push(hint_sample(sample, policy, snapshots));
     }
 
     let spans = spans_for_slot(samples, &hints, slot_start, slot_end);
@@ -195,7 +195,7 @@ pub fn analyze_slot_evidence(
 /// Slot judge pipeline:
 /// 1. analyze_slot_evidence (hints + spans + activity)
 /// 2. branch: unobserved / break-away / strong core / side-distraction / gray+vision
-/// 3. credited = min(observed, actual, strong + bridge + verified); empty snapshots still auto-core when grounded
+/// 3. credited = min(observed, actual, strong + bridge + verified); unmatched work paths go gray
 pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     let actual = input.slot_end - input.slot_start;
     let ev = analyze_slot_evidence(
@@ -209,7 +209,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
     let spans = ev.spans;
     let mut activity = ev.activity;
     let strong_core = ev.strong_core_seconds;
-    let grounded_strong_core = ev.grounded_strong_core_seconds;
+    let _grounded_strong_core = ev.grounded_strong_core_seconds;
     let reading_bridge = ev.reading_bridge_seconds;
     let observed = ev.observed_seconds;
 
@@ -225,11 +225,11 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
         dominant = Dominant::Unobserved;
     } else if activity.away >= AWAY_DOMINANT_SECS && strong_core < 300 {
         dominant = Dominant::BreakAway;
-    } else if grounded_strong_core >= STRONG_CORE_AUTO_SECS
+    } else if strong_core >= STRONG_CORE_AUTO_SECS
         && trio <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
     {
         dominant = Dominant::CoreResearch;
-        credited_raw = grounded_strong_core + reading_bridge;
+        credited_raw = strong_core + reading_bridge;
     } else if trio >= SIDE_DISTRACTION_DOMINANT_SECS && trio > strong_core + reading_bridge {
         if activity.side >= activity.admin && activity.side >= activity.distraction {
             dominant = Dominant::SideProject;
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn strong_core_does_not_need_vision() {
-        let samples = grid("Cursor", "main.tex", 0, 58, 15, 2);
+        let samples = grid("Cursor", "HDP train.py", 0, 58, 15, 2);
         let out = judge_slot(JudgeInput {
             slot_start: 0,
             slot_end: 900,
@@ -762,6 +762,11 @@ mod tests {
             s.document_path = None;
             s
         }));
+        let snaps = [crate::task::TaskSnapshot {
+            id: "p".into(),
+            title: "main.tex".into(),
+            role: crate::task::ListRole::Mainline,
+        }];
         let out = judge_slot(JudgeInput {
             slot_start: 0,
             slot_end: 900,
@@ -771,7 +776,7 @@ mod tests {
                 evidence: vec!["main.tex".into()],
                 hero: true,
             }],
-            tasks: &[],
+            tasks: &snaps,
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: Some(VisionResult {
@@ -879,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_quests_work_path_still_auto_cores() {
+    fn empty_quests_work_path_does_not_auto_core() {
         let samples = grid("Cursor", "main.tex", 0, 58, 15, 2);
         let out = judge_slot(JudgeInput {
             slot_start: 0,
@@ -892,13 +897,8 @@ mod tests {
             vision: None,
             manual_core: None,
         });
-        assert!(!out.pending);
-        assert_eq!(out.dominant, Dominant::CoreResearch);
-        assert!(
-            out.credited_core_seconds >= 780,
-            "work-like document_path must ground auto-core, got {}",
-            out.credited_core_seconds
-        );
+        assert_ne!(out.dominant, Dominant::CoreResearch);
+        assert_eq!(out.credited_core_seconds, 0);
     }
 
     #[test]
@@ -950,6 +950,11 @@ mod tests {
     fn mail_admin_seconds_dominant_is_admin_not_pending() {
         let mut policy = pol();
         policy.admin_apps = vec!["Mail".into()];
+        let chores = [crate::task::TaskSnapshot {
+            id: "c1".into(),
+            title: "Inbox".into(),
+            role: crate::task::ListRole::Chore,
+        }];
         let mut samples = title_only_grid("Mail", "Inbox", 0, 40, 15, 2);
         samples.extend(title_only_grid("Cursor", "notes", 600, 8, 15, 2));
         let out = judge_slot(JudgeInput {
@@ -957,7 +962,7 @@ mod tests {
             slot_end: 900,
             samples: &samples,
             quests: &[],
-            tasks: &[],
+            tasks: &chores,
             policy: &policy,
             capture: CaptureStatus::Missed,
             vision: None,
@@ -1020,6 +1025,11 @@ mod tests {
     #[test]
     fn metadata_core_vision_wechat_is_pending() {
         let samples = grid("Cursor", "main.tex", 0, 40, 15, 2);
+        let snaps = [crate::task::TaskSnapshot {
+            id: "p".into(),
+            title: "main.tex".into(),
+            role: crate::task::ListRole::Mainline,
+        }];
         let out = judge_slot(JudgeInput {
             slot_start: 0,
             slot_end: 900,
@@ -1029,7 +1039,7 @@ mod tests {
                 evidence: vec!["main.tex".into()],
                 hero: true,
             }],
-            tasks: &[],
+            tasks: &snaps,
             policy: &pol(),
             capture: CaptureStatus::Captured,
             vision: Some(VisionResult {
@@ -1267,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn overleaf_thirteen_minutes_auto_cores_without_keyword() {
+    fn overleaf_thirteen_minutes_without_match_does_not_auto_core() {
         let samples: Vec<Sample> = (0..58)
             .map(|i| Sample {
                 ts: i as i64 * 15,
@@ -1293,9 +1303,32 @@ mod tests {
             vision: None,
             manual_core: None,
         });
+        assert_ne!(out.dominant, Dominant::CoreResearch);
+        assert_eq!(out.credited_core_seconds, 0);
+    }
+
+    #[test]
+    fn matched_mainline_thirteen_minutes_auto_cores() {
+        let snaps = [crate::task::TaskSnapshot {
+            id: "1".into(),
+            title: "写方法节".into(),
+            role: crate::task::ListRole::Mainline,
+        }];
+        let samples = title_only_grid("Cursor", "方法节.md", 0, 52, 15, 2);
+        let out = judge_slot(JudgeInput {
+            slot_start: 0,
+            slot_end: 900,
+            samples: &samples,
+            quests: &[],
+            tasks: &snaps,
+            policy: &pol(),
+            capture: CaptureStatus::Scheduled,
+            vision: None,
+            manual_core: None,
+        });
         assert!(!out.pending);
-        assert!(out.credited_core_seconds >= 780);
         assert_eq!(out.dominant, Dominant::CoreResearch);
+        assert!(out.credited_core_seconds >= 780);
     }
 
     #[test]
@@ -1385,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn overleaf_without_quests_still_auto_cores() {
+    fn overleaf_without_match_does_not_auto_core() {
         let samples: Vec<Sample> = (0..58)
             .map(|i| Sample {
                 ts: i as i64 * 15,
@@ -1411,9 +1444,8 @@ mod tests {
             vision: None,
             manual_core: None,
         });
-        assert!(!out.pending);
-        assert_eq!(out.dominant, Dominant::CoreResearch);
-        assert!(out.credited_core_seconds >= 780);
+        assert_ne!(out.dominant, Dominant::CoreResearch);
+        assert_eq!(out.credited_core_seconds, 0);
     }
 
     #[test]
@@ -1441,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_snapshots_still_auto_core_when_grounded() {
+    fn empty_snapshots_grounded_path_does_not_auto_core() {
         let mut samples = grid("Cursor", "Overleaf", 0, 60, 15, 2);
         for s in &mut samples {
             s.document_path = None;
@@ -1458,9 +1490,8 @@ mod tests {
             vision: None,
             manual_core: None,
         });
-        assert!(!out.pending);
-        assert_eq!(out.dominant, Dominant::CoreResearch);
-        assert!(out.credited_core_seconds >= 780);
+        assert_ne!(out.dominant, Dominant::CoreResearch);
+        assert_eq!(out.credited_core_seconds, 0);
     }
 
     #[test]
@@ -1486,12 +1517,24 @@ mod tests {
         }
         let mut policy = pol();
         policy.admin_apps = vec!["Mail".into()];
+        let snaps = [
+            crate::task::TaskSnapshot {
+                id: "m1".into(),
+                title: "paper".into(),
+                role: crate::task::ListRole::Mainline,
+            },
+            crate::task::TaskSnapshot {
+                id: "c1".into(),
+                title: "Inbox".into(),
+                role: crate::task::ListRole::Chore,
+            },
+        ];
         let out = judge_slot(JudgeInput {
             slot_start: 0,
             slot_end: 900,
             samples: &samples,
             quests: &[],
-            tasks: &[],
+            tasks: &snaps,
             policy: &policy,
             capture: CaptureStatus::Skipped,
             vision: None,

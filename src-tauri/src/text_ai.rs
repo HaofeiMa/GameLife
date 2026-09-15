@@ -1,5 +1,6 @@
 use gamelife_core::{
-    nonempty_guides, truncate_guide, CategoryGuides, ListRole, Policy, TaskSnapshot,
+    nonempty_guides, select_prompt_snapshots, truncate_guide, CategoryGuides, ListRole, Policy,
+    TaskSnapshot, MAX_JUDGMENT_TASKS,
 };
 
 use crate::vision::{complete_json, VisionCallError, VisionEndpoint, VISION_TIMEOUT_SECS};
@@ -87,6 +88,12 @@ pub fn build_text_ai_prompt(
     policy: &Policy,
     sample_summary: &str,
 ) -> String {
+    let owned = if snapshots.len() > MAX_JUDGMENT_TASKS {
+        select_prompt_snapshots(snapshots, &[sample_summary])
+    } else {
+        snapshots.to_vec()
+    };
+    let snapshots = owned.as_slice();
     let names = policy_names_blurb(policy);
     let guides = guides_section(guides);
     if snapshots.is_empty() {
@@ -176,6 +183,25 @@ mod tests {
         assert!(!prompt.contains("主线："));
         assert!(prompt.contains("category"));
         assert!(!prompt.contains("task_id"));
+    }
+
+    #[test]
+    fn prompt_caps_snapshots_at_20() {
+        let snaps: Vec<TaskSnapshot> = (0..25)
+            .map(|i| TaskSnapshot {
+                id: format!("t{i}"),
+                title: format!("Task{i:02}"),
+                role: ListRole::Mainline,
+            })
+            .collect();
+        let prompt = build_text_ai_prompt(
+            &snaps,
+            &CategoryGuides::default(),
+            &default_v01(),
+            "app=Cursor title=x url= document_path= idle=1",
+        );
+        let task_lines = prompt.lines().filter(|l| l.starts_with("id=")).count();
+        assert!(task_lines <= 20, "got {task_lines} task lines");
     }
 
     #[test]

@@ -1,12 +1,11 @@
 use crate::document::looks_like_work_path;
+use crate::policy::{matches_any_rule, matches_app_identity, Policy};
 use crate::r#const::LOW_INPUT_IDLE_SECS;
-use crate::policy::{
-    all_side_project_rules, matches_any_rule, matches_app_identity, matches_rule_fields, Policy,
-};
+use crate::task::{match_task_role, ListRole, MatchRole, TaskSnapshot};
 use crate::types::{Hint, Quest, Sample};
 use crate::url::{host_is_research, strip_url_query_fragment, url_host};
 
-pub fn hint_sample(sample: &Sample, policy: &Policy, quests: &[Quest]) -> Hint {
+pub fn hint_sample(sample: &Sample, policy: &Policy, snapshots: &[TaskSnapshot]) -> Hint {
     if sample.screen_locked || sample.paused {
         return Hint::Away;
     }
@@ -17,44 +16,29 @@ pub fn hint_sample(sample: &Sample, policy: &Policy, quests: &[Quest]) -> Hint {
         return Hint::Distraction;
     }
 
-    // Long idle is away — above everything that reads the window rather than the
-    // clock, but below distraction, so a video left playing is still entertainment
-    // rather than a phantom absence. Lower down, an unattended 杂项 or 支线 window
-    // would keep earning for as long as it was left in front.
-    //
-    // This takes the place of the reading bridge (`reading_apps` -> `CoreReading`),
-    // which only ever fired on `idle_seconds >= LOW_INPUT_IDLE_SECS` samples — exactly
-    // the ones this rule now claims first. Those variants still exist in `Hint`, but
-    // nothing produces them any more, so `reading_bridge_seconds` is always 0.
     if sample.idle_seconds >= LOW_INPUT_IDLE_SECS {
         return Hint::Away;
     }
 
-    // Admin reads the whole haystack, not just the app identity: a GameLife tab in
-    // Chrome, or a Claude Code session named after it, is the same work as the app
-    // itself, and identity alone cannot see either. Identity is still tried first so
-    // the known-bundle table keeps resolving localized app names.
-    if matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &policy.admin_apps)
-        || matches_any_rule(&haystacks, &policy.admin_apps)
+    let gamelife = ["GameLife".to_string()];
+    if matches_app_identity(&sample.app, sample.bundle_id.as_deref(), &gamelife)
+        || matches_any_rule(&haystacks, &gamelife)
     {
-        return Hint::Admin;
-    }
-
-    if matches_any_rule(&haystacks, &all_side_project_rules(policy)) {
         return Hint::Side;
     }
 
-    // No app whitelist: every window that has survived the rules above is judged on
-    // what it shows — the window title against this slot's mainline evidence, plus a
-    // work file path or research host. `trusted_apps` used to gate this, which meant a
-    // title could only ever matter for an app already on the list; the list is now
-    // inert and the rules above (entertainment / admin / side, all of which do read the
-    // app name) are what keep a window out of here.
-    if is_core_candidate(sample, quests) {
-        return Hint::CoreCandidate;
+    match match_task_role(
+        &sample.app,
+        &sample.window_title,
+        sample.url.as_deref(),
+        sample.document_path.as_deref(),
+        snapshots,
+    ) {
+        MatchRole::Role(ListRole::Mainline) => Hint::CoreCandidate,
+        MatchRole::Role(ListRole::Side | ListRole::Longterm | ListRole::Custom) => Hint::Side,
+        MatchRole::Role(ListRole::Chore) => Hint::Admin,
+        MatchRole::Mixed | MatchRole::None => Hint::Unsure,
     }
-
-    Hint::Unsure
 }
 
 fn sample_haystacks(sample: &Sample) -> Vec<&str> {
@@ -104,18 +88,6 @@ pub fn is_grounded_core_sample(sample: &Sample, quests: &[Quest]) -> bool {
         return true;
     }
     url_host(&url).is_some_and(|h| host_is_research(&h))
-}
-
-fn is_core_candidate(sample: &Sample, quests: &[Quest]) -> bool {
-    let title_hit = !is_readme_or_settings_title(&sample.window_title)
-        && evidence_in(&sample.window_title, quests);
-    title_hit || is_grounded_core_sample(sample, quests)
-}
-
-fn is_readme_or_settings_title(title: &str) -> bool {
-    matches_rule_fields(&[title], "README")
-        || matches_rule_fields(&[title], "Settings")
-        || title.contains("设置")
 }
 
 #[cfg(test)]
@@ -171,7 +143,7 @@ mod tests {
         let q = [Quest::fixture("HDP", "HDP")];
         let mut s = sample("Cursor", "README.md", 5);
         s.document_path = Some("/proj/HDP/README.md".into());
-        assert_eq!(hint_sample(&s, &p, &q), Hint::CoreCandidate);
+        assert_eq!(hint_sample(&s, &p, &hdp_snap()), Hint::CoreCandidate);
         assert!(is_grounded_core_sample(&s, &q));
     }
 
@@ -186,13 +158,17 @@ mod tests {
             admin_apps: vec![],
             category_guides: CategoryGuides::default(),
         };
-        let q = [Quest::fixture("paper", "paper")];
+        let snaps = [TaskSnapshot {
+            id: "p".into(),
+            title: "paper".into(),
+            role: ListRole::Mainline,
+        }];
         assert_eq!(
-            hint_sample(&sample("Preview", "paper.pdf", 200), &p, &q),
+            hint_sample(&sample("Preview", "paper.pdf", 200), &p, &snaps),
             Hint::Away
         );
         assert_eq!(
-            hint_sample(&sample("Preview", "paper.pdf", 179), &p, &q),
+            hint_sample(&sample("Preview", "paper.pdf", 179), &p, &snaps),
             Hint::CoreCandidate
         );
     }
@@ -233,7 +209,7 @@ mod tests {
 
         let mut side = sample("Google Chrome", "个人网站", 5);
         side.url = Some("https://haofei.ma/".into());
-        assert_eq!(hint_sample(&side, &p, &[]), Hint::Side);
+        assert_eq!(hint_sample(&side, &p, &[]), Hint::Unsure);
 
     }
 
@@ -243,11 +219,11 @@ mod tests {
     fn admin_matches_haystack_not_only_app_identity() {
         let p = mixed_policy();
         let by_title = sample("Google Chrome", "GameLife 三种组织方式", 5);
-        assert_eq!(hint_sample(&by_title, &p, &[]), Hint::Admin);
+        assert_eq!(hint_sample(&by_title, &p, &[]), Hint::Side);
 
         let mut by_path = sample("iTerm2", "✳ gamelife-ui-redesign", 5);
         by_path.document_path = Some("/Volumes/MobileSSD/MyProjects/GameLife".into());
-        assert_eq!(hint_sample(&by_path, &p, &[]), Hint::Admin);
+        assert_eq!(hint_sample(&by_path, &p, &[]), Hint::Side);
 
         let unrelated = sample("Google Chrome", "新闻", 5);
         assert_eq!(hint_sample(&unrelated, &p, &[]), Hint::Unsure);
@@ -266,7 +242,7 @@ mod tests {
         };
         let mut s = sample("Safari", "home", 5);
         s.url = Some("https://haofei.ma/".into());
-        assert_eq!(hint_sample(&s, &p, &[]), Hint::Side);
+        assert_eq!(hint_sample(&s, &p, &[]), Hint::Unsure);
     }
 
     fn hdp_policy() -> Policy {
@@ -281,8 +257,12 @@ mod tests {
         }
     }
 
-    fn hdp_quest() -> [Quest; 1] {
-        [Quest::fixture("HDP", "HDP")]
+    fn hdp_snap() -> [TaskSnapshot; 1] {
+        [TaskSnapshot {
+            id: "hdp".into(),
+            title: "HDP train".into(),
+            role: ListRole::Mainline,
+        }]
     }
 
     #[test]
@@ -290,7 +270,7 @@ mod tests {
         let mut s = sample("Cursor", "train.py — HDP", 5);
         s.document_path = Some("/Users/me/Projects/HDP/train.py".into());
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest()),
+            hint_sample(&s, &hdp_policy(), &hdp_snap()),
             Hint::CoreCandidate
         );
     }
@@ -300,7 +280,7 @@ mod tests {
         let mut s = sample("Cursor", "App.tsx", 5);
         s.document_path = Some("/Users/me/Projects/GameLife/src/App.tsx".into());
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest()),
+            hint_sample(&s, &hdp_policy(), &hdp_snap()),
             Hint::Side
         );
     }
@@ -310,7 +290,7 @@ mod tests {
         let s = sample("Cursor", "train.py — HDP", 5);
         assert_eq!(s.document_path, None);
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest()),
+            hint_sample(&s, &hdp_policy(), &hdp_snap()),
             Hint::CoreCandidate
         );
     }
@@ -320,7 +300,7 @@ mod tests {
         let mut s = sample("光标", "train.py — HDP", 5);
         s.bundle_id = Some("com.todesktop.230313mzl4w4u92".into());
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest()),
+            hint_sample(&s, &hdp_policy(), &hdp_snap()),
             Hint::CoreCandidate
         );
     }
@@ -333,13 +313,13 @@ mod tests {
         assert_eq!(s.document_path, None);
         assert_eq!(s.url, None);
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest()),
+            hint_sample(&s, &hdp_policy(), &hdp_snap()),
             Hint::CoreCandidate
         );
-        assert!(!is_grounded_core_sample(&s, &hdp_quest()));
+        assert!(!is_grounded_core_sample(&s, &[Quest::fixture("HDP", "HDP")]));
 
         s.idle_seconds = 700;
-        assert_eq!(hint_sample(&s, &hdp_policy(), &hdp_quest()), Hint::Away);
+        assert_eq!(hint_sample(&s, &hdp_policy(), &hdp_snap()), Hint::Away);
     }
 
     #[test]
@@ -347,10 +327,10 @@ mod tests {
         let mut s = sample("Cursor", "train.py", 10);
         s.document_path = Some("/Users/me/HDP/train.py".into());
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest()),
+            hint_sample(&s, &hdp_policy(), &hdp_snap()),
             Hint::CoreCandidate
         );
-        assert!(is_grounded_core_sample(&s, &hdp_quest()));
+        assert!(is_grounded_core_sample(&s, &[Quest::fixture("HDP", "HDP")]));
     }
 
     #[test]
@@ -359,7 +339,7 @@ mod tests {
         s.document_path = Some("/paper/main.tex".into());
         assert_eq!(
             hint_sample(&s, &hdp_policy(), &[]),
-            Hint::CoreCandidate
+            Hint::Unsure
         );
         assert!(is_grounded_core_sample(&s, &[]));
     }
@@ -384,8 +364,8 @@ mod tests {
         };
         let mut s = sample("Safari", "Overleaf", 10);
         s.url = Some("https://www.overleaf.com/project/abc123".into());
-        assert_eq!(hint_sample(&s, &p, &hdp_quest()), Hint::CoreCandidate);
-        assert!(is_grounded_core_sample(&s, &hdp_quest()));
+        assert_eq!(hint_sample(&s, &p, &hdp_snap()), Hint::Unsure);
+        assert!(is_grounded_core_sample(&s, &[Quest::fixture("HDP", "HDP")]));
         assert!(is_grounded_core_sample(&s, &[]));
     }
 
@@ -404,7 +384,7 @@ mod tests {
         };
         let mut s = sample("Safari", "Overleaf", 10);
         s.url = Some("https://www.overleaf.com/project/abc123".into());
-        assert_eq!(hint_sample(&s, &p, &hdp_quest()), Hint::CoreCandidate);
+        assert_eq!(hint_sample(&s, &p, &hdp_snap()), Hint::Unsure);
     }
 
     #[test]
@@ -420,7 +400,7 @@ mod tests {
         };
         let mut s = sample("Safari", "HDP lecture", 5);
         s.url = Some("https://www.youtube.com/watch?v=1".into());
-        assert_eq!(hint_sample(&s, &p, &hdp_quest()), Hint::Distraction);
+        assert_eq!(hint_sample(&s, &p, &hdp_snap()), Hint::Distraction);
     }
 
     #[test]
@@ -436,19 +416,14 @@ mod tests {
         };
         let mut s = sample("Safari", "README", 5);
         s.url = Some("https://overleaf.com/project/x".into());
-        assert_eq!(hint_sample(&s, &p, &hdp_quest()), Hint::CoreCandidate);
-        assert!(is_grounded_core_sample(&s, &hdp_quest()));
+        assert_eq!(hint_sample(&s, &p, &hdp_snap()), Hint::Unsure);
+        assert!(is_grounded_core_sample(&s, &[Quest::fixture("HDP", "HDP")]));
     }
 
     #[test]
     fn finish_in_title_without_hdp_evidence_is_unsure() {
-        let q = [Quest {
-            text: "Finish HDP tactile ablation".into(),
-            evidence: vec!["HDP".into()],
-            hero: true,
-        }];
         let s = sample("Cursor", "Finish notes", 5);
-        assert_eq!(hint_sample(&s, &hdp_policy(), &q), Hint::Unsure);
+        assert_eq!(hint_sample(&s, &hdp_policy(), &hdp_snap()), Hint::Unsure);
     }
 
     #[test]
@@ -462,10 +437,14 @@ mod tests {
             admin_apps: vec![],
             category_guides: CategoryGuides::default(),
         };
-        let q = [Quest::fixture("overleaf", "overleaf.com")];
+        let snaps = [TaskSnapshot {
+            id: "o".into(),
+            title: "overleaf.com 论文".into(),
+            role: ListRole::Mainline,
+        }];
         let mut s = sample("Google Chrome", "Overleaf", 5);
         s.url = Some("https://overleaf.com/project/abc".into());
-        assert_eq!(hint_sample(&s, &p, &q), Hint::CoreCandidate);
+        assert_eq!(hint_sample(&s, &p, &snaps), Hint::CoreCandidate);
     }
 
     /// The app does not matter any more — only what the window shows does.
@@ -473,11 +452,11 @@ mod tests {
     fn evidence_in_title_cores_in_any_app() {
         let s = sample("WeChat", "HDP chat", 5);
         assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_quest()),
+            hint_sample(&s, &hdp_policy(), &hdp_snap()),
             Hint::CoreCandidate
         );
         assert_eq!(
-            hint_sample(&sample("WeChat", "chat", 5), &hdp_policy(), &hdp_quest()),
+            hint_sample(&sample("WeChat", "chat", 5), &hdp_policy(), &hdp_snap()),
             Hint::Unsure
         );
     }
@@ -487,7 +466,7 @@ mod tests {
     fn work_file_is_a_candidate_in_any_app() {
         let mut s = sample("Isaac Sim", "scene", 5);
         s.document_path = Some("/paper/main.tex".into());
-        assert_eq!(hint_sample(&s, &hdp_policy(), &[]), Hint::CoreCandidate);
+        assert_eq!(hint_sample(&s, &hdp_policy(), &[]), Hint::Unsure);
         assert!(is_grounded_core_sample(&s, &[]));
     }
 
@@ -504,7 +483,7 @@ mod tests {
         };
         assert_eq!(
             hint_sample(&sample("Mail", "Inbox", 5), &p, &[]),
-            Hint::Admin
+            Hint::Unsure
         );
         let mut yt = sample("Google Chrome", "YouTube", 5);
         yt.url = Some("https://www.youtube.com/watch?v=1".into());
@@ -526,5 +505,48 @@ mod tests {
             hint_sample(&sample("GameLife", "Today", 5), &p, &[]),
             Hint::Side
         );
+    }
+
+    fn default_policy() -> Policy {
+        Policy {
+            trusted_apps: vec![],
+            distraction_rules: default_distraction_rules(),
+            side_project_rules: vec![],
+            reading_apps: vec![],
+            never_capture_apps: vec![],
+            admin_apps: vec![],
+            category_guides: CategoryGuides::default(),
+        }
+    }
+
+    #[test]
+    fn unmatched_work_path_is_unsure() {
+        let mut s = sample("Overleaf", "main.tex", 5);
+        s.document_path = Some("/Users/me/paper/main.tex".into());
+        assert_eq!(hint_sample(&s, &default_policy(), &[]), Hint::Unsure);
+    }
+
+    #[test]
+    fn matched_mainline_title_is_core_candidate() {
+        let snaps = [TaskSnapshot {
+            id: "1".into(),
+            title: "写方法节".into(),
+            role: ListRole::Mainline,
+        }];
+        let h = hint_sample(&sample("Cursor", "方法节.md", 5), &default_policy(), &snaps);
+        assert_eq!(h, Hint::CoreCandidate);
+    }
+
+    #[test]
+    fn youtube_beats_matching_mainline_title() {
+        let snaps = [TaskSnapshot {
+            id: "1".into(),
+            title: "YouTube 教程".into(),
+            role: ListRole::Mainline,
+        }];
+        let mut s = sample("Google Chrome", "YouTube", 5);
+        s.url = Some("https://www.youtube.com/watch?v=1".into());
+        let h = hint_sample(&s, &default_policy(), &snaps);
+        assert_eq!(h, Hint::Distraction);
     }
 }
