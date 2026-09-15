@@ -66,12 +66,14 @@ pub use streak::{
     settle_outcome, streak_at_risk, DayOutcome, FREEZE_PER_MONTH,
 };
 pub use task::{
-    align_range, can_delete_list, in_judgment_set, is_preset_list_id, judgment_tasks,
-    match_role_alias, move_range_to_day, parse_list_role_strict, parse_task_snapshot_json,
-    preset_lists, role_from_hashtag, schedule_from_drop, snapshot_evidence_quests, snapshot_of,
-    snapshots_for_day, ticktick_day_list, ticktick_judgment_set, ticktick_listed_on_day,
+    align_range, can_delete_list, clear_schedule, in_judgment_set, is_preset_list_id,
+    judgment_tasks, match_role_alias, move_range_to_day, next_occurrence, parse_list_role_strict,
+    parse_task_snapshot_json, preset_lists, remind_offsets_ok, resize_range, role_from_hashtag,
+    schedule_from_drop, snapshot_evidence_quests, snapshot_of, snapshots_for_day,
+    spawn_after_complete, ticktick_day_list, ticktick_judgment_set, ticktick_listed_on_day,
     ticktick_overlapping_count, ticktick_snapshot_id, tokenize_title, validate_lists, ListRole,
-    Task, TaskList, TaskListError, TaskRange, TaskSnapshot, TimedTask, MAX_JUDGMENT_TASKS,
+    RepeatRule, ResizeEdge, Task, TaskList, TaskListError, TaskRange, TaskSnapshot, TimedTask,
+    ALLOWED_REMIND_OFFSETS, MAX_JUDGMENT_TASKS,
     PRESET_CHORE_ID, PRESET_LIST_IDS, PRESET_LONGTERM_ID, PRESET_MAINLINE_ID, PRESET_SIDE_ID,
     UNSCHEDULED_DROP_SECS,
 };

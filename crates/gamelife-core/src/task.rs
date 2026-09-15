@@ -1,3 +1,4 @@
+use chrono::{Months, TimeZone};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_JUDGMENT_TASKS: usize = 20;
@@ -38,6 +39,24 @@ pub struct TaskList {
     pub role: ListRole,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatRule {
+    #[default]
+    None,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizeEdge {
+    Start,
+    End,
+}
+
+pub const ALLOWED_REMIND_OFFSETS: [i64; 5] = [0, 5, 15, 30, 60];
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -47,6 +66,12 @@ pub struct Task {
     pub start: Option<i64>,
     pub end: Option<i64>,
     pub range: Option<TaskRange>,
+    #[serde(default)]
+    pub sort: i64,
+    #[serde(default)]
+    pub repeat: RepeatRule,
+    #[serde(default)]
+    pub remind_offsets: Vec<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +173,106 @@ pub fn align_range(start: i64, end: i64) -> (i64, i64) {
         end = start + 900;
     }
     (start, end)
+}
+
+pub fn remind_offsets_ok(offsets: &[i64]) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    for &n in offsets {
+        if !ALLOWED_REMIND_OFFSETS.contains(&n) || !seen.insert(n) {
+            return false;
+        }
+    }
+    true
+}
+
+fn add_one_period(start: i64, end: i64, repeat: RepeatRule) -> (i64, i64) {
+    let dur = end - start;
+    let next_start = match repeat {
+        RepeatRule::None => start,
+        RepeatRule::Daily => start + 86_400,
+        RepeatRule::Weekly => start + 7 * 86_400,
+        RepeatRule::Monthly => add_calendar_month(start),
+    };
+    (next_start, next_start + dur)
+}
+
+fn add_calendar_month(ts: i64) -> i64 {
+    let dt = chrono::Local
+        .timestamp_opt(ts, 0)
+        .single()
+        .unwrap_or_else(|| {
+            chrono::DateTime::from_timestamp(ts, 0)
+                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH)
+                .with_timezone(&chrono::Local)
+        });
+    dt.checked_add_months(Months::new(1))
+        .unwrap_or(dt)
+        .timestamp()
+}
+
+pub fn next_occurrence(
+    start: i64,
+    end: i64,
+    repeat: RepeatRule,
+    today_start: i64,
+) -> Option<(i64, i64)> {
+    if repeat == RepeatRule::None {
+        return None;
+    }
+    let mut s = start;
+    let mut e = end;
+    for _ in 0..4096 {
+        let next = add_one_period(s, e, repeat);
+        s = next.0;
+        e = next.1;
+        if s >= today_start {
+            return Some((s, e));
+        }
+    }
+    Some((s, e))
+}
+
+pub fn spawn_after_complete(
+    done: &Task,
+    new_id: String,
+    today_start: i64,
+    sort: i64,
+) -> Option<Task> {
+    let (start, end) = (done.start?, done.end?);
+    let (start, end) = next_occurrence(start, end, done.repeat, today_start)?;
+    Some(Task {
+        id: new_id,
+        list_id: done.list_id.clone(),
+        title: done.title.clone(),
+        done: false,
+        start: Some(start),
+        end: Some(end),
+        range: done.range,
+        sort,
+        repeat: done.repeat,
+        remind_offsets: done.remind_offsets.clone(),
+    })
+}
+
+pub fn resize_range(start: i64, end: i64, edge: ResizeEdge, at: i64) -> (i64, i64) {
+    let at = at / 900 * 900;
+    match edge {
+        ResizeEdge::Start => {
+            let start = at.min(end - 900);
+            align_range(start, end)
+        }
+        ResizeEdge::End => {
+            let end = at.max(start + 900);
+            align_range(start, end)
+        }
+    }
+}
+
+pub fn clear_schedule(task: &mut Task) {
+    task.start = None;
+    task.end = None;
+    task.repeat = RepeatRule::None;
+    task.remind_offsets.clear();
 }
 
 pub fn in_judgment_set(task: &Task, _list: &TaskList, day_start: i64, day_end: i64) -> bool {
@@ -355,6 +480,7 @@ pub fn ticktick_judgment_set(tasks: &[TimedTask], day_start: i64, day_end: i64) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Datelike, TimeZone};
 
     fn lists() -> Vec<TaskList> {
         preset_lists()
@@ -369,6 +495,9 @@ mod tests {
             start: Some(start),
             end: Some(end),
             range: None,
+            sort: 0,
+            repeat: RepeatRule::None,
+            remind_offsets: vec![],
         }
     }
 
@@ -383,6 +512,9 @@ mod tests {
             start: None,
             end: None,
             range: Some(TaskRange::Month),
+            sort: 0,
+            repeat: RepeatRule::None,
+            remind_offsets: vec![],
         };
         let day0 = 1_778_083_200;
         assert!(!in_judgment_set(&t, &lists[2], day0, day0 + 86400));
@@ -640,5 +772,68 @@ mod tests {
             .map(|t| t.id.as_str())
             .collect();
         assert_eq!(ids, vec!["end", "start"]);
+    }
+
+    #[test]
+    fn next_daily_skips_until_today() {
+        let start = 0;
+        let end = 3600;
+        let today = 3 * 86400;
+        let (s, e) = next_occurrence(start, end, RepeatRule::Daily, today).unwrap();
+        assert_eq!(s, today);
+        assert_eq!(e, today + 3600);
+    }
+
+    #[test]
+    fn next_monthly_clamps_jan31() {
+        let jan31 = chrono::Local
+            .with_ymd_and_hms(2026, 1, 31, 10, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        let end = jan31 + 3600;
+        let today = chrono::Local
+            .with_ymd_and_hms(2026, 2, 1, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        let (s, _) = next_occurrence(jan31, end, RepeatRule::Monthly, today).unwrap();
+        let dt = chrono::DateTime::from_timestamp(s, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        assert_eq!(dt.month(), 2);
+        assert!(dt.day() == 28 || dt.day() == 29);
+    }
+
+    #[test]
+    fn spawn_none_repeat_is_none() {
+        let t = timed("a", PRESET_MAINLINE_ID, 0, 1800);
+        assert!(spawn_after_complete(&t, "b".into(), 0, 1).is_none());
+    }
+
+    #[test]
+    fn clear_schedule_drops_repeat() {
+        let mut t = timed("a", PRESET_MAINLINE_ID, 0, 1800);
+        t.repeat = RepeatRule::Weekly;
+        t.remind_offsets = vec![0, 15];
+        clear_schedule(&mut t);
+        assert_eq!(t.start, None);
+        assert_eq!(t.repeat, RepeatRule::None);
+        assert!(t.remind_offsets.is_empty());
+    }
+
+    #[test]
+    fn resize_start_keeps_end_min_900() {
+        let (s, e) = resize_range(1800, 3600, ResizeEdge::Start, 3000);
+        assert_eq!((s, e), (2700, 3600));
+        let (s, e) = resize_range(0, 1800, ResizeEdge::End, 100);
+        assert_eq!(e - s, 900);
+    }
+
+    #[test]
+    fn remind_offsets_reject_unknown() {
+        assert!(remind_offsets_ok(&[0, 15, 60]));
+        assert!(!remind_offsets_ok(&[7]));
+        assert!(!remind_offsets_ok(&[0, 0]));
     }
 }
