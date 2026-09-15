@@ -75,8 +75,9 @@ const SYNCED_TABLES: &[&str] = &[
 
 /// §4「永不」: rows that must not leave the machine at any scope. `VACUUM INTO`
 /// copies the whole database, so these are deleted from the copy by name.
-/// `app_meta` is handled separately: it is trimmed to `device_id` alone.
-const NEVER_SYNCED_TABLES: &[&str] = &["heartbeat", "ticktick_cache", "task_lists", "tasks"];
+/// Local `task_lists` / `tasks` stay in the backup so a restore brings the plan
+/// book back. `app_meta` is handled separately: it is trimmed to `device_id` alone.
+const NEVER_SYNCED_TABLES: &[&str] = &["heartbeat", "ticktick_cache"];
 
 /// Build a consistent snapshot of `live_db` at `dest`, trimmed to `scope`.
 ///
@@ -1759,10 +1760,9 @@ mod tests {
     }
 
     /// `VACUUM INTO` copies the whole database, so anything §4 lists as
-    /// 「永不」 has to be trimmed out of the copy by name. `ticktick_cache`,
-    /// `task_lists` and `tasks` hold user-written task titles; `app_meta` holds
-    /// this device's sync bookkeeping. None of them belong in a backup, at any
-    /// scope.
+    /// 「永不」 has to be trimmed out of the copy by name. TickTick cache still
+    /// never uploads. Local `task_lists` / `tasks` are part of the backup so a
+    /// restore brings the plan book back.
     #[test]
     fn snapshot_drops_per_device_tables_at_every_scope() {
         let (_dir, live, dest) = temp_pair();
@@ -1781,11 +1781,17 @@ mod tests {
         for scope in [SCOPE_AGGREGATE, SCOPE_SAMPLES] {
             build_snapshot(&live, &dest, scope).unwrap();
             let snap = crate::db::open(&dest).unwrap();
-            for table in ["heartbeat", "ticktick_cache", "task_lists", "tasks"] {
+            for table in ["heartbeat", "ticktick_cache"] {
                 let n: i64 = snap
                     .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                     .unwrap();
                 assert_eq!(n, 0, "{table} leaked at scope {scope}");
+            }
+            for table in ["task_lists", "tasks"] {
+                let n: i64 = snap
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                    .unwrap();
+                assert!(n > 0, "{table} missing from backup at scope {scope}");
             }
             let bookkeeping: i64 = snap
                 .query_row(
@@ -1811,7 +1817,7 @@ mod tests {
         let bytes = std::fs::read(&dest).unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(!text.contains("去买降压药"));
-        assert!(!text.contains("体检预约"));
+        assert!(text.contains("体检预约"));
         assert!(!text.contains("boom"));
     }
 

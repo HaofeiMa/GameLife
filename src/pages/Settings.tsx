@@ -1795,6 +1795,9 @@ export function Settings() {
                     <option value="samples">含原始采样（含窗口标题与路径）</option>
                   </Select>
                 </Field>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  计划本（任务与分组）会进入备份。
+                </p>
                 {normalizeScope(sync.scope) === "samples" && (
                   <p className="rounded-[10px] bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-warning">
                     这一档会把窗口标题、URL 和文档路径一起上传。受保护窗口的脱敏只发生在 AI
