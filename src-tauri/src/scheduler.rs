@@ -338,11 +338,7 @@ pub fn ensure_slot(
     Ok(())
 }
 
-fn pin_task_snapshot_json(conn: &Connection, day: &str) -> String {
-    let Some(day_start) = start_of_named_day(day) else {
-        return "[]".into();
-    };
-    let day_end = end_of_local_day(day_start);
+fn pin_task_snapshot_json(conn: &Connection, _day: &str) -> String {
     let lists = match crate::db::load_task_lists(conn) {
         Ok(v) => v,
         Err(e) => {
@@ -357,7 +353,7 @@ fn pin_task_snapshot_json(conn: &Connection, day: &str) -> String {
             return "[]".into();
         }
     };
-    let snaps = gamelife_core::snapshots_for_day(&tasks, &lists, day_start, day_end);
+    let snaps = gamelife_core::snapshots_open(&tasks, &lists);
     serde_json::to_string(&snaps).unwrap_or_else(|_| "[]".into())
 }
 

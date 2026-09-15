@@ -10,10 +10,10 @@ use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
 use gamelife_core::{
     align_range, can_delete_list, distraction_runs, first_core_hour, format_estimated_minutes,
-    hit_rate, is_lock_screen_app, is_weekday, judgment_tasks, matched_quest_index,
+    hit_rate, is_lock_screen_app, is_weekday, matched_quest_index,
     matches_app_identity, parse_list_role_strict, parse_task_line, streak_at_risk, sum_activity,
     validate_lists, wow_delta, xp_shop_unlocked, ParseContext, Policy,
-    QuestDraft, Task, TaskList, TaskListError, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
+    QuestDraft, RepeatRule, Task, TaskList, TaskListError, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
     PRESET_MAINLINE_ID, SLOT_SECS,
 };
 
@@ -1899,6 +1899,9 @@ fn view_to_task(view: &TaskView) -> Task {
             Some("month") => Some(TaskRange::Month),
             _ => None,
         },
+        sort: 0,
+        repeat: RepeatRule::None,
+        remind_offsets: vec![],
     }
 }
 
@@ -1908,16 +1911,21 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
         Some(TaskRange::Month) => Some("month"),
         None => None,
     };
+    let remind_json =
+        serde_json::to_string(&task.remind_offsets).unwrap_or_else(|_| "[]".into());
     conn.execute(
-        "INSERT INTO tasks (id, list_id, title, done, start, end, range)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO tasks (id, list_id, title, done, start, end, range, sort, repeat, remind_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET
            list_id=excluded.list_id,
            title=excluded.title,
            done=excluded.done,
            start=excluded.start,
            end=excluded.end,
-           range=excluded.range",
+           range=excluded.range,
+           sort=excluded.sort,
+           repeat=excluded.repeat,
+           remind_json=excluded.remind_json",
         params![
             task.id,
             task.list_id,
@@ -1926,6 +1934,9 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
             task.start,
             task.end,
             range,
+            task.sort,
+            crate::db::repeat_sql(task.repeat),
+            remind_json,
         ],
     )
     .map_err(crate::db_error::map_rusqlite)?;
@@ -1942,19 +1953,6 @@ pub fn list_task_board() -> Result<TaskBoardView, String> {
     })
 }
 
-fn reject_too_many_judgment(conn: &Connection, tasks: &[Task]) -> Result<(), DbOpError> {
-    let lists = load_task_lists(conn)?;
-    let day = day_str_for_ts(now_secs());
-    let Some(day_start) = start_of_named_day(&day) else {
-        return Ok(());
-    };
-    let day_end = end_of_local_day(day_start);
-    if let Err(TaskListError::TooManyJudgment) = judgment_tasks(tasks, &lists, day_start, day_end) {
-        return Err(DbOpError::Rejected("too_many_judgment_tasks".into()));
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub fn upsert_task(task: TaskView) -> Result<(), String> {
     with_db_err(|conn| {
@@ -1967,13 +1965,6 @@ pub fn upsert_task(task: TaskView) -> Result<(), String> {
         if stored.id.trim().is_empty() {
             stored.id = format!("task-{}", now_secs());
         }
-        let mut tasks = load_tasks(conn)?;
-        if let Some(existing) = tasks.iter_mut().find(|t| t.id == stored.id) {
-            *existing = stored.clone();
-        } else {
-            tasks.push(stored.clone());
-        }
-        reject_too_many_judgment(conn, &tasks)?;
         persist_task(conn, &stored)?;
         Ok(())
     })
@@ -2147,7 +2138,6 @@ pub fn reschedule_task(id: String, start: Option<i64>, end: Option<i64>) -> Resu
         task.start = start;
         task.end = end;
         let stored = task.clone();
-        reject_too_many_judgment(conn, &tasks)?;
         persist_task(conn, &stored)?;
         Ok(())
     })
@@ -2818,6 +2808,9 @@ mod tests {
                 start: Some(day_start + 9 * 3600),
                 end: Some(day_start + 11 * 3600),
                 range: None,
+                sort: 0,
+                repeat: RepeatRule::None,
+                remind_offsets: vec![],
             },
         )
         .unwrap();
@@ -2831,6 +2824,9 @@ mod tests {
                 start: None,
                 end: None,
                 range: None,
+                sort: 0,
+                repeat: RepeatRule::None,
+                remind_offsets: vec![],
             },
         )
         .unwrap();
@@ -3364,6 +3360,9 @@ mod tests {
                 start: Some(day_start + 10 * 3600),
                 end: Some(day_start + 11 * 3600),
                 range: None,
+                sort: 0,
+                repeat: RepeatRule::None,
+                remind_offsets: vec![],
             },
         )
         .unwrap();
@@ -3377,6 +3376,9 @@ mod tests {
                 start: Some(day_start - 5 * 3600),
                 end: Some(day_start - 4 * 3600),
                 range: None,
+                sort: 0,
+                repeat: RepeatRule::None,
+                remind_offsets: vec![],
             },
         )
         .unwrap();
@@ -3390,6 +3392,9 @@ mod tests {
                 start: Some(day_start + 12 * 3600),
                 end: Some(day_start + 13 * 3600),
                 range: None,
+                sort: 0,
+                repeat: RepeatRule::None,
+                remind_offsets: vec![],
             },
         )
         .unwrap();

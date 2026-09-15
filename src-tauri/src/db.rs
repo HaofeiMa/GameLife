@@ -8,7 +8,9 @@ use gamelife_core::shop::{
     can_start_entertainment, entertainment_remaining_secs, has_entertainment_timer,
     validate_redeem, validate_wish, RedeemError, Wish, WishError, WishKind,
 };
-use gamelife_core::{preset_lists, ListRole, Task, TaskList, TaskRange};
+use gamelife_core::{
+    preset_lists, remind_offsets_ok, ListRole, RepeatRule, Task, TaskList, TaskRange,
+};
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS heartbeat (id INTEGER PRIMARY KEY CHECK (id=1), ts INTEGER NOT NULL);
@@ -102,7 +104,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   done INTEGER NOT NULL DEFAULT 0,
   start INTEGER,
   end INTEGER,
-  range TEXT
+  range TEXT,
+  sort INTEGER NOT NULL DEFAULT 0,
+  repeat TEXT NOT NULL DEFAULT 'none',
+  remind_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS ticktick_cache (
   id TEXT PRIMARY KEY,
@@ -143,7 +148,7 @@ CREATE TABLE IF NOT EXISTS host_day_stats (
 );
 ";
 
-const TARGET_USER_VERSION: i32 = 3;
+const TARGET_USER_VERSION: i32 = 4;
 
 const WAVE1_COLUMNS: &[(&str, &str, &str)] = &[
     ("samples", "document_path", "TEXT"),
@@ -239,6 +244,16 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
              );",
         )
         .map_err(map_rusqlite)?;
+    }
+    if version < 4 {
+        add_column_if_missing(conn, "tasks", "sort", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(conn, "tasks", "repeat", "TEXT NOT NULL DEFAULT 'none'")?;
+        add_column_if_missing(
+            conn,
+            "tasks",
+            "remind_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
     }
     if version < TARGET_USER_VERSION {
         conn.pragma_update(None, "user_version", TARGET_USER_VERSION)
@@ -381,11 +396,16 @@ pub fn load_task_lists(conn: &Connection) -> Result<Vec<TaskList>, DbOpError> {
 
 pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
     let mut stmt = conn
-        .prepare("SELECT id, list_id, title, done, start, end, range FROM tasks ORDER BY start, id")
+        .prepare(
+            "SELECT id, list_id, title, done, start, end, range, sort, repeat, remind_json
+             FROM tasks ORDER BY list_id, sort, id",
+        )
         .map_err(map_rusqlite)?;
     let rows = stmt
         .query_map([], |r| {
             let range: Option<String> = r.get(6)?;
+            let repeat: String = r.get(8)?;
+            let remind_raw: String = r.get(9)?;
             Ok(Task {
                 id: r.get(0)?,
                 list_id: r.get(1)?,
@@ -398,10 +418,38 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
                     Some("month") => Some(TaskRange::Month),
                     _ => None,
                 },
+                sort: r.get(7)?,
+                repeat: parse_repeat(&repeat),
+                remind_offsets: parse_remind_json(&remind_raw),
             })
         })
         .map_err(map_rusqlite)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
+}
+
+fn parse_repeat(raw: &str) -> RepeatRule {
+    match raw {
+        "daily" => RepeatRule::Daily,
+        "weekly" => RepeatRule::Weekly,
+        "monthly" => RepeatRule::Monthly,
+        _ => RepeatRule::None,
+    }
+}
+
+fn parse_remind_json(raw: &str) -> Vec<i64> {
+    serde_json::from_str::<Vec<i64>>(raw)
+        .ok()
+        .filter(|v| remind_offsets_ok(v))
+        .unwrap_or_default()
+}
+
+pub(crate) fn repeat_sql(rule: RepeatRule) -> &'static str {
+    match rule {
+        RepeatRule::None => "none",
+        RepeatRule::Daily => "daily",
+        RepeatRule::Weekly => "weekly",
+        RepeatRule::Monthly => "monthly",
+    }
 }
 
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, DbOpError> {
@@ -565,8 +613,8 @@ pub fn local_device_id(conn: &Connection) -> Result<String, DbOpError> {
 /// rather than baking it in, so a restored snapshot re-stamps itself with the
 /// id that snapshot carries.
 ///
-/// Adding a column is idempotent and carries no version semantics, so
-/// `user_version` stays 3.
+/// Adding `device_id` is idempotent and is not itself a version bump; task
+/// columns (`sort` / `repeat` / `remind_json`) are what move `user_version` to 4.
 fn tag_device_rows(conn: &Connection, device_id: &str) -> Result<(), DbOpError> {
     for table in DEVICE_TAGGED_TABLES {
         add_column_if_missing(conn, table, "device_id", "TEXT NOT NULL DEFAULT ''")?;
@@ -1230,7 +1278,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), 4);
+    }
+
+    #[test]
+    fn migrate_adds_task_sort_repeat_remind_and_sets_version_4() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+               id TEXT PRIMARY KEY, list_id TEXT, title TEXT, done INTEGER,
+               start INTEGER, end INTEGER, range TEXT
+             );
+             INSERT INTO tasks (id, list_id, title, done, start, end, range)
+             VALUES ('a','list-mainline','x',0,NULL,NULL,NULL);
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        crate::db::migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 4);
+        let names = column_names(&conn, "tasks");
+        assert!(names.iter().any(|c| c == "sort"));
+        assert!(names.iter().any(|c| c == "repeat"));
+        assert!(names.iter().any(|c| c == "remind_json"));
+        let loaded = load_tasks(&conn).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].sort, 0);
+        assert_eq!(loaded[0].repeat, RepeatRule::None);
+        assert!(loaded[0].remind_offsets.is_empty());
     }
 
     #[test]
@@ -1241,7 +1317,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, 4);
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM task_lists", [], |r| r.get(0))
             .unwrap();
@@ -1258,10 +1334,10 @@ mod tests {
     }
 
     #[test]
-    fn migrate_new_db_sets_user_version_3() {
+    fn migrate_new_db_sets_user_version_4() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), 4);
         let samples = column_names(&conn, "samples");
         assert!(samples.iter().any(|c| c == "document_path"));
         assert!(samples.iter().any(|c| c == "bundle_id"));
@@ -1350,7 +1426,7 @@ mod tests {
         )
         .unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), 4);
         let path: String = conn
             .query_row("SELECT path FROM samples WHERE ts=1", [], |r| r.get(0))
             .unwrap();
@@ -1362,7 +1438,7 @@ mod tests {
             .unwrap();
         assert_eq!(doc, None);
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), 4);
     }
 
     #[test]
@@ -1372,7 +1448,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, 4);
         conn.execute(
             "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at)
              VALUES ('tt-1','p','t','mainline',1,2,3)",
@@ -1461,8 +1537,8 @@ mod tests {
 
         migrate(&conn).unwrap();
 
-        // Adding a column is not a version-semantics change.
-        assert_eq!(user_version(&conn), 3);
+        // device_id tagging is additive; task columns bump the schema to 4.
+        assert_eq!(user_version(&conn), 4);
 
         let id: String = conn
             .query_row(
