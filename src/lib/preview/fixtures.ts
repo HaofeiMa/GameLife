@@ -247,15 +247,14 @@ export function previewDayView(day: string): DayView {
           },
         ]
       : [],
-    ticktickTasks: sameDay
+    dayTasks: sameDay
       ? [
           {
             id: "tt-1",
-            title: "写设计说明",
+            title: "写设计说明：判断管线与计划槽对照",
             role: "mainline",
             start: DAY_START + 9 * 3600,
             end: DAY_START + 11 * 3600,
-            allDay: false,
           },
           {
             id: "tt-2",
@@ -263,7 +262,6 @@ export function previewDayView(day: string): DayView {
             role: "mainline",
             start: DAY_START + 14 * 3600,
             end: DAY_START + 15 * 3600,
-            allDay: false,
           },
           {
             id: "tt-3",
@@ -271,7 +269,20 @@ export function previewDayView(day: string): DayView {
             role: "chore",
             start: DAY_START + 16 * 3600,
             end: DAY_START + 17 * 3600,
-            allDay: false,
+          },
+          {
+            id: "tt-4",
+            title: "改 GameLife",
+            role: "side",
+            start: DAY_START + 20 * 3600,
+            end: DAY_START + 21 * 3600,
+          },
+          {
+            id: "tt-5",
+            title: "回邮件",
+            role: "chore",
+            start: DAY_START + 10 * 3600,
+            end: DAY_START + 10 * 3600 + 30 * 60,
           },
         ]
       : [],
@@ -426,6 +437,7 @@ export const PREVIEW_SETTINGS: AppSettings = {
     },
   ],
   showRailLabels: true,
+  todayTimelineMode: "gutter",
   silentStart: true,
   adminApps: ["Mail", "Calendar"],
   categoryGuides: {

@@ -234,7 +234,17 @@ pub struct DayView {
     pub app_top: Vec<AppTopRow>,
     pub pending_count: i64,
     pub plan_marks: Vec<PlanMark>,
-    pub ticktick_tasks: Vec<TickTickTaskView>,
+    pub day_tasks: Vec<DayTaskView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayTaskView {
+    pub id: String,
+    pub title: String,
+    pub role: String,
+    pub start: i64,
+    pub end: i64,
 }
 
 #[derive(Serialize)]
@@ -1332,46 +1342,19 @@ fn tasks_overlapping_day(
         .collect())
 }
 
-fn timed_overlaps_day(start: i64, end: i64, day_start: i64, day_end: i64) -> bool {
-    start < day_end && end > day_start
-}
-
-fn insert_plan_mark(
-    by_id: &mut BTreeMap<String, PlanMark>,
-    id: String,
-    start: i64,
-    end: i64,
-    title: String,
-    day_start: i64,
-    day_end: i64,
-) {
-    if timed_overlaps_day(start, end, day_start, day_end) {
-        by_id.entry(id).or_insert(PlanMark { start, end, title });
-    }
-}
-
 fn load_plan_marks(
     conn: &Connection,
     day_start: i64,
     day_end: i64,
 ) -> Result<Vec<PlanMark>, DbOpError> {
-    let cache = crate::ticktick::load_ticktick_cache(conn)?;
-    let mut by_id: BTreeMap<String, PlanMark> = BTreeMap::new();
-    for task in &cache {
-        if task.all_day {
-            continue;
-        }
-        insert_plan_mark(
-            &mut by_id,
-            task.id.clone(),
-            task.start,
-            task.end,
-            task.title.clone(),
-            day_start,
-            day_end,
-        );
-    }
-    Ok(by_id.into_values().collect())
+    Ok(load_day_tasks(conn, day_start, day_end)?
+        .into_iter()
+        .map(|t| PlanMark {
+            start: t.start,
+            end: t.end,
+            title: t.title,
+        })
+        .collect())
 }
 
 fn ticktick_task_view(task: &gamelife_core::TimedTask) -> TickTickTaskView {
@@ -1397,13 +1380,45 @@ fn load_ticktick_day_tasks(
         .collect())
 }
 
+fn load_day_tasks(
+    conn: &Connection,
+    day_start: i64,
+    day_end: i64,
+) -> Result<Vec<DayTaskView>, DbOpError> {
+    let lists = load_task_lists(conn)?;
+    let mut out = Vec::new();
+    for task in load_tasks(conn)? {
+        if task.done {
+            continue;
+        }
+        let (Some(start), Some(end)) = (task.start, task.end) else {
+            continue;
+        };
+        if end <= start || start >= day_end || end <= day_start {
+            continue;
+        }
+        let Some(list) = lists.iter().find(|l| l.id == task.list_id) else {
+            continue;
+        };
+        out.push(DayTaskView {
+            id: task.id,
+            title: task.title,
+            role: list_role_sql(list.role).into(),
+            start,
+            end,
+        });
+    }
+    out.sort_by_key(|t| (t.start, t.end, t.title.clone()));
+    Ok(out)
+}
+
 fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
     let day_start = start_of_named_day(day).ok_or_else(|| DbOpError::Rejected("bad_day".into()))?;
     let day_end = end_of_local_day(day_start);
     let slots = load_today_slots(conn, day)?;
     let pending_count = slots.iter().filter(|s| s.pending).count() as i64;
     let plan_marks = load_plan_marks(conn, day_start, day_end)?;
-    let ticktick_tasks = load_ticktick_day_tasks(conn, day_start, day_end)?;
+    let day_tasks = load_day_tasks(conn, day_start, day_end)?;
     Ok(DayView {
         day: day.to_string(),
         day_start,
@@ -1413,7 +1428,7 @@ fn build_day_view(conn: &Connection, day: &str) -> Result<DayView, DbOpError> {
         app_top: load_app_top(conn, day, 5)?,
         pending_count,
         plan_marks,
-        ticktick_tasks,
+        day_tasks,
     })
 }
 
@@ -3576,16 +3591,43 @@ mod tests {
         migrate(&conn).unwrap();
         let day = "2026-09-11";
         let day_start = start_of_named_day(day).unwrap();
-        conn.execute(
-            "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at)
-             VALUES ('tt-a', 'p', 'A', 'mainline', ?1, ?2, 1)",
-            params![day_start + 10 * 3600, day_start + 11 * 3600],
+        persist_task(
+            &conn,
+            &Task {
+                id: "tt-a".into(),
+                list_id: PRESET_MAINLINE_ID.into(),
+                title: "A".into(),
+                done: false,
+                start: Some(day_start + 10 * 3600),
+                end: Some(day_start + 11 * 3600),
+                range: None,
+            },
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at)
-             VALUES ('tt-out', 'p', 'Out', 'mainline', ?1, ?2, 1)",
-            params![day_start - 5 * 3600, day_start - 4 * 3600],
+        persist_task(
+            &conn,
+            &Task {
+                id: "tt-out".into(),
+                list_id: PRESET_MAINLINE_ID.into(),
+                title: "Out".into(),
+                done: false,
+                start: Some(day_start - 5 * 3600),
+                end: Some(day_start - 4 * 3600),
+                range: None,
+            },
+        )
+        .unwrap();
+        persist_task(
+            &conn,
+            &Task {
+                id: "tt-done".into(),
+                list_id: PRESET_MAINLINE_ID.into(),
+                title: "Done".into(),
+                done: true,
+                start: Some(day_start + 12 * 3600),
+                end: Some(day_start + 13 * 3600),
+                range: None,
+            },
         )
         .unwrap();
         let snapshot = r#"[{"id":"tt-a","title":"A","role":"mainline"}]"#;
@@ -3600,30 +3642,9 @@ mod tests {
         assert_eq!(view.plan_marks[0].title, "A");
         assert_eq!(view.plan_marks[0].start, day_start + 10 * 3600);
         assert_eq!(view.plan_marks[0].end, day_start + 11 * 3600);
-        assert_eq!(view.ticktick_tasks.len(), 1);
-        assert_eq!(view.ticktick_tasks[0].title, "A");
-        assert_eq!(view.ticktick_tasks[0].role, "mainline");
-        assert!(!view.ticktick_tasks[0].all_day);
-
-        conn.execute(
-            "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at, all_day)
-             VALUES ('tt-all', 'p', '全天', 'mainline', ?1, ?2, 1, 1)",
-            params![day_start, day_start + 86_400],
-        )
-        .unwrap();
-        let view = build_day_view(&conn, day).unwrap();
-        assert_eq!(
-            view.plan_marks.len(),
-            1,
-            "all-day must not become a plan mark"
-        );
-        assert_eq!(view.ticktick_tasks.len(), 2);
-        let all_day = view
-            .ticktick_tasks
-            .iter()
-            .find(|t| t.id == "tt-all")
-            .expect("all-day listed");
-        assert!(all_day.all_day);
-        assert_eq!(all_day.title, "全天");
+        assert_eq!(view.day_tasks.len(), 1);
+        assert_eq!(view.day_tasks[0].title, "A");
+        assert_eq!(view.day_tasks[0].role, "mainline");
+        assert_eq!(view.day_tasks[0].id, "tt-a");
     }
 }

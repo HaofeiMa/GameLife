@@ -304,6 +304,8 @@ export interface AppSettings {
   ticktickColumnRoles: Record<string, string>;
   /** system | light | dark — see src/lib/theme.ts */
   theme: string;
+  /** Unused by the UI; kept so old config.json still loads. */
+  todayTimelineMode: string;
   sync: SyncSettings;
 }
 
@@ -327,7 +329,15 @@ export interface DayView {
   appTop: AppTopRow[];
   pendingCount: number;
   planMarks: PlanMark[];
-  ticktickTasks: TickTickTask[];
+  dayTasks: DayTask[];
+}
+
+export interface DayTask {
+  id: string;
+  title: string;
+  role: string;
+  start: number;
+  end: number;
 }
 
 export interface TickTickTask {

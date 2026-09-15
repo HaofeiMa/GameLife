@@ -23,6 +23,7 @@ import {
   reportMisclassification,
   reviewSlot,
   type AppTopRow,
+  type DayTask,
   type DayView,
   type SlotActivityMinutes,
   type TodaySlot,
@@ -34,13 +35,21 @@ import {
   dominantLabel,
   peekStoredCalDay,
   pendingActivityMinutes,
-  planMarksFromSnapshots,
+  planBlocks,
   resolvedActivityMinutes,
   weekdayLabel,
 } from "../lib/calendar";
 import { ticktickRoleLabel, ticktickTaskTimeLabel } from "../lib/ticktickBoard";
 import { compareDayTasks, COMPARE_STATE_LABEL, type DayComparison } from "../lib/taskCompare";
 import { categoryColor, categoryOf, type CategoryKey } from "../lib/theme";
+import {
+  ACTUAL_MAX,
+  ACTUAL_MIN,
+  assignPlanLanes,
+  planLaneSpan,
+  splitTimedPlan,
+} from "../lib/timelinePlan";
+import { useTimelineSplit } from "../hooks/useTimelineSplit";
 import { cn } from "../lib/utils";
 
 const GOLD_DAY_MSG = "黄金日已达成。继续记录，但不再获得硬币或能量。";
@@ -68,6 +77,7 @@ const HOURS = Array.from({ length: 24 }, (_, h) => h);
 const SLOT_H = 18;
 const HOUR_H = SLOT_H * 4;
 const SLOT_COUNT = 96;
+const HOUR_GUTTER = 52;
 /** Chest pips are one per credited hour; 宝箱 needs 6. */
 const CHEST_HOURS = 6;
 
@@ -237,10 +247,121 @@ function SlotReview({
 /* Timeline                                                            */
 /* ------------------------------------------------------------------ */
 
+function TimelineSplitHandle({
+  dragging,
+  actualWidth,
+  handleProps,
+}: {
+  dragging: boolean;
+  actualWidth: number;
+  handleProps: {
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => void;
+    onPointerMove: (e: React.PointerEvent<HTMLElement>) => void;
+    onPointerUp: (e: React.PointerEvent<HTMLElement>) => void;
+    onPointerCancel: (e: React.PointerEvent<HTMLElement>) => void;
+    onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => void;
+  };
+}) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-valuemin={ACTUAL_MIN}
+      aria-valuemax={ACTUAL_MAX}
+      aria-valuenow={actualWidth}
+      aria-label="调整计划与实际的宽度"
+      tabIndex={0}
+      {...handleProps}
+      className={cn(
+        "relative z-20 w-2 shrink-0 cursor-col-resize touch-none",
+        "before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:transition-colors",
+        dragging
+          ? "before:bg-primary"
+          : "before:bg-transparent hover:before:bg-primary/40 focus-visible:before:bg-primary",
+      )}
+    />
+  );
+}
+
+function SlotStrip({
+  dayStart,
+  slotsByStart,
+  now,
+  showNow,
+  onPick,
+}: {
+  dayStart: number;
+  slotsByStart: Map<number, TodaySlot>;
+  now: number;
+  showNow: boolean;
+  onPick: (slot: TodaySlot) => void;
+}) {
+  const nowTop = ((now - dayStart) / 900) * SLOT_H;
+  return (
+    <div className="relative" style={{ height: HOURS.length * HOUR_H }}>
+      {Array.from({ length: SLOT_COUNT }, (_, i) => {
+        const start = dayStart + i * 900;
+        const slot = slotsByStart.get(start);
+        const top = i * SLOT_H;
+        if (!slot) {
+          return (
+            <div
+              key={start}
+              className="absolute inset-x-0 rounded-[5px] bg-slot-empty"
+              style={{ top: top + 1, height: SLOT_H - 2 }}
+            />
+          );
+        }
+        const live = showNow && now >= start && now < start + 900 && !slot.final;
+        const cat: CategoryKey = slot.pending
+          ? "pending"
+          : categoryOf(slot.dominant);
+        const label = live ? "正在识别…" : dominantLabel(slot.dominant);
+        return (
+          <button
+            key={start}
+            type="button"
+            data-pending={slot.pending ? "true" : undefined}
+            onClick={() => onPick(slot)}
+            title={`${hm(start)} · ${dominantLabel(slot.dominant)} · 计入 ${slot.creditedMinutes} 分钟`}
+            className={cn(
+              "absolute inset-x-0 flex items-center overflow-hidden rounded-[5px] pl-1.5 text-left text-[10px] leading-none text-ink-slot transition-colors",
+              "hover:brightness-[0.97] dark:hover:brightness-110",
+              live && "animate-pulse-soft",
+            )}
+            style={{
+              top: top + 1,
+              height: SLOT_H - 2,
+              background: `color-mix(in srgb, ${categoryColor(cat)} ${slot.pending ? 32 : 22}%, hsl(var(--card)))`,
+              borderLeft: `3px solid ${categoryColor(cat)}`,
+            }}
+          >
+            <span className="truncate text-foreground/80">{label}</span>
+          </button>
+        );
+      })}
+      {showNow && (
+        <div
+          className="pointer-events-none absolute inset-x-0 z-10 flex items-center"
+          style={{ top: nowTop }}
+          aria-hidden
+        >
+          <span className="absolute -left-[9px] -top-[4px] size-[9px] rounded-full border-2 border-card bg-destructive" />
+          <span className="h-0 w-full border-t-2 border-destructive" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Timeline({
   dayView,
   slotsByStart,
-  planMarks,
+  dayTasks,
+  actualWidth,
+  dragging,
+  splitRef,
+  handleProps,
   calDay,
   today,
   now,
@@ -250,7 +371,17 @@ function Timeline({
 }: {
   dayView: DayView;
   slotsByStart: Map<number, TodaySlot>;
-  planMarks: { start: number; end: number; title: string }[];
+  dayTasks: DayTask[];
+  actualWidth: number;
+  dragging: boolean;
+  splitRef: React.RefObject<HTMLDivElement | null>;
+  handleProps: {
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => void;
+    onPointerMove: (e: React.PointerEvent<HTMLElement>) => void;
+    onPointerUp: (e: React.PointerEvent<HTMLElement>) => void;
+    onPointerCancel: (e: React.PointerEvent<HTMLElement>) => void;
+    onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => void;
+  };
   calDay: string;
   today: string;
   now: number;
@@ -260,9 +391,19 @@ function Timeline({
 }) {
   const dayStart = dayView.dayStart;
   const totalHeight = HOURS.length * HOUR_H;
-  const nowTop = ((now - dayStart) / 900) * SLOT_H;
-  // The mockup's .ch meta is the window the timeline is showing ("14:00 –
-  // 22:00"), so it follows the scroll position rather than the whole day.
+  const timed = splitTimedPlan(dayTasks);
+  const { items: planItems, laneCount } = assignPlanLanes(
+    planBlocks(
+      timed.map((t) => ({
+        start: t.start,
+        end: t.end,
+        role: t.role,
+        title: t.title,
+      })),
+      dayStart,
+    ),
+  );
+  const lanes = Math.max(1, laneCount);
   const [visibleRange, setVisibleRange] = useState<string>();
   useEffect(() => {
     const el = scrollRef.current;
@@ -278,8 +419,6 @@ function Timeline({
   }, [scrollRef, dayView.day]);
   const scrolledForRef = useRef<string | null>(null);
 
-  // Open the timeline on the current hour instead of 00:00 — the day being
-  // looked at is almost always "now". Runs once per selected day.
   useEffect(() => {
     if (!showNow || scrolledForRef.current === calDay) return;
     const el = scrollRef.current;
@@ -291,21 +430,23 @@ function Timeline({
 
   return (
     <Card className="flex h-full min-w-0 flex-col overflow-hidden">
-      {/* The mockup's .ch: the day's span as the title, the visible window
-          as the meta. Day paging lives in the page header, like 統計's. */}
       <CardCh
         title={calDay === today ? "今天的时间" : weekdayLabel(calDay)}
         meta={visibleRange}
       />
       <div
         ref={scrollRef}
-        className="h-full overflow-y-auto overscroll-contain"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
       >
-        <div className="relative" style={{ height: totalHeight }}>
+        <div
+          ref={splitRef}
+          className={cn("relative flex", dragging && "select-none")}
+          style={{ height: totalHeight }}
+        >
           {HOURS.map((h) => (
             <div
               key={h}
-              className="absolute left-[10px] flex items-center bg-card pr-1.5"
+              className="absolute left-[10px] z-10 flex items-center bg-card pr-1.5"
               style={{ top: h * HOUR_H + 2 }}
             >
               <span className="text-[10px] tabular-nums text-muted-foreground">
@@ -320,82 +461,47 @@ function Timeline({
               style={{ top: h * HOUR_H }}
             />
           ))}
-
-          <div className="absolute inset-y-0 left-[52px] right-3">
-            {Array.from({ length: SLOT_COUNT }, (_, i) => {
-              const start = dayStart + i * 900;
-              const slot = slotsByStart.get(start);
-              const top = i * SLOT_H;
-
-              if (!slot) {
-                return (
-                  <div
-                    key={start}
-                    className="absolute inset-x-0 rounded-[5px] bg-slot-empty"
-                    style={{ top: top + 1, height: SLOT_H - 2 }}
-                  />
-                );
-              }
-
-              const live = showNow && now >= start && now < start + 900 && !slot.final;
-              const cat: CategoryKey = slot.pending
-                ? "pending"
-                : categoryOf(slot.dominant);
-              const label = live
-                ? "正在识别…"
-                : dominantLabel(slot.dominant);
-
+          <div
+            className="relative min-w-0 flex-1"
+            style={{ marginLeft: HOUR_GUTTER }}
+          >
+            {planItems.map((mark) => {
+              const cat = categoryOf(mark.role);
+              const span = planLaneSpan(mark, planItems, lanes);
               return (
-                <button
-                  key={start}
-                  type="button"
-                  data-pending={slot.pending ? "true" : undefined}
-                  onClick={() => onPick(slot)}
-                  title={`${hm(start)} · ${dominantLabel(slot.dominant)} · 计入 ${slot.creditedMinutes} 分钟`}
-                  className={cn(
-                    "absolute inset-x-0 flex items-center overflow-hidden rounded-[5px] pl-2 text-left text-[10px] leading-none text-ink-slot transition-colors",
-                    "hover:brightness-[0.97] dark:hover:brightness-110",
-                    live && "animate-pulse-soft",
-                  )}
+                <div
+                  key={`${mark.title}-${mark.rowStart}-${mark.lane}`}
+                  title={`${mark.title} · ${ticktickRoleLabel(mark.role)}`}
+                  className="absolute overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[11px] leading-tight"
                   style={{
-                    top: top + 1,
-                    height: SLOT_H - 2,
-                    background: `color-mix(in srgb, ${categoryColor(cat)} ${slot.pending ? 32 : 22}%, hsl(var(--card)))`,
+                    left: `${(mark.lane / lanes) * 100}%`,
+                    width: `calc(${(span / lanes) * 100}% - 4px)`,
+                    top: mark.rowStart * SLOT_H + 1,
+                    height: mark.rowSpan * SLOT_H - 2,
+                    background: `color-mix(in srgb, ${categoryColor(cat)} 28%, hsl(var(--card)))`,
                     borderLeft: `3px solid ${categoryColor(cat)}`,
                   }}
                 >
-                  <span className="truncate text-foreground/80">{label}</span>
-                </button>
+                  <span className="line-clamp-6 font-semibold text-foreground/85">
+                    {mark.title}
+                  </span>
+                </div>
               );
             })}
-
-            {planMarks.map((mark, i) => {
-              const start = Math.max(mark.start, dayStart);
-              const end = Math.min(mark.end, dayStart + 86400);
-              if (end <= start) return null;
-              return (
-                <div
-                  key={`mark-${i}`}
-                  title={mark.title}
-                  className="pointer-events-none absolute right-0.5 w-1 rounded-full bg-primary/50"
-                  style={{
-                    top: ((start - dayStart) / 900) * SLOT_H,
-                    height: Math.max(6, ((end - start) / 900) * SLOT_H),
-                  }}
-                />
-              );
-            })}
-
-            {showNow && (
-              <div
-                className="pointer-events-none absolute inset-x-0 flex items-center"
-                style={{ top: nowTop }}
-                aria-hidden
-              >
-                <span className="absolute -left-[9px] -top-[4px] size-[9px] rounded-full border-2 border-card bg-destructive" />
-                <span className="h-0 w-full border-t-2 border-destructive" />
-              </div>
-            )}
+          </div>
+          <TimelineSplitHandle
+            dragging={dragging}
+            actualWidth={actualWidth}
+            handleProps={handleProps}
+          />
+          <div className="relative shrink-0 pr-1" style={{ width: actualWidth }}>
+            <SlotStrip
+              dayStart={dayStart}
+              slotsByStart={slotsByStart}
+              now={now}
+              showNow={showNow}
+              onPick={onPick}
+            />
           </div>
         </div>
       </div>
@@ -418,7 +524,7 @@ const COMPARE_TAG: Record<string, string> = {
  * Today's hero. Each row is one self-assigned mainline task: what you planned
  * to spend on it, and what actually got credited inside that window.
  *
- * Without TickTick (or with no mainline task today) it falls back to naming
+ * Without a scheduled mainline task today it falls back to naming
  * the apps the credited mainline minutes actually came from, so the card
  * never empties out.
  */
@@ -447,7 +553,7 @@ function TaskCompareCard({
         {!emptyDay && rows.length === 0 && (
           <>
             <p className="text-xs text-muted-foreground">
-              今天没有排主线的 TickTick 任务。下面是实际推进了主线的应用。
+              今天没有排主线的计划。下面是实际推进了主线的应用。
             </p>
             {coreApps.length === 0 ? (
               <EmptyLine>还没有计入主线的应用</EmptyLine>
@@ -521,7 +627,7 @@ function TaskCompareCard({
             <strong className="font-semibold text-mainline">
               {minutesLabel(compare.unplannedMinutes)}
             </strong>
-            主线 · 这段时间没有对应的 TickTick 任务
+            主线 · 这段时间没有对应的计划
           </p>
         )}
       </div>
@@ -610,6 +716,7 @@ export function Today() {
   const [selected, setSelected] = useState<TodaySlot | null>(null);
   const [openApp, setOpenApp] = useState<string | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const timelineSplit = useTimelineSplit();
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
@@ -771,7 +878,6 @@ export function Today() {
     );
   }
 
-  const marks = planMarksFromSnapshots(dayView.planMarks ?? [], dayView.dayStart);
   const showNow = calDay === data.day;
   const isTodayCal = calDay === data.day;
   const activity = resolvedActivityMinutes(dayView.slots);
@@ -779,8 +885,8 @@ export function Today() {
   const pendingCount = isTodayCal ? data.pendingCount : dayView.pendingCount;
   const pendingMinutes = pendingActivityMinutes(dayView.slots);
   const emptyDay = dayView.slots.length === 0;
-  const ticktickTasks = dayView.ticktickTasks ?? [];
-  const compare = compareDayTasks(ticktickTasks, dayView.slots);
+  const dayTasks = dayView.dayTasks ?? [];
+  const compare = compareDayTasks(dayTasks, dayView.slots);
   const observedMinutes = Object.values(activity).reduce((a, b) => a + b, 0);
   const corePct =
     observedMinutes > 0 ? Math.round((activity.core / observedMinutes) * 100) : 0;
@@ -810,17 +916,22 @@ export function Today() {
           <TaskCompareCard compare={compare} appTop={appTop} emptyDay={emptyDay} />
 
           <div className="flex flex-col gap-3 lg:h-[560px] lg:flex-row">
-            <div className="flex min-w-0 flex-1 flex-col">            <Timeline
-              dayView={dayView}
-              slotsByStart={slotsByStart}
-              planMarks={marks}
-              calDay={calDay}
-              today={data.day}
-              now={now}
-              showNow={showNow}
-              onPick={setSelected}
-              scrollRef={timelineRef}
-            />
+            <div className="flex min-w-0 flex-1 flex-col">
+              <Timeline
+                dayView={dayView}
+                slotsByStart={slotsByStart}
+                dayTasks={dayTasks}
+                actualWidth={timelineSplit.actualWidth}
+                dragging={timelineSplit.dragging}
+                splitRef={timelineSplit.splitRef}
+                handleProps={timelineSplit.handleProps}
+                calDay={calDay}
+                today={data.day}
+                now={now}
+                showNow={showNow}
+                onPick={setSelected}
+                scrollRef={timelineRef}
+              />
             </div>
 
             <div className="flex w-full shrink-0 flex-col gap-3 lg:w-[330px]">
@@ -952,15 +1063,15 @@ export function Today() {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card className="flex flex-col">
-              <CardCh title="当天 TickTick" />
+              <CardCh title="当天任务" />
               <div className="px-[18px] pt-0.5 pb-3.5">
-                {ticktickTasks.length === 0 ? (
+                {dayTasks.length === 0 ? (
                   <EmptyLine>
-                    当天没有 TickTick 任务。可在设置里点同步任务。
+                    当天没有已排期任务。可在任务页添加。
                   </EmptyLine>
                 ) : (
                   <ul className="space-y-2">
-                    {ticktickTasks.map((task) => (
+                    {dayTasks.map((task) => (
                       <li
                         key={task.id}
                         className="flex items-center justify-between gap-3 text-sm"

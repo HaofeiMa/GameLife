@@ -1,4 +1,4 @@
-import type { TickTickTask, TodaySlot } from "./api";
+import type { DayTask, TodaySlot } from "./api";
 
 /** Every slot is a 15-minute cell, and `slot.start` is its opening second. */
 const SLOT_SECONDS = 900;
@@ -34,17 +34,17 @@ export interface DayComparison {
  *
  * 判定时 AI 确实做过任务匹配，但那次匹配没有落库（`JudgeOutput` 不存 matched
  * task id），所以这里退一步问的是「你计划做主线的那段时间里，你到底推进了多少
- * 主线」——诚实、不需要后端改动，也没有 TickTick 时自然降级。
+ * 主线」——诚实、不需要后端改动，也没有计划时自然降级。
  *
  * 每个槽只会归给第一条与它重叠的计划，这样 `actualInPlanMinutes +
  * unplannedMinutes` 恰好等于当天的 credited 总数，不会重复计数。
  */
 export function compareDayTasks(
-  tasks: TickTickTask[],
+  tasks: DayTask[],
   slots: TodaySlot[],
 ): DayComparison {
   const plans = tasks
-    .filter((t) => t.role === "mainline" && !t.allDay && t.end > t.start)
+    .filter((t) => t.role === "mainline" && t.end > t.start)
     .slice()
     .sort((a, b) => a.start - b.start);
 

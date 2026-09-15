@@ -100,9 +100,6 @@ describe("ticktickTaskTimeLabel", () => {
   it("says 全天 for all-day tasks and a clock range otherwise", () => {
     expect(
       ticktickTaskTimeLabel({
-        id: "1",
-        title: "a",
-        role: "mainline",
         start: 0,
         end: 86400,
         allDay: true,
@@ -111,9 +108,6 @@ describe("ticktickTaskTimeLabel", () => {
     const start = Date.UTC(2026, 8, 15, 7, 0, 0) / 1000;
     const end = Date.UTC(2026, 8, 15, 8, 0, 0) / 1000;
     const label = ticktickTaskTimeLabel({
-      id: "2",
-      title: "b",
-      role: "mainline",
       start,
       end,
       allDay: false,

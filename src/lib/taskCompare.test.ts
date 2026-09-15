@@ -1,17 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { TickTickTask, TodaySlot } from "./api";
+import type { DayTask, TodaySlot } from "./api";
 import { compareDayTasks, compareState } from "./taskCompare";
 
 const DAY_START = 1_760_000_000;
 
-function task(id: string, hourStart: number, hourEnd: number, role = "mainline"): TickTickTask {
+function task(id: string, hourStart: number, hourEnd: number, role = "mainline"): DayTask {
   return {
     id,
     title: `任务 ${id}`,
     role,
     start: DAY_START + hourStart * 3600,
     end: DAY_START + hourEnd * 3600,
-    allDay: false,
   };
 }
 

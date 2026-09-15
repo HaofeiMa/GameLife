@@ -108,7 +108,11 @@ export function groupTicktickTodayTasks(tasks: TickTickTask[]): TickTickTaskGrou
   return groups;
 }
 
-export function ticktickTaskTimeLabel(task: TickTickTask): string {
+export function ticktickTaskTimeLabel(task: {
+  start: number;
+  end: number;
+  allDay?: boolean;
+}): string {
   if (task.allDay) return "全天";
   const fmt = (ts: number) =>
     new Date(ts * 1000).toLocaleTimeString("zh-CN", {
