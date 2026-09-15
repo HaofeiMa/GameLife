@@ -5,11 +5,11 @@ import {
   useMemo,
   useRef,
   useState,
-  type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import { PageHeader } from "../components/PageHeader";
+import { TaskDateDialog } from "../components/TaskDateDialog";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { ContextMenu, ContextMenuItem } from "../components/ui/context-menu";
@@ -41,14 +41,10 @@ import {
   COLLAPSED_KEY,
   isPresetListId,
   listRoleLabel,
-  localDayOf,
-  localTimeOf,
   parseCollapsed,
-  shiftRangeToDay,
   taskCommandError,
   taskTimeLabel,
   toggleCollapsed,
-  unixAt,
 } from "../lib/taskBoard";
 import {
   CAL_GUTTER,
@@ -165,9 +161,6 @@ export function Tasks() {
   const [focusedListId, setFocusedListId] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [dateTask, setDateTask] = useState<TaskView | null>(null);
-  const [dateDay, setDateDay] = useState(todayIso());
-  const [dateStart, setDateStart] = useState("");
-  const [dateEnd, setDateEnd] = useState("");
   const [abandonTask, setAbandonTask] = useState<TaskView | null>(null);
   const [renameTarget, setRenameTarget] = useState<TaskListView | null>(null);
   const [renameName, setRenameName] = useState("");
@@ -406,45 +399,6 @@ export function Tasks() {
   function openDateDialog(task: TaskView) {
     setMenu(null);
     setDateTask(task);
-    if (task.start != null && task.end != null) {
-      setDateDay(localDayOf(task.start));
-      setDateStart(localTimeOf(task.start));
-      setDateEnd(localTimeOf(task.end));
-    } else {
-      setDateDay(todayIso());
-      setDateStart("");
-      setDateEnd("");
-    }
-  }
-
-  async function confirmDate(event: FormEvent) {
-    event.preventDefault();
-    if (!dateTask) return;
-    const hasStart = dateStart.trim().length > 0;
-    const hasEnd = dateEnd.trim().length > 0;
-    if (hasStart !== hasEnd) {
-      addToast("开始和结束时间要一起填。");
-      return;
-    }
-    try {
-      if (hasStart && hasEnd) {
-        const start = unixAt(dateDay, dateStart);
-        const end = unixAt(dateDay, dateEnd);
-        await rescheduleTask(dateTask.id, start, end);
-      } else if (dateTask.start != null && dateTask.end != null) {
-        const shifted = shiftRangeToDay(
-          dateTask.start,
-          dateTask.end,
-          dayStartUnix(localDayOf(dateTask.start)),
-          dayStartUnix(dateDay),
-        );
-        await rescheduleTask(dateTask.id, shifted.start, shifted.end);
-      }
-      await refresh();
-      setDateTask(null);
-    } catch (e) {
-      addToast(taskCommandError(e));
-    }
   }
 
   const parsedListName =
@@ -579,54 +533,12 @@ export function Tasks() {
           </div>
         </div>
       </Dialog>
-      <Dialog
-        open={dateTask != null}
+      <TaskDateDialog
+        task={dateTask}
         onClose={() => setDateTask(null)}
-        title="更改日期"
-        footer={
-          <>
-            <Button variant="outline" size="sm" onClick={() => setDateTask(null)}>
-              取消
-            </Button>
-            <Button size="sm" form="task-date-form">
-              保存
-            </Button>
-          </>
-        }
-      >
-        <form id="task-date-form" className="flex flex-col gap-3" onSubmit={confirmDate}>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="task-date-day">日期</Label>
-            <Input
-              id="task-date-day"
-              type="date"
-              value={dateDay}
-              onChange={(e) => setDateDay(e.target.value)}
-              required
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="task-date-start">开始</Label>
-              <Input
-                id="task-date-start"
-                type="time"
-                value={dateStart}
-                onChange={(e) => setDateStart(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="task-date-end">结束</Label>
-              <Input
-                id="task-date-end"
-                type="time"
-                value={dateEnd}
-                onChange={(e) => setDateEnd(e.target.value)}
-              />
-            </div>
-          </div>
-        </form>
-      </Dialog>
+        onSaved={refresh}
+        onError={addToast}
+      />
       <Dialog
         open={abandonTask != null}
         onClose={() => setAbandonTask(null)}

@@ -102,6 +102,10 @@ export function taskCommandError(err: unknown): string {
       return "请选择分组角色。";
     case "need_start_and_end":
       return "开始和结束时间要一起填。";
+    case "repeat_needs_schedule":
+      return "未排期不能设重复。";
+    case "bad_remind":
+      return "提醒时间无效。";
     default:
       return code;
   }
