@@ -2564,9 +2564,16 @@ pub struct ProviderTestResult {
 
 /// `async` on purpose: Tauri runs sync commands on the main thread, so a
 /// blocking HTTP call in one freezes the webview for its whole duration.
-/// Every command below that touches the network is async for that reason.
+/// `reqwest::blocking` must still run on `spawn_blocking` — calling it on
+/// the Tokio worker deadlocks and the 设置 button never comes back.
 #[tauri::command]
 pub async fn test_vision_provider(provider: Option<String>) -> Result<ProviderTestResult, String> {
+    tauri::async_runtime::spawn_blocking(move || test_vision_provider_blocking(provider))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn test_vision_provider_blocking(provider: Option<String>) -> Result<ProviderTestResult, String> {
     let settings = load_settings();
     let id = provider
         .unwrap_or_else(|| settings.primary_provider.clone())

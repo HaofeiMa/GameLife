@@ -113,16 +113,12 @@ struct QuestVersionJson {
 }
 
 pub fn parse_quest_versions_json(json: &str) -> Result<Vec<Quest>, String> {
-    let parsed: Vec<QuestVersionJson> = serde_json::from_str(json)
-        .map_err(|e| e.to_string())?;
+    let parsed: Vec<QuestVersionJson> = serde_json::from_str(json).map_err(|e| e.to_string())?;
     let drafts = parsed
         .into_iter()
         .map(|q| QuestDraft {
             text: q.text,
-            evidence: q
-                .evidence
-                .or(q.keywords)
-                .unwrap_or_default(),
+            evidence: q.evidence.or(q.keywords).unwrap_or_default(),
             hero: q.hero.unwrap_or(false),
         })
         .collect();

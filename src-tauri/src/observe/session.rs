@@ -54,7 +54,10 @@ mod tests {
     #[test]
     fn the_session_type_variable_wins() {
         assert_eq!(kind_from(Some("x11"), true, true), SessionKind::X11);
-        assert_eq!(kind_from(Some("wayland"), false, true), SessionKind::Wayland);
+        assert_eq!(
+            kind_from(Some("wayland"), false, true),
+            SessionKind::Wayland
+        );
         assert_eq!(kind_from(Some(" X11 "), false, false), SessionKind::X11);
     }
 

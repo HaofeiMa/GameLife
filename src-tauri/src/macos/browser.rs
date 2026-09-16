@@ -42,11 +42,7 @@ pub(crate) fn wait_output_timeout(
                 let mut stdout = child.stdout.take()?;
                 let mut bytes = Vec::new();
                 stdout.read_to_end(&mut bytes).ok()?;
-                return if status.success() {
-                    Some(bytes)
-                } else {
-                    None
-                };
+                return if status.success() { Some(bytes) } else { None };
             }
             Ok(None) => {
                 if start.elapsed() >= timeout {
@@ -118,7 +114,10 @@ mod tests {
         ));
         assert!(!is_url_browser(None, "WeChat"));
         assert!(!is_url_browser(None, ""));
-        assert!(!is_url_browser(Some("com.microsoft.edgemac"), "Microsoft Edge"));
+        assert!(!is_url_browser(
+            Some("com.microsoft.edgemac"),
+            "Microsoft Edge"
+        ));
     }
 
     #[test]

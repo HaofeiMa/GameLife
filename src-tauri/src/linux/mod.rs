@@ -47,7 +47,6 @@ const JPEG_QUALITY: u8 = 85;
 /// A window smaller than this is a tooltip or a stub.
 const MIN_CAPTURE_SIDE: u16 = 8;
 
-
 struct Display {
     conn: RustConnection,
     root: Window,
@@ -72,7 +71,11 @@ fn with_display<T>(f: impl FnOnce(&Display) -> T) -> Option<T> {
 }
 
 fn atom(conn: &RustConnection, name: &[u8]) -> Option<u32> {
-    conn.intern_atom(false, name).ok()?.reply().ok().map(|r| r.atom)
+    conn.intern_atom(false, name)
+        .ok()?
+        .reply()
+        .ok()
+        .map(|r| r.atom)
 }
 
 /// The first 32-bit value of a property, or `None` when it is unset or empty.
@@ -102,13 +105,21 @@ fn property_bytes(
 
 /// `WM_CLASS` is two NUL-terminated strings: instance, then class.
 fn wm_class(conn: &RustConnection, window: Window) -> (Option<String>, Option<String>) {
-    let Some(bytes) = property_bytes(conn, window, AtomEnum::WM_CLASS.into(), AtomEnum::STRING.into())
-    else {
+    let Some(bytes) = property_bytes(
+        conn,
+        window,
+        AtomEnum::WM_CLASS.into(),
+        AtomEnum::STRING.into(),
+    ) else {
         return (None, None);
     };
     let mut parts = bytes.split(|&b| b == 0).filter(|p| !p.is_empty());
-    let instance = parts.next().map(|p| String::from_utf8_lossy(p).into_owned());
-    let class = parts.next().map(|p| String::from_utf8_lossy(p).into_owned());
+    let instance = parts
+        .next()
+        .map(|p| String::from_utf8_lossy(p).into_owned());
+    let class = parts
+        .next()
+        .map(|p| String::from_utf8_lossy(p).into_owned());
     (instance, class)
 }
 
@@ -154,7 +165,11 @@ pub fn snapshot() -> FrontmostSnapshot {
         let app = class.clone().or(instance).unwrap_or_default();
         let bundle_id = atom(conn, b"_GTK_APPLICATION_ID")
             .and_then(|id| property_bytes(conn, window, id, AtomEnum::STRING.into()))
-            .map(|bytes| String::from_utf8_lossy(&bytes).trim_end_matches('\0').to_string())
+            .map(|bytes| {
+                String::from_utf8_lossy(&bytes)
+                    .trim_end_matches('\0')
+                    .to_string()
+            })
             .filter(|id| !id.is_empty());
 
         FrontmostSnapshot {
@@ -364,8 +379,8 @@ pub fn capture_window(window_id: u64, path: &Path) -> Result<(), ()> {
     let bytes_per_pixel = (bits_per_pixel / 8) as usize;
     let row_bytes = (geometry.width as usize) * bytes_per_pixel;
     // X pads every scanline out to `scanline_pad` bits.
-    let stride = row_bytes.div_ceil((scanline_pad as usize / 8).max(1))
-        * (scanline_pad as usize / 8).max(1);
+    let stride =
+        row_bytes.div_ceil((scanline_pad as usize / 8).max(1)) * (scanline_pad as usize / 8).max(1);
 
     let mut rgb = Vec::with_capacity((geometry.width as usize) * (geometry.height as usize) * 3);
     for row in 0..geometry.height as usize {
@@ -381,8 +396,8 @@ pub fn capture_window(window_id: u64, path: &Path) -> Result<(), ()> {
         }
     }
 
-    let image = image::RgbImage::from_raw(geometry.width as u32, geometry.height as u32, rgb)
-        .ok_or(())?;
+    let image =
+        image::RgbImage::from_raw(geometry.width as u32, geometry.height as u32, rgb).ok_or(())?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| ())?;
     }

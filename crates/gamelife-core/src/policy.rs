@@ -289,7 +289,9 @@ pub(crate) fn matches_rule_fields(haystacks: &[&str], rule: &str) -> bool {
 }
 
 pub(crate) fn matches_any_rule(haystacks: &[&str], rules: &[String]) -> bool {
-    rules.iter().any(|rule| matches_rule_fields(haystacks, rule))
+    rules
+        .iter()
+        .any(|rule| matches_rule_fields(haystacks, rule))
 }
 
 pub(crate) fn matches_app_name(app: &str, names: &[String]) -> bool {
@@ -431,7 +433,11 @@ mod tests {
         assert!(matches_app_identity("zotero", None, &p.trusted_apps));
         assert!(matches_app_identity("matlab", None, &p.trusted_apps));
         assert!(matches_app_identity("pycharm64", None, &p.trusted_apps));
-        assert!(matches_app_identity("jetbrains-pycharm", None, &p.trusted_apps));
+        assert!(matches_app_identity(
+            "jetbrains-pycharm",
+            None,
+            &p.trusted_apps
+        ));
         assert!(matches_app_identity("JupyterLab", None, &p.trusted_apps));
         let never = builtin_never_capture();
         assert!(!never_capture_removable("1Password", &never));

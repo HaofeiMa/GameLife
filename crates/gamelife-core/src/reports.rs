@@ -6,7 +6,10 @@ pub fn hit_rate(credited_secs: &[i64], threshold: i64) -> f64 {
     if credited_secs.is_empty() {
         return 0.0;
     }
-    let hits = credited_secs.iter().filter(|&&secs| secs >= threshold).count();
+    let hits = credited_secs
+        .iter()
+        .filter(|&&secs| secs >= threshold)
+        .count();
     hits as f64 / credited_secs.len() as f64
 }
 

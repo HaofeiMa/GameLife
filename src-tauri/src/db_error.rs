@@ -1,6 +1,6 @@
+use rusqlite::ffi;
 use rusqlite::Error;
 use rusqlite::ErrorCode;
-use rusqlite::ffi;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DbOpError {

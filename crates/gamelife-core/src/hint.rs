@@ -210,7 +210,6 @@ mod tests {
         let mut side = sample("Google Chrome", "个人网站", 5);
         side.url = Some("https://haofei.ma/".into());
         assert_eq!(hint_sample(&side, &p, &[]), Hint::Unsure);
-
     }
 
     /// 杂项 matches the window, not just the app: this is what makes a GameLife tab
@@ -279,10 +278,7 @@ mod tests {
     fn gamelife_document_path_is_side() {
         let mut s = sample("Cursor", "App.tsx", 5);
         s.document_path = Some("/Users/me/Projects/GameLife/src/App.tsx".into());
-        assert_eq!(
-            hint_sample(&s, &hdp_policy(), &hdp_snap()),
-            Hint::Side
-        );
+        assert_eq!(hint_sample(&s, &hdp_policy(), &hdp_snap()), Hint::Side);
     }
 
     #[test]
@@ -316,7 +312,10 @@ mod tests {
             hint_sample(&s, &hdp_policy(), &hdp_snap()),
             Hint::CoreCandidate
         );
-        assert!(!is_grounded_core_sample(&s, &[Quest::fixture("HDP", "HDP")]));
+        assert!(!is_grounded_core_sample(
+            &s,
+            &[Quest::fixture("HDP", "HDP")]
+        ));
 
         s.idle_seconds = 700;
         assert_eq!(hint_sample(&s, &hdp_policy(), &hdp_snap()), Hint::Away);
@@ -337,10 +336,7 @@ mod tests {
     fn work_like_document_path_is_grounded_without_quest_tokens() {
         let mut s = sample("Cursor", "main.tex", 10);
         s.document_path = Some("/paper/main.tex".into());
-        assert_eq!(
-            hint_sample(&s, &hdp_policy(), &[]),
-            Hint::Unsure
-        );
+        assert_eq!(hint_sample(&s, &hdp_policy(), &[]), Hint::Unsure);
         assert!(is_grounded_core_sample(&s, &[]));
     }
 

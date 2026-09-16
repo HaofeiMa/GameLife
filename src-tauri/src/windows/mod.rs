@@ -172,8 +172,8 @@ mod ffi {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, SRCCOPY,
+        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        HBITMAP, HDC, HGDIOBJ, SRCCOPY,
     };
     use windows_sys::Win32::System::StationsAndDesktops::{
         CloseDesktop, OpenInputDesktop, DESKTOP_READOBJECTS, DESKTOP_SWITCHDESKTOP,
@@ -275,9 +275,8 @@ mod ffi {
     /// cannot distinguish "locked" from "another desktop took over", which for
     /// this app are the same thing: nobody is looking at the window.
     pub(super) fn screen_locked() -> bool {
-        let desktop = unsafe {
-            OpenInputDesktop(0, 0, DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP)
-        };
+        let desktop =
+            unsafe { OpenInputDesktop(0, 0, DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP) };
         if desktop.is_null() {
             return true;
         }
@@ -337,17 +336,7 @@ mod ffi {
         let printed = unsafe { PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT) };
         if printed == 0 {
             unsafe {
-                BitBlt(
-                    mem_dc,
-                    0,
-                    0,
-                    width,
-                    height,
-                    window_dc,
-                    0,
-                    0,
-                    SRCCOPY,
-                );
+                BitBlt(mem_dc, 0, 0, width, height, window_dc, 0, 0, SRCCOPY);
             }
         }
 

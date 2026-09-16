@@ -28,20 +28,13 @@ mod tests {
 
     #[test]
     fn picks_first_layer0_for_pid() {
-        let windows = [
-            w(7, 0, 42, true),
-            w(7, 0, 43, true),
-        ];
+        let windows = [w(7, 0, 42, true), w(7, 0, 43, true)];
         assert_eq!(pick_front_window_id(7, &windows), Some(42));
     }
 
     #[test]
     fn skips_other_pid_and_menu_layer() {
-        let windows = [
-            w(1, 0, 99, true),
-            w(7, 25, 100, true),
-            w(7, 0, 42, true),
-        ];
+        let windows = [w(1, 0, 99, true), w(7, 25, 100, true), w(7, 0, 42, true)];
         assert_eq!(pick_front_window_id(7, &windows), Some(42));
     }
 

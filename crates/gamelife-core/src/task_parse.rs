@@ -280,7 +280,9 @@ fn strip_title(rest: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{preset_lists, TaskList, PRESET_CHORE_ID, PRESET_LONGTERM_ID, PRESET_MAINLINE_ID};
+    use crate::task::{
+        preset_lists, TaskList, PRESET_CHORE_ID, PRESET_LONGTERM_ID, PRESET_MAINLINE_ID,
+    };
     use chrono::DateTime;
 
     fn ctx<'a>(lists: &'a [TaskList]) -> ParseContext<'a> {

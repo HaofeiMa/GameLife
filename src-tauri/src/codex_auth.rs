@@ -85,7 +85,11 @@ pub fn session_from_json(raw: &str) -> Option<CodexSession> {
         });
     }
     let tokens = file.tokens?;
-    let access = tokens.access_token.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let access = tokens
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
     let refresh = tokens
         .refresh_token
         .as_deref()

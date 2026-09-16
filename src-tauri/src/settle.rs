@@ -155,10 +155,7 @@ pub fn read_canonical_day(
     Ok(Some(canonical_slots_on(&conn, day)?))
 }
 
-pub fn canonical_slots_on(
-    conn: &Connection,
-    day: &str,
-) -> Result<Vec<CanonicalSlot>, DbOpError> {
+pub fn canonical_slots_on(conn: &Connection, day: &str) -> Result<Vec<CanonicalSlot>, DbOpError> {
     // `final` only, mirroring `credited_before_slot`: a slot still awaiting
     // review, or one the day's close converted to `unknown`, contributes
     // nothing to the day and pays nothing.
@@ -359,7 +356,11 @@ mod tests {
         let morning = day_events(day, &whole[..4]);
         let afternoon = day_events(day, &whole[4..]);
 
-        assert_eq!(coin_ticks(&all), 8, "2h of core is 8 quarter-hour coin ticks");
+        assert_eq!(
+            coin_ticks(&all),
+            8,
+            "2h of core is 8 quarter-hour coin ticks"
+        );
         assert_eq!(coin_ticks(&morning), 4);
         assert_eq!(coin_ticks(&afternoon), 4);
 
@@ -737,9 +738,17 @@ mod tests {
         // Well inside the grace period, so coverage is what decides.
         let now = start_of_named_day("2026-09-12").unwrap();
 
-        f.upload("aaa", end_of_d + 7200, &[final_slot("2026-09-10", 0, 900, 0)]);
+        f.upload(
+            "aaa",
+            end_of_d + 7200,
+            &[final_slot("2026-09-10", 0, 900, 0)],
+        );
         f.upload("bbb", stale, &[final_slot("2026-09-10", 900, 900, 0)]);
-        f.upload("aaa", end_of_d + 7200, &[final_slot("2026-09-11", 0, 900, 0)]);
+        f.upload(
+            "aaa",
+            end_of_d + 7200,
+            &[final_slot("2026-09-11", 0, 900, 0)],
+        );
         f.rebuild();
 
         let report = f.settle(now, 36);
@@ -762,7 +771,11 @@ mod tests {
         // 72h after the day ended, comfortably past the 36h grace.
         let now = start_of_named_day("2026-09-14").unwrap();
 
-        f.upload("aaa", end_of_d + 7200, &[final_slot("2026-09-10", 0, 900, 0)]);
+        f.upload(
+            "aaa",
+            end_of_d + 7200,
+            &[final_slot("2026-09-10", 0, 900, 0)],
+        );
         f.upload("bbb", end_of_d - 3600, &[]);
         f.rebuild();
 

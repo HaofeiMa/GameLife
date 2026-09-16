@@ -81,8 +81,8 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::{
-        DayOutcome, can_use_freeze, freeze_month_key, freeze_quota_used, new_milestones,
-        recompute_streak, settle_outcome, streak_at_risk,
+        can_use_freeze, freeze_month_key, freeze_quota_used, new_milestones, recompute_streak,
+        settle_outcome, streak_at_risk, DayOutcome,
     };
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
@@ -129,7 +129,10 @@ mod tests {
         let streak_after = recompute_streak(&after_freeze);
         assert_eq!(recompute_streak(&fri_completed), 1);
         assert_eq!(streak_before, 0);
-        assert_eq!(streak_after, streak_before + 1 + recompute_streak(&fri_completed));
+        assert_eq!(
+            streak_after,
+            streak_before + 1 + recompute_streak(&fri_completed)
+        );
         assert_eq!(streak_after, 2);
     }
 
@@ -154,9 +157,15 @@ mod tests {
         use crate::r#const::CHEST_SECS;
         let chest = i64::try_from(CHEST_SECS).unwrap();
         assert_eq!(settle_outcome(0, chest, false), None);
-        assert_eq!(settle_outcome(chest, chest, false), Some(DayOutcome::Completed));
+        assert_eq!(
+            settle_outcome(chest, chest, false),
+            Some(DayOutcome::Completed)
+        );
         assert_eq!(settle_outcome(0, chest, true), Some(DayOutcome::Failed));
-        assert_eq!(settle_outcome(chest, chest, true), Some(DayOutcome::Completed));
+        assert_eq!(
+            settle_outcome(chest, chest, true),
+            Some(DayOutcome::Completed)
+        );
     }
 
     #[test]

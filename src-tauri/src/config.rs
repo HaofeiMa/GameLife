@@ -28,6 +28,9 @@ pub struct VisionProviderSettings {
     /// `"custom"` | `"codex"`. Empty means a pre-migration preset.
     #[serde(default)]
     pub kind: String,
+    /// Display name for a custom card. Empty falls back to the numbered title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     pub base_url: String,
     pub model: String,
 }
@@ -136,6 +139,10 @@ pub struct AppSettings {
     /// `normalizeThemePreference` in src/lib/theme.ts.
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Color wash: `default` | `qinglan` | … Normalised on the frontend by
+    /// `normalizeColorTheme` in src/lib/theme.ts.
+    #[serde(default = "default_color_theme")]
+    pub color_theme: String,
     #[serde(default)]
     pub sync: SyncSettings,
 }
@@ -156,6 +163,10 @@ fn default_theme() -> String {
     THEME_SYSTEM.into()
 }
 
+fn default_color_theme() -> String {
+    "default".into()
+}
+
 pub fn show_window_on_launch(silent_start: bool) -> bool {
     !silent_start
 }
@@ -165,12 +176,14 @@ pub fn default_vision_providers() -> Vec<VisionProviderSettings> {
         VisionProviderSettings {
             id: PROVIDER_OPENCODE_GO.into(),
             kind: KIND_CUSTOM.into(),
+            name: String::new(),
             base_url: "https://opencode.ai/zen/go/v1".into(),
             model: "deepseek-v4-flash-vision-exp".into(),
         },
         VisionProviderSettings {
             id: PROVIDER_CODEX.into(),
             kind: KIND_CODEX.into(),
+            name: String::new(),
             base_url: String::new(),
             model: DEFAULT_CODEX_MODEL.into(),
         },
@@ -205,6 +218,7 @@ fn as_codex(p: &VisionProviderSettings) -> VisionProviderSettings {
     VisionProviderSettings {
         id: PROVIDER_CODEX.into(),
         kind: KIND_CODEX.into(),
+        name: String::new(),
         base_url: String::new(),
         model: model.into(),
     }
@@ -214,6 +228,7 @@ fn as_custom(p: &VisionProviderSettings) -> VisionProviderSettings {
     VisionProviderSettings {
         id: p.id.clone(),
         kind: KIND_CUSTOM.into(),
+        name: p.name.clone(),
         base_url: p.base_url.clone(),
         model: p.model.clone(),
     }
@@ -318,6 +333,7 @@ pub fn default_settings() -> AppSettings {
         ticktick_project_roles: std::collections::BTreeMap::new(),
         ticktick_column_roles: std::collections::BTreeMap::new(),
         theme: default_theme(),
+        color_theme: default_color_theme(),
         sync: SyncSettings::default(),
     }
 }
@@ -343,8 +359,7 @@ pub fn load_settings() -> AppSettings {
     };
     if let Ok(data) = fs::read_to_string(&path) {
         if let Ok(mut s) = serde_json::from_str::<AppSettings>(&data) {
-            s.sync.settle_grace_hours =
-                normalize_settle_grace_hours(s.sync.settle_grace_hours);
+            s.sync.settle_grace_hours = normalize_settle_grace_hours(s.sync.settle_grace_hours);
             return with_vision_defaults(s);
         }
     }
@@ -411,6 +426,7 @@ mod tests {
         let go = &s.vision_providers[0];
         assert_eq!(go.base_url, "https://opencode.ai/zen/go/v1");
         assert_eq!(go.model, "deepseek-v4-flash-vision-exp");
+        assert_eq!(s.color_theme, "default");
     }
 
     #[test]

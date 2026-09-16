@@ -234,11 +234,7 @@ pub struct WebDavTarget {
 }
 
 impl WebDavTarget {
-    pub fn new(
-        base_url: String,
-        username: String,
-        password: String,
-    ) -> Result<Self, SyncError> {
+    pub fn new(base_url: String, username: String, password: String) -> Result<Self, SyncError> {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(SYNC_TIMEOUT_SECS))
             .user_agent(crate::vision::USER_AGENT)
@@ -393,7 +389,9 @@ fn extract_tags(body: &str, local: &str) -> Vec<String> {
     let mut rest = body;
     loop {
         let Some(lt) = rest.find('<') else { break };
-        let Some(gt_rel) = rest[lt..].find('>') else { break };
+        let Some(gt_rel) = rest[lt..].find('>') else {
+            break;
+        };
         let gt = lt + gt_rel;
         let tag = &rest[lt + 1..gt];
         let text_start = gt + 1;
@@ -528,10 +526,7 @@ pub fn sigv4_sign(
     all.push(("x-amz-date".into(), amz_date.to_string()));
     all.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let canonical_headers: String = all
-        .iter()
-        .map(|(k, v)| format!("{k}:{v}\n"))
-        .collect();
+    let canonical_headers: String = all.iter().map(|(k, v)| format!("{k}:{v}\n")).collect();
     let signed_headers = all
         .iter()
         .map(|(k, _)| k.as_str())
@@ -547,7 +542,10 @@ pub fn sigv4_sign(
         sha256_hex(canonical_request.as_bytes())
     );
 
-    let k_date = hmac_sha256(format!("AWS4{secret_key}").as_bytes(), date_stamp.as_bytes());
+    let k_date = hmac_sha256(
+        format!("AWS4{secret_key}").as_bytes(),
+        date_stamp.as_bytes(),
+    );
     let k_region = hmac_sha256(&k_date, region.as_bytes());
     let k_service = hmac_sha256(&k_region, service.as_bytes());
     let k_signing = hmac_sha256(&k_service, b"aws4_request");
@@ -648,7 +646,11 @@ impl S3Target {
     }
 
     pub fn url_for(&self, path: &str) -> String {
-        format!("{}{}", self.endpoint.trim_end_matches('/'), self.canonical_uri(path))
+        format!(
+            "{}{}",
+            self.endpoint.trim_end_matches('/'),
+            self.canonical_uri(path)
+        )
     }
 
     fn sign(
@@ -718,7 +720,8 @@ impl RemoteTarget for S3Target {
     /// `ListObjectsV2`, single page. The snapshot directory holds at most a few
     /// dozen objects, so pagination is not worth the cursor.
     fn list(&self, prefix: &str) -> Result<Vec<String>, SyncError> {
-        let query = canonical_query(&[("list-type", "2"), ("max-keys", "1000"), ("prefix", prefix)]);
+        let query =
+            canonical_query(&[("list-type", "2"), ("max-keys", "1000"), ("prefix", prefix)]);
         let uri = self.canonical_uri("");
         let url = format!("{}{}?{query}", self.endpoint.trim_end_matches('/'), uri);
         let signed = self.sign("GET", &uri, &query, b"");
@@ -930,12 +933,14 @@ pub fn sync_with_target(ctx: &SyncContext) -> Result<SyncOutcome, SyncError> {
 
     let result = (|| {
         let report = build_snapshot(ctx.live_db, &scratch, &ctx.settings.scope)?;
-        let bytes = std::fs::read(&scratch)
-            .map_err(|e| SyncError::Io(format!("read snapshot: {e}")))?;
+        let bytes =
+            std::fs::read(&scratch).map_err(|e| SyncError::Io(format!("read snapshot: {e}")))?;
 
         ctx.target.put(&format!("{dir}/latest.db"), &bytes)?;
-        ctx.target
-            .put(&format!("{dir}/snapshots/{}.db", utc_day_stamp(ctx.now)), &bytes)?;
+        ctx.target.put(
+            &format!("{dir}/snapshots/{}.db", utc_day_stamp(ctx.now)),
+            &bytes,
+        )?;
 
         let reg_path = format!("{}/devices.json", base_dir(ctx.settings));
         let mut reg: Vec<DeviceEntry> = match ctx.target.get(&reg_path) {
@@ -1043,7 +1048,8 @@ pub fn sync_merge_and_settle(
 /// on success — a failure should retry on the next tick, not wait out the whole
 /// interval.
 pub fn sync_now(settings: &SyncSettings) -> Result<SyncOutcome, SyncError> {
-    let live = crate::db::app_db_path().ok_or_else(|| SyncError::Config("找不到数据目录".into()))?;
+    let live =
+        crate::db::app_db_path().ok_or_else(|| SyncError::Config("找不到数据目录".into()))?;
     let mut conn = crate::db::open(&live).map_err(|e| SyncError::Db(format!("{e:?}")))?;
     crate::db::migrate(&conn).map_err(|e| SyncError::Db(format!("{e:?}")))?;
 
@@ -1157,9 +1163,7 @@ const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
 pub fn restore_from_bytes(bytes: &[u8], dest: &Path) -> Result<(), SyncError> {
     if let Some(live) = crate::db::app_db_path() {
         if dest == live {
-            return Err(SyncError::Config(
-                "拒绝覆盖正在使用的 gamelife.db".into(),
-            ));
+            return Err(SyncError::Config("拒绝覆盖正在使用的 gamelife.db".into()));
         }
     }
 
@@ -1386,7 +1390,9 @@ fn db_fail(what: &str, e: rusqlite::Error) -> SyncError {
 fn has_table(conn: &Connection, schema: &str, table: &str) -> Result<bool, SyncError> {
     let n: i64 = conn
         .query_row(
-            &format!("SELECT COUNT(*) FROM {schema}.sqlite_master WHERE type = 'table' AND name = ?1"),
+            &format!(
+                "SELECT COUNT(*) FROM {schema}.sqlite_master WHERE type = 'table' AND name = ?1"
+            ),
             params![table],
             |r| r.get(0),
         )
@@ -1455,7 +1461,9 @@ pub fn rebuild_merged(
             };
             let src = scratch.join(format!("merged-src-{}.db", d.device_id));
             if let Err(e) = std::fs::write(&src, &bytes) {
-                report.skipped.push((d.device_id.clone(), format!("write: {e}")));
+                report
+                    .skipped
+                    .push((d.device_id.clone(), format!("write: {e}")));
                 continue;
             }
             let outcome = merge_one_snapshot(&mut conn, &src, &d.device_id);
@@ -1504,11 +1512,7 @@ pub fn rebuild_merged(
 /// Attach one device's snapshot, merge every table it has, and detach again.
 /// Each device is its own transaction, so a snapshot that fails halfway leaves
 /// no rows behind.
-fn merge_one_snapshot(
-    conn: &mut Connection,
-    src: &Path,
-    device_id: &str,
-) -> Result<(), SyncError> {
+fn merge_one_snapshot(conn: &mut Connection, src: &Path, device_id: &str) -> Result<(), SyncError> {
     conn.execute(
         "ATTACH DATABASE ?1 AS src",
         params![src.to_string_lossy().to_string()],
@@ -1536,8 +1540,11 @@ fn merge_attached(conn: &Connection, device_id: &str) -> Result<(), SyncError> {
             // directory already claims — never ours, and never via
             // `db::migrate`, which would mint a fresh identity for someone
             // else's database and silently re-attribute their history.
-            conn.execute(&format!("ALTER TABLE src.{table} ADD COLUMN device_id TEXT"), [])
-                .map_err(|e| db_fail("add device_id", e))?;
+            conn.execute(
+                &format!("ALTER TABLE src.{table} ADD COLUMN device_id TEXT"),
+                [],
+            )
+            .map_err(|e| db_fail("add device_id", e))?;
             conn.execute(
                 &format!("UPDATE src.{table} SET device_id = ?1"),
                 params![device_id],
@@ -1551,8 +1558,11 @@ fn merge_attached(conn: &Connection, device_id: &str) -> Result<(), SyncError> {
             )
             .map_err(|e| db_fail("create merged table", e))?;
         } else {
-            conn.execute(&format!("INSERT INTO main.{table} SELECT * FROM src.{table}"), [])
-                .map_err(|e| db_fail("insert merged rows", e))?;
+            conn.execute(
+                &format!("INSERT INTO main.{table} SELECT * FROM src.{table}"),
+                [],
+            )
+            .map_err(|e| db_fail("insert merged rows", e))?;
         }
     }
     Ok(())
@@ -1682,10 +1692,10 @@ fn index_merged(conn: &Connection) -> Result<(), SyncError> {
 mod tests {
     use super::*;
     use crate::config::SCOPE_AGGREGATE;
+    use std::collections::BTreeSet;
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::path::PathBuf;
-    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -1729,15 +1739,15 @@ mod tests {
             .unwrap();
         assert_eq!(samples, 0);
         let path: Option<String> = conn
-            .query_row("SELECT screenshot_path FROM slots LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT screenshot_path FROM slots LIMIT 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert!(path.is_none());
         let ctx: Option<String> = conn
-            .query_row(
-                "SELECT capture_context_json FROM slots LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT capture_context_json FROM slots LIMIT 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert!(ctx.is_none());
         assert_eq!(report.tables["slots"], 1);
@@ -1853,7 +1863,9 @@ mod tests {
             .unwrap();
         assert_eq!(samples, 3);
         let path: Option<String> = conn
-            .query_row("SELECT screenshot_path FROM slots LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT screenshot_path FROM slots LIMIT 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(path.as_deref(), Some("screenshots/x.jpg"));
     }
@@ -1909,7 +1921,8 @@ mod tests {
   <d:response><d:href>/gamelife/dev1/snapshots/2026%2009.db</d:href></d:response>
   <d:response><d:href>/gamelife/other/20260914.db</d:href></d:response>
 </d:multistatus>"#;
-        let got = parse_propfind_hrefs(body, "https://d.example.com/dav", "gamelife/dev1/snapshots");
+        let got =
+            parse_propfind_hrefs(body, "https://d.example.com/dav", "gamelife/dev1/snapshots");
         assert_eq!(
             got,
             vec![
@@ -1943,7 +1956,10 @@ mod tests {
         server.set_status(401);
         assert!(matches!(target.put("a.db", b"x"), Err(SyncError::Auth)));
         server.set_status(503);
-        assert!(matches!(target.put("a.db", b"x"), Err(SyncError::Remote(503))));
+        assert!(matches!(
+            target.put("a.db", b"x"),
+            Err(SyncError::Remote(503))
+        ));
     }
 
     #[test]
@@ -1995,7 +2011,9 @@ mod tests {
         assert!(server.has("gamelife/dev1/snapshots/20260914.db"));
         let methods = server.methods();
         assert!(
-            methods.iter().any(|(m, p)| m == "MKCOL" && p.trim_end_matches('/') == "/gamelife"),
+            methods
+                .iter()
+                .any(|(m, p)| m == "MKCOL" && p.trim_end_matches('/') == "/gamelife"),
             "missing MKCOL gamelife: {methods:?}"
         );
         assert!(
@@ -2028,7 +2046,8 @@ mod tests {
     /// error and never panics.
     #[test]
     fn an_unreachable_host_reports_a_typed_error_instead_of_panicking() {
-        let target = WebDavTarget::new("http://127.0.0.1:1".into(), "u".into(), "p".into()).unwrap();
+        let target =
+            WebDavTarget::new("http://127.0.0.1:1".into(), "u".into(), "p".into()).unwrap();
         let err = target.put("a.db", b"x").unwrap_err();
         assert!(
             matches!(
@@ -2148,7 +2167,10 @@ mod tests {
             )
             .authorization
         };
-        assert_ne!(base(b"", "20130524T000000Z"), base(b"x", "20130524T000000Z"));
+        assert_ne!(
+            base(b"", "20130524T000000Z"),
+            base(b"x", "20130524T000000Z")
+        );
         assert_ne!(base(b"", "20130524T000000Z"), base(b"", "20130525T000000Z"));
     }
 
@@ -2327,8 +2349,15 @@ mod tests {
         let target = FakeTarget::default();
         let settings = ctx_settings();
 
-        let out = sync_with_target(&ctx(&settings, &live, dir.path(), &target, "dev-1", 1_789_000_000))
-            .unwrap();
+        let out = sync_with_target(&ctx(
+            &settings,
+            &live,
+            dir.path(),
+            &target,
+            "dev-1",
+            1_789_000_000,
+        ))
+        .unwrap();
 
         assert!(out.snapshot_bytes > 0);
         assert!(target.has("gamelife/dev-1/latest.db"));
@@ -2447,10 +2476,16 @@ mod tests {
     #[test]
     fn target_from_settings_refuses_an_empty_url() {
         let mut s = SyncSettings::default();
-        assert!(matches!(target_from_settings(&s), Err(SyncError::Config(_))));
+        assert!(matches!(
+            target_from_settings(&s),
+            Err(SyncError::Config(_))
+        ));
         s.url = "https://dav.example.com".into();
         s.target = "s3".into();
-        assert!(matches!(target_from_settings(&s), Err(SyncError::Config(_))));
+        assert!(matches!(
+            target_from_settings(&s),
+            Err(SyncError::Config(_))
+        ));
     }
 
     #[test]
@@ -2580,7 +2615,12 @@ mod tests {
         }
 
         fn bytes(&self, key: &str) -> Vec<u8> {
-            self.store.lock().unwrap().get(key).cloned().unwrap_or_default()
+            self.store
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .unwrap_or_default()
         }
 
         fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
@@ -2768,7 +2808,10 @@ mod tests {
             }
         }
         *auth.lock().unwrap() = authorization;
-        methods.lock().unwrap().push((method.clone(), target.clone()));
+        methods
+            .lock()
+            .unwrap()
+            .push((method.clone(), target.clone()));
 
         while buf.len() < head_end + content_length {
             let n = stream.read(&mut chunk)?;
@@ -2861,7 +2904,8 @@ mod tests {
     }
 
     fn owner(rows: &[(&str, i64)]) -> String {
-        let owned: Vec<(String, i64)> = rows.iter().map(|(id, s)| ((*id).to_string(), *s)).collect();
+        let owned: Vec<(String, i64)> =
+            rows.iter().map(|(id, s)| ((*id).to_string(), *s)).collect();
         slot_owner(&owned)
     }
 
@@ -2953,7 +2997,13 @@ mod tests {
         let devices = [device("a"), device("b")];
         let now = end + 3600;
 
-        assert!(!day_is_ready(D, &devices, &[covered("a", now)], now, SETTLE_GRACE_HOURS));
+        assert!(!day_is_ready(
+            D,
+            &devices,
+            &[covered("a", now)],
+            now,
+            SETTLE_GRACE_HOURS
+        ));
         assert!(day_is_ready(
             D,
             &devices,
@@ -3128,7 +3178,9 @@ mod tests {
             let path = device_snapshot(&self.scratch, device, rows);
             let bytes = std::fs::read(&path).unwrap();
             let dir = remote_dir(&self.settings, device);
-            self.target.put(&format!("{dir}/latest.db"), &bytes).unwrap();
+            self.target
+                .put(&format!("{dir}/latest.db"), &bytes)
+                .unwrap();
             self.register(device);
         }
 
@@ -3431,14 +3483,12 @@ mod tests {
         /// A second machine's snapshot, already in the remote — the state a
         /// device finds itself in the first time it syncs after pairing.
         fn with_second_device(&self, device: &str) {
-            let path = device_snapshot(
-                &self.scratch,
-                device,
-                &[credited_slot(RUN_DAY, 900, 900)],
-            );
+            let path = device_snapshot(&self.scratch, device, &[credited_slot(RUN_DAY, 900, 900)]);
             let bytes = std::fs::read(&path).unwrap();
             let dir = remote_dir(&self.settings, device);
-            self.target.put(&format!("{dir}/latest.db"), &bytes).unwrap();
+            self.target
+                .put(&format!("{dir}/latest.db"), &bytes)
+                .unwrap();
             let reg = vec![DeviceEntry {
                 device_id: device.into(),
                 label: device.into(),
@@ -3486,10 +3536,7 @@ mod tests {
 
         assert_eq!(outcome.devices.len(), 1);
         assert_eq!(outcome.settlement, None, "there is nothing to merge");
-        assert_eq!(
-            crate::db::settlement_mode(&conn),
-            SettlementMode::Immediate
-        );
+        assert_eq!(crate::db::settlement_mode(&conn), SettlementMode::Immediate);
         assert!(!f.merged.exists(), "no merged view for a lone device");
     }
 

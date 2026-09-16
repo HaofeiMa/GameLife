@@ -225,9 +225,7 @@ pub fn judge_slot(input: JudgeInput<'_>) -> JudgeOutput {
         dominant = Dominant::Unobserved;
     } else if activity.away >= AWAY_DOMINANT_SECS && strong_core < 300 {
         dominant = Dominant::BreakAway;
-    } else if strong_core >= STRONG_CORE_AUTO_SECS
-        && trio <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE
-    {
+    } else if strong_core >= STRONG_CORE_AUTO_SECS && trio <= SIDE_DISTRACTION_MAX_FOR_AUTO_CORE {
         dominant = Dominant::CoreResearch;
         credited_raw = strong_core + reading_bridge;
     } else if trio >= SIDE_DISTRACTION_DOMINANT_SECS && trio > strong_core + reading_bridge {
@@ -758,10 +756,14 @@ mod tests {
         // `grid` hands every sample a work-file path; clear it here so the WeChat half
         // is genuinely *not* a candidate, which is what "context mismatch" means now
         // that candidacy no longer depends on the app being on the mainline list.
-        samples.extend(grid("WeChat", "chat", 300, 20, 15, 2).into_iter().map(|mut s| {
-            s.document_path = None;
-            s
-        }));
+        samples.extend(
+            grid("WeChat", "chat", 300, 20, 15, 2)
+                .into_iter()
+                .map(|mut s| {
+                    s.document_path = None;
+                    s
+                }),
+        );
         let snaps = [crate::task::TaskSnapshot {
             id: "p".into(),
             title: "main.tex".into(),

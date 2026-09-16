@@ -29,7 +29,7 @@ sha2 = "0.10"
 getrandom = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
+objc2 = { version = "0.6", features = ["exception"] }
 objc2-foundation = "0.3"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "libc", "NSBitmapImageRep", "NSImageRep", "objc2-core-graphics"] }
 objc2-core-foundation = "0.3"

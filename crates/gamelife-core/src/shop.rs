@@ -87,7 +87,9 @@ pub fn validate_redeem(
     wish: &Wish,
 ) -> Result<(), RedeemError> {
     match &wish.kind {
-        WishKind::Xp { duration_minutes: Some(d) } if *d < 5 => {
+        WishKind::Xp {
+            duration_minutes: Some(d),
+        } if *d < 5 => {
             return Err(RedeemError::EntertainmentNeedsDuration);
         }
         WishKind::Xp { .. } => {
@@ -147,19 +149,13 @@ mod tests {
         let xp = WishKind::Xp {
             duration_minutes: Some(30),
         };
-        assert_eq!(
-            validate_wish("  ", &xp, 10),
-            Err(WishError::EmptyName)
-        );
+        assert_eq!(validate_wish("  ", &xp, 10), Err(WishError::EmptyName));
         assert_eq!(
             validate_wish("视频", &xp, 0),
             Err(WishError::NonPositivePrice)
         );
         let long = "x".repeat(81);
-        assert_eq!(
-            validate_wish(&long, &xp, 10),
-            Err(WishError::NameTooLong)
-        );
+        assert_eq!(validate_wish(&long, &xp, 10), Err(WishError::NameTooLong));
     }
 
     #[test]

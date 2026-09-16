@@ -17,6 +17,7 @@ pub struct SampleLine {
 #[derive(Debug, PartialEq, Eq)]
 pub enum TextAiError {
     Transport,
+    RateLimited,
     Client,
     Parse,
     EmptySummary,
@@ -136,6 +137,7 @@ pub fn call_provider_test(endpoint: &VisionEndpoint) -> Result<String, TextAiErr
 pub fn text_ai_error_message(err: TextAiError) -> &'static str {
     match err {
         TextAiError::Transport => "网络超时或连不上提供商",
+        TextAiError::RateLimited => "额度用尽或被限流（HTTP 429）",
         TextAiError::Client => "提供商拒绝了请求，请核对 Key、Base URL 和模型",
         TextAiError::Parse => "返回了内容，但不是可解析的回复",
         TextAiError::EmptySummary => "测试 prompt 为空",
@@ -154,9 +156,27 @@ fn call_text_json_timed(
     match complete_json(endpoint, prompt, None) {
         Ok(body) => Ok(body),
         Err(VisionCallError::Transport) => Err(TextAiError::Transport),
+        Err(VisionCallError::RateLimited) => Err(TextAiError::RateLimited),
         Err(VisionCallError::Client) => Err(TextAiError::Client),
         Err(VisionCallError::Parse) => Err(TextAiError::Parse),
     }
+}
+
+pub fn call_text_json_chain(
+    chain: &[VisionEndpoint],
+    prompt: &str,
+) -> Result<String, TextAiError> {
+    if prompt.trim().is_empty() {
+        return Err(TextAiError::EmptySummary);
+    }
+    crate::vision::try_provider_chain(chain, |ep| complete_json(ep, prompt, None)).map_err(
+        |e| match e {
+            VisionCallError::Transport => TextAiError::Transport,
+            VisionCallError::RateLimited => TextAiError::RateLimited,
+            VisionCallError::Client => TextAiError::Client,
+            VisionCallError::Parse => TextAiError::Parse,
+        },
+    )
 }
 
 pub fn call_text_task_match(
@@ -254,6 +274,19 @@ mod tests {
     fn provider_test_prompt_asks_for_ok_json() {
         assert!(provider_test_prompt().contains("ok"));
         assert!(provider_test_prompt().contains("gamelife"));
+    }
+
+    #[test]
+    fn rate_limited_message_mentions_429() {
+        assert!(text_ai_error_message(TextAiError::RateLimited).contains("429"));
+    }
+
+    #[test]
+    fn text_chain_skips_blank_prompt() {
+        assert_eq!(
+            call_text_json_chain(&[], "   "),
+            Err(TextAiError::EmptySummary)
+        );
     }
 
     #[test]

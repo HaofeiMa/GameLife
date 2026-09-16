@@ -32,8 +32,7 @@ pub fn load_map(path: &Path) -> Result<BTreeMap<String, String>, String> {
     if data.trim().is_empty() {
         return Ok(BTreeMap::new());
     }
-    let value: Value =
-        serde_json::from_str(&data).map_err(|e| format!("secrets json: {e}"))?;
+    let value: Value = serde_json::from_str(&data).map_err(|e| format!("secrets json: {e}"))?;
     let obj = value
         .as_object()
         .ok_or_else(|| "secrets json: expected object".to_string())?;

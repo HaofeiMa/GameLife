@@ -82,11 +82,7 @@ mod tests {
         ];
         assert_eq!(
             coalesce_feel_events(&rows),
-            vec![
-                FeelNotice::Chest,
-                FeelNotice::Coins(1),
-                FeelNotice::Xp(8),
-            ]
+            vec![FeelNotice::Chest, FeelNotice::Coins(1), FeelNotice::Xp(8),]
         );
     }
 

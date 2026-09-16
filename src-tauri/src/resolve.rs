@@ -46,7 +46,15 @@ pub fn resolve_slot(
     let stats_already_written = prior.as_deref() == Some("pending_review");
 
     if output.pending {
-        upsert_slot(&tx, day, slot_start, output, "pending_review", 0, early_coins)?;
+        upsert_slot(
+            &tx,
+            day,
+            slot_start,
+            output,
+            "pending_review",
+            0,
+            early_coins,
+        )?;
         if !stats_already_written {
             write_day_stats(&tx, day, deltas)?;
         }
@@ -399,7 +407,16 @@ mod tests {
             ..core_output(900)
         };
         for (slot_start, output) in [(6 * 900, &support), (7 * 900, &admin)] {
-            resolve_slot(&mut immediate, day, slot_start, output, credited_before, 0, &[]).unwrap();
+            resolve_slot(
+                &mut immediate,
+                day,
+                slot_start,
+                output,
+                credited_before,
+                0,
+                &[],
+            )
+            .unwrap();
         }
 
         let paid = events_of(&immediate, "ledger");

@@ -205,8 +205,6 @@ mod tests {
     #[test]
     fn existing_core_tick_unchanged() {
         let evs = tick_keys_for_credited("2026-09-11", 0, 900);
-        assert!(evs
-            .iter()
-            .any(|e| e.key == "validated_coin:2026-09-11:1"));
+        assert!(evs.iter().any(|e| e.key == "validated_coin:2026-09-11:1"));
     }
 }

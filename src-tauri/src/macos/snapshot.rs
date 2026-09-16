@@ -275,8 +275,7 @@ extern "C" {
         value: *mut *mut std::ffi::c_void,
     ) -> i32;
 
-    fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32)
-        -> *mut std::ffi::c_void;
+    fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *mut std::ffi::c_void;
     static kCGWindowOwnerPID: *const std::ffi::c_void;
     static kCGWindowLayer: *const std::ffi::c_void;
     static kCGWindowNumber: *const std::ffi::c_void;

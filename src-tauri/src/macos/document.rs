@@ -56,10 +56,7 @@ mod tests {
     #[test]
     fn window_title_never_passed_in_becomes_none() {
         assert_eq!(ax_document_raw(None, None), None);
-        assert_eq!(
-            ax_document_raw(None, Some("train.py — HDP")),
-            None
-        );
+        assert_eq!(ax_document_raw(None, Some("train.py — HDP")), None);
         assert_eq!(normalize_document_path("train.py — HDP"), None);
     }
 

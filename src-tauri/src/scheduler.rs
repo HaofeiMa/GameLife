@@ -9,23 +9,24 @@ use serde::Deserialize;
 use gamelife_core::judge::{Dominant, JudgeOutput, VisionResult};
 use gamelife_core::types::{ActivitySeconds, Hint};
 use gamelife_core::{
-    activity_summary_for_vision, analyze_slot_evidence, builtin_never_capture,
-    builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
-    default_distraction_rules, default_v01, early_start_anchor, early_start_coins_for_local_secs,
-    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity,
-    new_milestones, normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json,
-    recompute_streak, schedule_capture, settle_outcome, slot_end_exclusive, slot_start,
-    spans_for_slot, vision_quest_label, apply_category_match,
-    apply_task_match, parse_category_match_json, parse_task_match_json, deltas_from_slot,
-    CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest,
-    QuestDraft, QuestListError,
-    Sample, TASK_MATCH_MIN, TaskSnapshot, VisionContext, CHEST_SECS,
+    activity_summary_for_vision, analyze_slot_evidence, apply_category_match, apply_task_match,
+    builtin_never_capture, builtin_side_project_rules, can_use_freeze, capture_on_resume,
+    credited_core_spans, default_distraction_rules, default_v01, deltas_from_slot,
+    early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved, hint_sample,
+    is_weekday, judge_slot, matches_app_identity, new_milestones, normalize_quest_list,
+    parse_category_match_json, parse_quest_versions_json, parse_task_match_json,
+    parse_task_snapshot_json, recompute_streak, schedule_capture, settle_outcome,
+    slot_end_exclusive, slot_start, spans_for_slot, vision_quest_label, CaptureContext,
+    CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest, QuestDraft,
+    QuestListError, Sample, TaskSnapshot, VisionContext, CHEST_SECS, TASK_MATCH_MIN,
 };
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
 use crate::db_error::{map_rusqlite, DbOpError};
 use crate::resolve::resolve_slot;
-use crate::text_ai::{build_text_ai_prompt, call_text_json, sample_summary_lines, SampleLine};
+use crate::text_ai::{
+    build_text_ai_prompt, call_text_json_chain, sample_summary_lines, SampleLine,
+};
 use crate::vision;
 
 const AWAY_DOMINANT_SECS: i64 = 600;
@@ -548,11 +549,8 @@ mod local_day_tests {
         let start = local_day_start(&MidnightDst, gap_date()).unwrap();
         assert_eq!(start, instant("2026-03-08", "01:00:00"));
 
-        let previous_end = local_day_end(
-            &MidnightDst,
-            NaiveDate::from_ymd_opt(2026, 3, 7).unwrap(),
-        )
-        .unwrap();
+        let previous_end =
+            local_day_end(&MidnightDst, NaiveDate::from_ymd_opt(2026, 3, 7).unwrap()).unwrap();
         assert_eq!(previous_end, start);
 
         let end = local_day_end(&MidnightDst, gap_date()).unwrap();
@@ -605,7 +603,6 @@ mod local_day_tests {
         }
     }
 }
-
 
 pub fn same_local_day(a: i64, b: i64) -> bool {
     day_str_for_ts(a) == day_str_for_ts(b)
@@ -847,37 +844,37 @@ fn tick_capture_impl(
         return Ok(());
     }
 
-    let next = if let Some(path) = screenshots.map(|d| screenshot_path_in(d, day, slot_start_ts, now))
-    {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if capture_fn(&path).is_ok() {
-            let json = serde_json::to_string(&ctx)
-                .map_err(|e| DbOpError::Fatal(format!("capture_context json: {e}")))?;
-            conn.execute(
-                "UPDATE slots SET
+    let next =
+        if let Some(path) = screenshots.map(|d| screenshot_path_in(d, day, slot_start_ts, now)) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if capture_fn(&path).is_ok() {
+                let json = serde_json::to_string(&ctx)
+                    .map_err(|e| DbOpError::Fatal(format!("capture_context json: {e}")))?;
+                conn.execute(
+                    "UPDATE slots SET
                     screenshot_path = ?1,
                     captured_at = ?2,
                     capture_context_json = ?3,
                     capture_status = ?4
                  WHERE day = ?5 AND slot_start = ?6",
-                params![
-                    path.to_string_lossy().to_string(),
-                    now,
-                    json,
-                    capture_status_to_str(CaptureStatus::Captured),
-                    day,
-                    slot_start_ts,
-                ],
-            )
-            .map_err(map_rusqlite)?;
-            return Ok(());
-        }
-        CaptureStatus::Missed
-    } else {
-        CaptureStatus::Missed
-    };
+                    params![
+                        path.to_string_lossy().to_string(),
+                        now,
+                        json,
+                        capture_status_to_str(CaptureStatus::Captured),
+                        day,
+                        slot_start_ts,
+                    ],
+                )
+                .map_err(map_rusqlite)?;
+                return Ok(());
+            }
+            CaptureStatus::Missed
+        } else {
+            CaptureStatus::Missed
+        };
     conn.execute(
         "UPDATE slots SET capture_status = ?1 WHERE day = ?2 AND slot_start = ?3",
         params![capture_status_to_str(next), day, slot_start_ts],
@@ -1159,8 +1156,7 @@ pub fn save_quests_for_day(
             })
         })
         .collect::<Vec<_>>();
-    let json = serde_json::to_string(&json_rows)
-        .map_err(|e| DbOpError::Fatal(e.to_string()))?;
+    let json = serde_json::to_string(&json_rows).map_err(|e| DbOpError::Fatal(e.to_string()))?;
     conn.execute(
         "INSERT INTO quest_versions (day, json, created_at) VALUES (?1, ?2, ?3)",
         params![day, json, now],
@@ -1174,12 +1170,12 @@ fn previous_nonempty_quest_snapshot(
     today: &str,
 ) -> Result<Option<(String, Vec<Quest>)>, DbOpError> {
     let mut stmt = conn
-        .prepare(
-            "SELECT day, json FROM quest_versions WHERE day < ?1 ORDER BY day DESC, id DESC",
-        )
+        .prepare("SELECT day, json FROM quest_versions WHERE day < ?1 ORDER BY day DESC, id DESC")
         .map_err(map_rusqlite)?;
     let rows = stmt
-        .query_map(params![today], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .query_map(params![today], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
         .map_err(map_rusqlite)?;
     for row in rows {
         let (day, json) = row.map_err(map_rusqlite)?;
@@ -1579,28 +1575,23 @@ fn finalize_slot_end_in(
         })
         .collect();
     let summary = sample_summary_lines(&lines);
-    let gray = output.pending
-        || matches!(
-            output.dominant,
-            Dominant::PendingReview | Dominant::Unknown
-        );
+    let gray =
+        output.pending || matches!(output.dominant, Dominant::PendingReview | Dominant::Unknown);
     let mut matched_text = false;
     if gray && !summary.is_empty() {
-        if let Some(ep) = chain.first() {
-            let prompt = build_text_ai_prompt(&tasks, &policy.category_guides, &policy, &summary);
-            if let Ok(raw) = call_text_json(ep, &prompt) {
-                if tasks.is_empty() {
-                    if let Ok(Some(m)) = parse_category_match_json(&raw) {
-                        if m.confidence >= TASK_MATCH_MIN {
-                            output = apply_category_match(output, &evidence, &m);
-                            matched_text = true;
-                        }
-                    }
-                } else if let Ok(Some(m)) = parse_task_match_json(&raw, &tasks) {
+        let prompt = build_text_ai_prompt(&tasks, &policy.category_guides, &policy, &summary);
+        if let Ok(raw) = call_text_json_chain(&chain, &prompt) {
+            if tasks.is_empty() {
+                if let Ok(Some(m)) = parse_category_match_json(&raw) {
                     if m.confidence >= TASK_MATCH_MIN {
-                        output = apply_task_match(output, &evidence, &m);
+                        output = apply_category_match(output, &evidence, &m);
                         matched_text = true;
                     }
+                }
+            } else if let Ok(Some(m)) = parse_task_match_json(&raw, &tasks) {
+                if m.confidence >= TASK_MATCH_MIN {
+                    output = apply_task_match(output, &evidence, &m);
+                    matched_text = true;
                 }
             }
         }
@@ -1616,14 +1607,7 @@ fn finalize_slot_end_in(
                     capture: capture_ctx,
                     activity_summary: activity_summary_for_vision(&evidence, &samples),
                 };
-                maybe_vision_for_gray_zone(
-                    decidable,
-                    capture,
-                    Path::new(path),
-                    ctx,
-                    &never,
-                    &chain,
-                )
+                maybe_vision_for_gray_zone(decidable, capture, Path::new(path), ctx, &never, &chain)
             }
             _ => None,
         };
@@ -1678,8 +1662,6 @@ fn now_secs() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
-
-
 
 pub fn yesterday_str_for_ts(now: i64) -> String {
     let today_start = start_of_local_day(now);
@@ -2168,7 +2150,15 @@ pub fn review_pending_slot(
         output.used_vision,
     )
     .unwrap_or(0);
-    resolve_slot(conn, day, slot_start, &output, credited_before, early_coins, &[])?;
+    resolve_slot(
+        conn,
+        day,
+        slot_start,
+        &output,
+        credited_before,
+        early_coins,
+        &[],
+    )?;
     let status = slot_status(conn, day, slot_start)?.unwrap_or_default();
     apply_capture_retention(conn, day, slot_start, retention, &status)?;
     Ok(())

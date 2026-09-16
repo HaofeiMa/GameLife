@@ -39,13 +39,14 @@ use sampler::PauseControl;
 
 use commands::{
     archive_wish, continue_previous_workday, create_list, create_wish, delete_list, delete_task,
-    end_today, freeze, get_app_report, get_day_view, get_month_report, get_permission_status,
-    get_rhythm_report, get_settings, get_today, get_week, has_api_key, list_task_board, move_task,
-    observation_status, open_privacy_settings, parse_task_line_cmd, provider_key_status, redeem,
-    rename_list, report_misclassification, request_screen_recording, reschedule_task, review_slot,
-    save_settings, set_api_key, set_provider_api_key, set_quests, sync_list_devices, sync_now_cmd,
-    sync_restore, sync_set_credentials, sync_status, sync_test_connection, test_vision_provider,
-    toggle_task_done, duplicate_task, reorder_task, update_wish, upsert_task,
+    duplicate_task, end_today, freeze, get_app_report, get_day_view, get_month_report,
+    get_permission_status, get_rhythm_report, get_settings, get_today, get_week, has_api_key,
+    list_task_board, move_task, observation_status, open_privacy_settings, parse_task_line_cmd,
+    provider_key_status, redeem, rename_list, reorder_task, report_misclassification,
+    request_screen_recording, reschedule_task, review_slot, save_settings, set_api_key,
+    set_provider_api_key, set_quests, sync_list_devices, sync_now_cmd, sync_restore,
+    sync_set_credentials, sync_status, sync_test_connection, test_vision_provider,
+    toggle_task_done, update_wish, upsert_task,
 };
 
 use tauri::{

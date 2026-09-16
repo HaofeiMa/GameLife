@@ -28,7 +28,10 @@ mod tests {
 
     #[test]
     fn slot_aligns_down() {
-        assert_eq!(slot_start(1_700_000_100), 1_700_000_100 - (1_700_000_100 % 900));
+        assert_eq!(
+            slot_start(1_700_000_100),
+            1_700_000_100 - (1_700_000_100 % 900)
+        );
     }
 
     #[test]

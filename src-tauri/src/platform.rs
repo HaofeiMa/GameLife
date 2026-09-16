@@ -49,7 +49,11 @@ pub fn data_dir_for(
     match os {
         Os::MacOs => {
             let home = nonempty(home)?;
-            Some(PathBuf::from(home).join("Library/Application Support").join(APP_DIR))
+            Some(
+                PathBuf::from(home)
+                    .join("Library/Application Support")
+                    .join(APP_DIR),
+            )
         }
         Os::Windows => {
             // %APPDATA% is the roaming profile; fall back to the well-known
@@ -164,8 +168,15 @@ mod tests {
     #[test]
     fn windows_prefers_appdata() {
         assert_eq!(
-            norm(data_dir_for(Os::Windows, os(r"C:\Users\x"), os(r"C:\Users\x\AppData\Roaming"), None)
-                .unwrap()),
+            norm(
+                data_dir_for(
+                    Os::Windows,
+                    os(r"C:\Users\x"),
+                    os(r"C:\Users\x\AppData\Roaming"),
+                    None
+                )
+                .unwrap()
+            ),
             "C:/Users/x/AppData/Roaming/GameLife"
         );
     }
@@ -216,6 +227,9 @@ mod tests {
     #[test]
     fn opener_shapes_per_platform() {
         assert_eq!(opener_for(Os::MacOs, "https://x").0, "open");
-        assert_eq!(opener_for(Os::Linux, "https://x"), ("xdg-open", vec!["https://x".to_string()]));
+        assert_eq!(
+            opener_for(Os::Linux, "https://x"),
+            ("xdg-open", vec!["https://x".to_string()])
+        );
     }
 }

@@ -18,6 +18,36 @@ pub const VISION_TIMEOUT_SECS: u64 = 20;
 pub const CODEX_TIMEOUT_SECS: u64 = 45;
 pub const JPEG_MAX_LONG_EDGE: u32 = 1280;
 pub const USER_AGENT: &str = "GameLife/0.2";
+/// OpenCode Zen's free models reject any User-Agent that is not `opencode/…`.
+/// OpenClaw sends this same value; keep it only for `opencode.ai`.
+const OPENCODE_ZEN_USER_AGENT: &str = "opencode/2026.8.1";
+
+fn host_of_base_url(base_url: &str) -> &str {
+    let rest = base_url
+        .trim()
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(base_url.trim());
+    rest.split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+}
+
+fn is_opencode_host(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.');
+    host.eq_ignore_ascii_case("opencode.ai") || host.to_ascii_lowercase().ends_with(".opencode.ai")
+}
+
+fn compat_user_agent(base_url: &str) -> &'static str {
+    if is_opencode_host(host_of_base_url(base_url)) {
+        OPENCODE_ZEN_USER_AGENT
+    } else {
+        USER_AGENT
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EndpointKind {
@@ -59,8 +89,47 @@ impl VisionEndpoint {
 #[derive(Debug, PartialEq, Eq)]
 pub enum VisionCallError {
     Transport,
+    RateLimited,
     Client,
     Parse,
+}
+
+/// Non-success HTTP status → error class used by the provider chain.
+pub fn classify_http_status(status: u16) -> VisionCallError {
+    if status == 429 {
+        VisionCallError::RateLimited
+    } else if (500..600).contains(&status) {
+        VisionCallError::Transport
+    } else {
+        VisionCallError::Client
+    }
+}
+
+pub fn should_try_next_provider(err: &VisionCallError) -> bool {
+    matches!(
+        err,
+        VisionCallError::Transport | VisionCallError::RateLimited
+    )
+}
+
+/// Walk usable endpoints. Timeout / 5xx / 429 try the next; 4xx Client and Parse stop.
+pub fn try_provider_chain<'a, T>(
+    chain: &'a [VisionEndpoint],
+    mut call: impl FnMut(&'a VisionEndpoint) -> Result<T, VisionCallError>,
+) -> Result<T, VisionCallError> {
+    let usable: Vec<&'a VisionEndpoint> = chain.iter().filter(|ep| ep.usable()).collect();
+    if usable.is_empty() {
+        return Err(VisionCallError::Client);
+    }
+    let mut last = VisionCallError::Transport;
+    for ep in usable {
+        match call(ep) {
+            Ok(v) => return Ok(v),
+            Err(e) if should_try_next_provider(&e) => last = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
 }
 
 /// Resize in-memory image so long edge ≤ `JPEG_MAX_LONG_EDGE` and return JPEG bytes.
@@ -89,8 +158,7 @@ pub fn read_and_prepare_jpeg(path: &Path) -> Result<Vec<u8>, ()> {
 }
 
 fn openai_base_url() -> String {
-    std::env::var("OPENAI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string())
+    std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string())
 }
 
 fn openai_model() -> String {
@@ -196,7 +264,7 @@ fn post_compat(
     });
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(VISION_TIMEOUT_SECS))
-        .user_agent(USER_AGENT)
+        .user_agent(compat_user_agent(&endpoint.base_url))
         .build()
         .map_err(|_| VisionCallError::Transport)?;
     let resp = client
@@ -207,11 +275,8 @@ fn post_compat(
         .send()
         .map_err(|_| VisionCallError::Transport)?;
     let status = resp.status();
-    if status.is_server_error() {
-        return Err(VisionCallError::Transport);
-    }
     if !status.is_success() {
-        return Err(VisionCallError::Client);
+        return Err(classify_http_status(status.as_u16()));
     }
     let json: serde_json::Value = resp.json().map_err(|_| VisionCallError::Parse)?;
     json["choices"][0]["message"]["content"]
@@ -279,11 +344,8 @@ fn post_codex(
         }
         return Err(VisionCallError::Client);
     }
-    if status.is_server_error() {
-        return Err(VisionCallError::Transport);
-    }
     if !status.is_success() {
-        return Err(VisionCallError::Client);
+        return Err(classify_http_status(status.as_u16()));
     }
     let text = resp.text().map_err(|_| VisionCallError::Parse)?;
     sse_output_text(&text).ok_or(VisionCallError::Parse)
@@ -301,30 +363,17 @@ pub fn call_vision_endpoint(
     parse_vision_json(&content, match_context).map_err(|_| VisionCallError::Parse)
 }
 
-/// Only timeout / network / HTTP 5xx on the first usable endpoint try the next.
+/// Timeout / network / HTTP 5xx / 429 on an endpoint try the next usable one.
 pub fn analyze_with_chain(
     jpeg_bytes: &[u8],
     chain: &[VisionEndpoint],
     sanitized: &SanitizedVisionContext,
     match_context: Option<VisionMatchContext>,
 ) -> Result<VisionResult, ()> {
-    let usable: Vec<&VisionEndpoint> = chain.iter().filter(|ep| ep.usable()).collect();
-    if usable.is_empty() {
-        return Err(());
-    }
-    for (i, ep) in usable.iter().enumerate() {
-        match call_vision_endpoint(jpeg_bytes, ep, sanitized, match_context.clone()) {
-            Ok(v) => return Ok(v),
-            Err(VisionCallError::Transport) => continue,
-            Err(VisionCallError::Client | VisionCallError::Parse) => {
-                if i == 0 {
-                    return Err(());
-                }
-                return Err(());
-            }
-        }
-    }
-    Err(())
+    try_provider_chain(chain, |ep| {
+        call_vision_endpoint(jpeg_bytes, ep, sanitized, match_context.clone())
+    })
+    .map_err(|_| ())
 }
 
 pub fn analyze_with_fallback(
@@ -334,11 +383,7 @@ pub fn analyze_with_fallback(
     sanitized: &SanitizedVisionContext,
     match_context: Option<VisionMatchContext>,
 ) -> Result<VisionResult, ()> {
-    let chain: Vec<VisionEndpoint> = [primary, fallback]
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect();
+    let chain: Vec<VisionEndpoint> = [primary, fallback].into_iter().flatten().cloned().collect();
     analyze_with_chain(jpeg_bytes, &chain, sanitized, match_context)
 }
 
@@ -404,11 +449,7 @@ pub fn analyze_screenshot_with_fallback(
     ctx: VisionContext,
     never_capture: &[String],
 ) -> Result<VisionResult, ()> {
-    let chain: Vec<VisionEndpoint> = [primary, fallback]
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect();
+    let chain: Vec<VisionEndpoint> = [primary, fallback].into_iter().flatten().cloned().collect();
     analyze_screenshot_with_chain(path, &chain, ctx, never_capture)
 }
 
@@ -427,7 +468,10 @@ mod tests {
         let v = parse_vision_json(json, ctx.clone()).unwrap();
         assert!(v.wants_core);
         assert!((v.confidence - 0.91).abs() < 1e-6);
-        assert_eq!(v.match_context.as_ref().map(|c| c.app.as_str()), Some("Isaac Sim"));
+        assert_eq!(
+            v.match_context.as_ref().map(|c| c.app.as_str()),
+            Some("Isaac Sim")
+        );
     }
 
     #[test]
@@ -450,9 +494,11 @@ mod tests {
 
     #[test]
     fn jpeg_resize_caps_long_edge() {
-        let img = image::DynamicImage::ImageRgba8(
-            image::RgbaImage::from_pixel(2000, 1000, image::Rgba([0, 0, 0, 255])),
-        );
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2000,
+            1000,
+            image::Rgba([0, 0, 0, 255]),
+        ));
         let mut raw = Vec::new();
         img.write_to(
             &mut std::io::Cursor::new(&mut raw),
@@ -501,25 +547,65 @@ mod tests {
     fn endpoints_from_settings_skips_missing_keys() {
         let mut settings = crate::config::default_settings();
         crate::config::normalize_vision_providers(&mut settings);
-        let chain = endpoints_from_settings_with_codex(&settings, |id| match id {
-            "openai" | "opencode-go" => None,
-            other if other.starts_with("custom") => Some("sk-custom".into()),
-            _ => None,
-        }, None);
+        let chain = endpoints_from_settings_with_codex(
+            &settings,
+            |id| match id {
+                "openai" | "opencode-go" => None,
+                other if other.starts_with("custom") => Some("sk-custom".into()),
+                _ => None,
+            },
+            None,
+        );
         assert!(chain.is_empty());
-        settings.vision_providers.push(crate::config::VisionProviderSettings {
-            id: "custom-2".into(),
-            kind: crate::config::KIND_CUSTOM.into(),
-            base_url: "https://example.test/v1".into(),
-            model: "vision".into(),
-        });
-        let chain = endpoints_from_settings_with_codex(&settings, |id| match id {
-            "custom-2" => Some("sk-custom".into()),
-            _ => None,
-        }, None);
+        settings
+            .vision_providers
+            .push(crate::config::VisionProviderSettings {
+                id: "custom-2".into(),
+                kind: crate::config::KIND_CUSTOM.into(),
+                name: String::new(),
+                base_url: "https://example.test/v1".into(),
+                model: "vision".into(),
+            });
+        let chain = endpoints_from_settings_with_codex(
+            &settings,
+            |id| match id {
+                "custom-2" => Some("sk-custom".into()),
+                _ => None,
+            },
+            None,
+        );
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0].api_key, "sk-custom");
         assert_eq!(chain[0].kind, EndpointKind::Compat);
+    }
+
+    #[test]
+    fn zen_free_tier_uses_opencode_user_agent() {
+        assert_eq!(
+            compat_user_agent("https://opencode.ai/zen/v1"),
+            "opencode/2026.8.1"
+        );
+        assert_eq!(
+            compat_user_agent("https://opencode.ai/zen/go/v1"),
+            "opencode/2026.8.1"
+        );
+        assert_eq!(
+            compat_user_agent("https://OPENCODE.AI/zen/v1/"),
+            "opencode/2026.8.1"
+        );
+    }
+
+    #[test]
+    fn other_providers_keep_gamelife_user_agent() {
+        assert_eq!(
+            compat_user_agent("https://openrouter.ai/api/v1"),
+            USER_AGENT
+        );
+        assert_eq!(
+            compat_user_agent("https://integrate.api.nvidia.com/v1"),
+            USER_AGENT
+        );
+        assert_eq!(compat_user_agent("https://api.openai.com/v1"), USER_AGENT);
     }
 
     #[test]
@@ -536,5 +622,50 @@ mod tests {
         assert_eq!(chain[0].kind, EndpointKind::Codex);
         assert_eq!(chain[0].account_id, "acct");
         assert_eq!(chain[0].api_key, "tok");
+    }
+
+    fn compat(url: &str) -> VisionEndpoint {
+        VisionEndpoint::compat(url.into(), "m".into(), "sk".into())
+    }
+
+    #[test]
+    fn http_429_is_retryable_unlike_401_or_400() {
+        assert_eq!(classify_http_status(429), VisionCallError::RateLimited);
+        assert!(should_try_next_provider(&VisionCallError::RateLimited));
+        assert!(should_try_next_provider(&VisionCallError::Transport));
+        assert!(!should_try_next_provider(&classify_http_status(401)));
+        assert!(!should_try_next_provider(&classify_http_status(400)));
+        assert!(should_try_next_provider(&classify_http_status(503)));
+    }
+
+    #[test]
+    fn provider_chain_tries_next_after_429() {
+        let chain = [compat("https://a.test/v1"), compat("https://b.test/v1")];
+        let mut seen = Vec::new();
+        let out = try_provider_chain(&chain, |ep| {
+            seen.push(ep.base_url.clone());
+            if ep.base_url.contains("a.test") {
+                Err(VisionCallError::RateLimited)
+            } else {
+                Ok("ok")
+            }
+        });
+        assert_eq!(out, Ok("ok"));
+        assert_eq!(
+            seen,
+            vec!["https://a.test/v1".to_string(), "https://b.test/v1".to_string()]
+        );
+    }
+
+    #[test]
+    fn provider_chain_stops_on_client_error() {
+        let chain = [compat("https://a.test/v1"), compat("https://b.test/v1")];
+        let mut seen = Vec::new();
+        let out: Result<(), _> = try_provider_chain(&chain, |ep| {
+            seen.push(ep.base_url.clone());
+            Err(VisionCallError::Client)
+        });
+        assert_eq!(out, Err(VisionCallError::Client));
+        assert_eq!(seen, vec!["https://a.test/v1".to_string()]);
     }
 }

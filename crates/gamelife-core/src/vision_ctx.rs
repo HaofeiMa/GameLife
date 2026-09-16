@@ -132,7 +132,10 @@ pub fn build_vision_prompt(ctx: &SanitizedVisionContext) -> String {
         } else {
             format!("{} · {}", window.app, window.title)
         };
-        out.push_str(&format!("{label}    {}\n", format_span_secs(window.seconds)));
+        out.push_str(&format!(
+            "{label}    {}\n",
+            format_span_secs(window.seconds)
+        ));
     }
     out.push('\n');
     out.push_str("Hint seconds: ");
@@ -228,9 +231,10 @@ pub fn activity_summary_for_vision(
                 let Some(sample) = span.sample_index.and_then(|i| samples.get(i)) else {
                     continue;
                 };
-                if let Some(existing) = top_windows.iter_mut().find(|w| {
-                    w.app == sample.app && w.title == sample.window_title
-                }) {
+                if let Some(existing) = top_windows
+                    .iter_mut()
+                    .find(|w| w.app == sample.app && w.title == sample.window_title)
+                {
                     existing.seconds += secs;
                     existing.secure_input |= sample.secure_input;
                     if existing.document_path.is_none() {
@@ -321,9 +325,8 @@ mod tests {
     fn prompt_includes_main_prefix_when_provided() {
         let mut ctx = ctx_with_password_and_cursor();
         ctx.quests = vec!["[main] HDP".into(), "notes".into()];
-        let prompt = build_vision_prompt(
-            &sanitize_vision_context(ctx, &builtin_never_capture()).unwrap(),
-        );
+        let prompt =
+            build_vision_prompt(&sanitize_vision_context(ctx, &builtin_never_capture()).unwrap());
         assert!(prompt.contains("1. [main] HDP"));
         assert!(prompt.contains("2. notes"));
     }

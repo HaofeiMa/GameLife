@@ -8,8 +8,8 @@ use rusqlite::params;
 use rusqlite::Connection;
 
 use gamelife_core::{
-    normalize_document_path, optional_stripped_url, CaptureContext, SAMPLE_INTERVAL_SECS,
-    slot_start,
+    normalize_document_path, optional_stripped_url, slot_start, CaptureContext,
+    SAMPLE_INTERVAL_SECS,
 };
 
 use crate::config::{load_settings, retention_from_str};
@@ -17,8 +17,8 @@ use crate::db::{migrate, open, write_heartbeat};
 use crate::db_error::DbOpError;
 use crate::scheduler::{
     add_unobserved_secs, day_str_for_ts, ensure_slot, maybe_finalize_previous_slot, midnight_tick,
-    purge_expired_screenshots, purge_old_samples, sampling_allowed, slot_rng, startup_from_heartbeat,
-    start_of_local_day, tick_capture,
+    purge_expired_screenshots, purge_old_samples, sampling_allowed, slot_rng, start_of_local_day,
+    startup_from_heartbeat, tick_capture,
 };
 
 /// Tracks the last sampled slot so we can finalize on boundary crossing.
@@ -189,9 +189,7 @@ impl SampleSource for NativeSampleSource {
             app: snap.app,
             bundle_id: snap.bundle_id,
             title: snap.title,
-            document_path: snap
-                .document_raw
-                .and_then(|s| normalize_document_path(&s)),
+            document_path: snap.document_raw.and_then(|s| normalize_document_path(&s)),
             url: optional_stripped_url(url.as_deref()),
             secure_input: crate::observe::imp::secure_input_on(),
         }
@@ -280,10 +278,7 @@ impl SampleSource for FakeSampleSource {
     fn capture_context(&self) -> CaptureContext {
         self.capture_context_calls.fetch_add(1, Ordering::Relaxed);
         CaptureContext {
-            app: self
-                .capture_app
-                .clone()
-                .unwrap_or_else(|| self.app.clone()),
+            app: self.capture_app.clone().unwrap_or_else(|| self.app.clone()),
             bundle_id: self.bundle_id.clone(),
             title: self
                 .capture_title
@@ -557,7 +552,9 @@ mod tests {
             .unwrap();
         assert_eq!(samples_after, 1);
         let heartbeat_rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM heartbeat WHERE id = 1", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM heartbeat WHERE id = 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(heartbeat_rows, 1);
     }
@@ -663,13 +660,17 @@ mod tests {
         let mut state = SamplerState::default();
         sample_once(&mut conn, &source, ts, &mut state).unwrap();
         let path: String = conn
-            .query_row("SELECT document_path FROM samples WHERE ts = ?1", [ts], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT document_path FROM samples WHERE ts = ?1",
+                [ts],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(path, format!("{home}/Projects/HDP/train.py"));
         let bundle: String = conn
-            .query_row("SELECT bundle_id FROM samples WHERE ts = ?1", [ts], |r| r.get(0))
+            .query_row("SELECT bundle_id FROM samples WHERE ts = ?1", [ts], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(bundle, "com.todesktop.230313mzl4w4u92");
     }
@@ -698,7 +699,11 @@ mod tests {
         assert_eq!(source.observe_window_calls.load(Ordering::Relaxed), 1);
         assert_eq!(source.legacy_calls.load(Ordering::Relaxed), 0);
         let path: Option<String> = conn
-            .query_row("SELECT document_path FROM samples WHERE ts = ?1", [ts], |r| r.get(0))
+            .query_row(
+                "SELECT document_path FROM samples WHERE ts = ?1",
+                [ts],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(path, None);
     }
@@ -725,9 +730,11 @@ mod tests {
         let mut state = SamplerState::default();
         sample_once(&mut conn, &source, ts, &mut state).unwrap();
         let path: Option<String> = conn
-            .query_row("SELECT document_path FROM samples WHERE ts = ?1", [ts], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT document_path FROM samples WHERE ts = ?1",
+                [ts],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(path, None);
     }
@@ -754,9 +761,11 @@ mod tests {
         let mut state = SamplerState::default();
         sample_once(&mut conn, &source, ts, &mut state).unwrap();
         let secure: i64 = conn
-            .query_row("SELECT secure_input FROM samples WHERE ts = ?1", [ts], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT secure_input FROM samples WHERE ts = ?1",
+                [ts],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(secure, 1);
     }

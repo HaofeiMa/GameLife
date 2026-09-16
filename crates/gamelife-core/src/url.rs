@@ -88,7 +88,11 @@ pub fn host_is_research(host: &str) -> bool {
     if host.is_empty() {
         return false;
     }
-    host_is_scholar(&host) || RESEARCH_BASES.iter().copied().any(|b| host_matches_base(&host, b))
+    host_is_scholar(&host)
+        || RESEARCH_BASES
+            .iter()
+            .copied()
+            .any(|b| host_matches_base(&host, b))
 }
 
 #[cfg(test)]
