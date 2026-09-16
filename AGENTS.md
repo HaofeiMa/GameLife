@@ -39,7 +39,7 @@ If `gamelife` build scripts fail with a `permission files` error after moving th
 ## Product rules agents break
 
 - UI strings are Chinese. Energy is **能量**, never XP / 经验 in the UI (`xp_delta` stays the ledger column).
-- No FullCalendar, dnd-kit, Radix, or self-reported timing. Local tasks are created on 任务, not on 今日. The Today plan column reuses the same context menu, edge-resize, copy, and `TaskDetailDialog` as the Tasks calendar; changing day still goes through the date dialog.
+- No FullCalendar, dnd-kit, Radix, or self-reported timing. Local tasks are created on 任务, not on 今日. The Today plan column reuses the same context menu, edge-resize, copy, and `TaskDetailDialog` as the Tasks calendar; changing day still goes through the date dialog. The Tasks header has no ⋯ menu; list reorder shows a gap preview.
 - Colour has one source: `src/index.css` `--cat-*`, mirrored by `src/lib/theme.ts`. No hex in components.
 - Pages call `invoke()` only from `src/lib/api.ts` (via `src/lib/invoke.ts`). Do not import `@tauri-apps/api` from a page.
 - Observation beats plan. Lock / away / entertainment hard rules still win. A protected window is never captured, uploaded, or paid.
