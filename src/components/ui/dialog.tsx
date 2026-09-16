@@ -21,12 +21,14 @@ export interface DialogProps {
   footer?: ReactNode;
   /** Extra classes for the panel — use to widen a specific dialog. */
   className?: string;
+  /** Replace the default title row. `title` remains the accessible name. */
+  header?: ReactNode;
 }
 
 /**
- * Modal dialog. Hand-rolled rather than pulled from Radix: the app has
- * three dialogs and no nested or portalled ones, so a focus trap, Esc
- * handling and a scroll lock are the whole requirement.
+ * Modal dialog. Hand-rolled rather than pulled from Radix: a focus trap,
+ * Esc handling and a scroll lock are the whole requirement. Do not nest
+ * dialogs.
  */
 export function Dialog({
   open,
@@ -36,6 +38,7 @@ export function Dialog({
   children,
   footer,
   className,
+  header,
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
@@ -116,29 +119,38 @@ export function Dialog({
           className,
         )}
       >
-        <div className="flex items-start justify-between gap-4 border-b bg-muted/30 px-5 py-4">
-          <div className="space-y-1">
-            <h2 id={titleId} className="text-sm font-semibold leading-tight">
+        {header ? (
+          <>
+            <h2 id={titleId} className="sr-only">
               {title}
             </h2>
-            {description && (
-              <div
-                id={descriptionId}
-                className="text-xs leading-relaxed text-muted-foreground"
-              >
-                {description}
-              </div>
-            )}
+            {header}
+          </>
+        ) : (
+          <div className="flex items-start justify-between gap-4 border-b bg-muted/30 px-5 py-4">
+            <div className="space-y-1">
+              <h2 id={titleId} className="text-sm font-semibold leading-tight">
+                {title}
+              </h2>
+              {description && (
+                <div
+                  id={descriptionId}
+                  className="text-xs leading-relaxed text-muted-foreground"
+                >
+                  {description}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="关闭"
+              className="-mr-1 -mt-1 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <X className="size-4" />
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="关闭"
-            className="-mr-1 -mt-1 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
+        )}
         {children && (
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
         )}
