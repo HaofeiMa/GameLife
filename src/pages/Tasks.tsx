@@ -56,9 +56,12 @@ import {
   toggleCollapsed,
 } from "../lib/taskBoard";
 import {
+  CAL_BLOCK_INSET_LEFT,
+  CAL_BLOCK_INSET_RIGHT,
   CAL_DAY_GAP,
   CAL_GUTTER,
   CAL_HOUR_H,
+  CAL_LANE_GAP,
   calendarDays,
   dayColumnLabel,
   dropRange,
@@ -288,12 +291,18 @@ export function Tasks() {
     const grid = gridRef.current;
     if (!grid) return null;
     const box = grid.getBoundingClientRect();
-    return hitCalendarTs(daysRef.current, e.clientX, e.clientY, {
-      left: box.left,
-      top: box.top,
-      width: box.width,
-      scrollTop: grid.scrollTop,
-    });
+    return hitCalendarTs(
+      daysRef.current,
+      e.clientX,
+      e.clientY,
+      {
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        scrollTop: grid.scrollTop,
+      },
+      32,
+    );
   }, []);
 
   const updateCalDrag = useCallback(
@@ -1409,25 +1418,25 @@ function TaskCalendar({
   const height = 24 * CAL_HOUR_H;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0">
-        <div className="shrink-0" style={{ width: CAL_GUTTER }} />
-        {days.map((day, i) => (
-          <Fragment key={day}>
-            {i > 0 ? <DayColumnGap /> : null}
-            <div
-              className="min-w-0 flex-1 py-1.5 text-center text-[11px] font-medium"
-              style={
-                day === today
-                  ? { background: categoryColorAt("mainline", 16) }
-                  : undefined
-              }
-            >
-              {dayColumnLabel(day)}
-            </div>
-          </Fragment>
-        ))}
-      </div>
       <div ref={gridRef} className="min-h-0 flex-1 overflow-auto">
+        <div className="sticky top-0 z-20 flex h-8 bg-card">
+          <div className="shrink-0" style={{ width: CAL_GUTTER }} />
+          {days.map((day, i) => (
+            <Fragment key={day}>
+              {i > 0 ? <DayColumnGap /> : null}
+              <div
+                className="min-w-0 flex-1 py-1.5 text-center text-[11px] font-medium"
+                style={
+                  day === today
+                    ? { background: categoryColorAt("mainline", 16) }
+                    : undefined
+                }
+              >
+                {dayColumnLabel(day)}
+              </div>
+            </Fragment>
+          ))}
+        </div>
         <div className="relative flex" style={{ height }}>
           <div className="relative shrink-0" style={{ width: CAL_GUTTER }}>
             {hours.map((h) => (
@@ -1584,8 +1593,8 @@ function CalendarDayColumn({
               isPreview && "pointer-events-none opacity-80",
             )}
             style={{
-              left: `calc(${(mark.lane / lanes) * 100}% + 6px)`,
-              width: `calc(${(span / lanes) * 100}% - 16px)`,
+              left: `calc(${(mark.lane / lanes) * 100}% + ${CAL_BLOCK_INSET_LEFT}px)`,
+              width: `calc(${(span / lanes) * 100}% - ${CAL_BLOCK_INSET_LEFT + CAL_BLOCK_INSET_RIGHT + CAL_LANE_GAP}px)`,
               top: mark.rowStart * (CAL_HOUR_H / 4) + 1,
               height: mark.rowSpan * (CAL_HOUR_H / 4) - 2,
               background: `color-mix(in srgb, ${categoryColor(cat)} 28%, hsl(var(--card)))`,

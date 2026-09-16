@@ -44,4 +44,10 @@ describe("hitCalendarTs", () => {
     expect(ts).not.toBeNull();
     expect(ts).toBeGreaterThan(day0 as number);
   });
+
+  it("ignores clicks on the sticky day header", () => {
+    const days = ["2026-09-16", "2026-09-17"];
+    const grid = { left: 0, top: 0, width: 40 + 200 + 10 + 200, scrollTop: 0 };
+    expect(hitCalendarTs(days, 50, 10, grid, 32)).toBeNull();
+  });
 });

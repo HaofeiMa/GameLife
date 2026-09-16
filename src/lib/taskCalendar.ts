@@ -7,6 +7,9 @@ export type CalEdge = "start" | "end";
 export const CAL_HOUR_H = 36;
 export const CAL_GUTTER = 40;
 export const CAL_DAY_GAP = 10;
+export const CAL_BLOCK_INSET_LEFT = 2;
+export const CAL_BLOCK_INSET_RIGHT = 6;
+export const CAL_LANE_GAP = 4;
 
 export function mondayOf(day: string): string {
   const [y, m, d] = day.split("-").map(Number);
@@ -59,11 +62,12 @@ export function hitCalendarTs(
   clientX: number,
   clientY: number,
   grid: { left: number; top: number; width: number; scrollTop: number },
+  headerH = 0,
 ): number | null {
   if (days.length === 0) return null;
   const x = clientX - grid.left;
-  const y = clientY - grid.top + grid.scrollTop;
-  if (x < 0 || x > grid.width) return null;
+  const y = clientY - grid.top + grid.scrollTop - headerH;
+  if (x < 0 || x > grid.width || y < 0) return null;
   const n = days.length;
   const inner = grid.width - CAL_GUTTER - CAL_DAY_GAP * (n - 1);
   if (inner <= 0) return null;
