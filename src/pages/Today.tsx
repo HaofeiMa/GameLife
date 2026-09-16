@@ -8,6 +8,7 @@ import { PermissionBanner } from "../components/PermissionBanner";
 import { PlatformNotice } from "../components/PlatformNotice";
 import { TaskActionMenu } from "../components/TaskActionMenu";
 import { TaskDateDialog } from "../components/TaskDateDialog";
+import { TaskDetailDialog } from "../components/TaskDetailDialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardCh } from "../components/ui/card";
@@ -62,6 +63,7 @@ import {
 } from "../lib/timelinePlan";
 import { useTimelineSplit } from "../hooks/useTimelineSplit";
 import { lastCopiedPayload, parseTaskCopy, serializeTaskCopy } from "../lib/taskClipboard";
+import { withinClickSlop } from "../lib/taskPointer";
 import type { CalEdge } from "../lib/taskCalendar";
 import { moveSameDay, resizeSameDay } from "../lib/planDrag";
 import { cn } from "../lib/utils";
@@ -409,6 +411,7 @@ function Timeline({
   onPick,
   scrollRef,
   onMovePlan,
+  onOpenDetail,
   taskViews,
   onMenu,
 }: {
@@ -432,6 +435,7 @@ function Timeline({
   onPick: (slot: TodaySlot) => void;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onMovePlan: (id: string, start: number, end: number) => void;
+  onOpenDetail: (task: TaskView) => void;
   taskViews: TaskView[];
   onMenu: (task: TaskView, x: number, y: number) => void;
 }) {
@@ -447,8 +451,10 @@ function Timeline({
     id: string;
     start: number;
     end: number;
+    originX: number;
     originY: number;
     edge?: CalEdge;
+    view: TaskView;
   } | null>(null);
   const previewRef = useRef(preview);
   previewRef.current = preview;
@@ -513,13 +519,21 @@ function Timeline({
         : moveSameDay(drag.start, drag.end, dayStart, slots);
       setPreview({ id: drag.id, start: next.start, end: next.end });
     }
-    function onUp() {
+    function onUp(e: PointerEvent) {
       const drag = dragRef.current;
       const current = previewRef.current;
       dragRef.current = null;
       setPreview(null);
       if (!drag || !current) return;
-      if (current.start === drag.start && current.end === drag.end) return;
+      if (current.start === drag.start && current.end === drag.end) {
+        if (
+          !drag.edge &&
+          withinClickSlop(e.clientX - drag.originX, e.clientY - drag.originY)
+        ) {
+          onOpenDetail(drag.view);
+        }
+        return;
+      }
       onMovePlan(drag.id, current.start, current.end);
     }
     window.addEventListener("pointermove", onMove);
@@ -531,7 +545,7 @@ function Timeline({
       window.removeEventListener("pointercancel", onUp);
     };
     // preview.id is the drag session key; start/end updates must not rebind.
-  }, [dayStart, onMovePlan, preview?.id]);
+  }, [dayStart, onMovePlan, onOpenDetail, preview?.id]);
 
   return (
     <Card className="flex h-full min-w-0 flex-col overflow-hidden">
@@ -596,7 +610,9 @@ function Timeline({
                       id: original.id,
                       start: original.start,
                       end: original.end,
+                      originX: e.clientX,
                       originY: e.clientY,
+                      view: viewForDayTask(original, taskViews),
                     };
                     setPreview({
                       id: original.id,
@@ -638,8 +654,10 @@ function Timeline({
                             id: original.id,
                             start: original.start,
                             end: original.end,
+                            originX: e.clientX,
                             originY: e.clientY,
                             edge: "start",
+                            view: viewForDayTask(original, taskViews),
                           };
                           setPreview({
                             id: original.id,
@@ -660,8 +678,10 @@ function Timeline({
                             id: original.id,
                             start: original.start,
                             end: original.end,
+                            originX: e.clientX,
                             originY: e.clientY,
                             edge: "end",
+                            view: viewForDayTask(original, taskViews),
                           };
                           setPreview({
                             id: original.id,
@@ -908,6 +928,7 @@ export function Today() {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [board, setBoard] = useState<TaskBoardView | null>(null);
   const [dateTask, setDateTask] = useState<TaskView | null>(null);
+  const [detailTask, setDetailTask] = useState<TaskView | null>(null);
   const [abandonTarget, setAbandonTarget] = useState<TaskView | null>(null);
   const [menu, setMenu] = useState<{
     task: TaskView;
@@ -959,6 +980,11 @@ export function Today() {
     },
     [runTask],
   );
+
+  const onOpenDetail = useCallback((task: TaskView) => {
+    setDateTask(null);
+    setDetailTask(task);
+  }, []);
 
   useEffect(() => {
     consumeStoredCalDay(window.localStorage);
@@ -1216,6 +1242,7 @@ export function Today() {
                 onPick={setSelected}
                 scrollRef={timelineRef}
                 onMovePlan={onMovePlan}
+                onOpenDetail={onOpenDetail}
                 taskViews={[...(board?.tasks ?? []), ...(dayView.tasks ?? [])]}
                 onMenu={(task, x, y) => setMenu({ task, x, y })}
               />
@@ -1523,6 +1550,17 @@ export function Today() {
         onSaved={refresh}
         onError={(message) => setError(message)}
       />
+      <TaskDetailDialog
+        task={detailTask}
+        lists={board?.lists ?? []}
+        onClose={() => setDetailTask(null)}
+        onSaved={refresh}
+        onError={(message) => setError(message)}
+        onAbandon={(task) => {
+          setDetailTask(null);
+          setAbandonTarget(task);
+        }}
+      />
       <Dialog
         open={abandonTarget != null}
         onClose={() => setAbandonTarget(null)}
@@ -1561,6 +1599,11 @@ export function Today() {
         onClose={() => setMenu(null)}
         onDate={(task) => {
           setMenu(null);
+          if (detailTask?.id === task.id) {
+            document.getElementById("task-detail-schedule")?.focus();
+            return;
+          }
+          setDetailTask(null);
           setDateTask(task);
         }}
         onMove={(task, listId) => {
