@@ -9,3 +9,14 @@ export function ranksAfterDrag(
   rest.splice(at, 0, dragId);
   return rest.map((id, i) => ({ id, sort: i * 10 }));
 }
+
+export function listDragShown(
+  destIds: string[],
+  dragId: string,
+  beforeId: string | null,
+): { shown: string[]; gapIndex: number } {
+  const shown = destIds.filter((id) => id !== dragId);
+  let gapIndex = beforeId == null ? shown.length : shown.indexOf(beforeId);
+  if (gapIndex < 0) gapIndex = shown.length;
+  return { shown, gapIndex };
+}
