@@ -89,7 +89,8 @@ type CalDays = "3" | "7";
 type MenuState =
   | { kind: "task"; task: TaskView; x: number; y: number }
   | { kind: "bulk"; x: number; y: number }
-  | { kind: "list"; list: TaskListView; x: number; y: number };
+  | { kind: "list"; list: TaskListView; x: number; y: number }
+  | { kind: "board"; x: number; y: number };
 
 type CalDrag = {
   task: TaskView;
@@ -186,7 +187,6 @@ export function Tasks() {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [calDays, setCalDays] = useState<CalDays>(readCalDays);
-  const [moreOpen, setMoreOpen] = useState(false);
   const [showDone, setShowDone] = useState(false);
   const [collapsed, setCollapsed] = useState<string[]>(readCollapsed);
   const [line, setLine] = useState("");
@@ -797,36 +797,6 @@ export function Tasks() {
   const dialogs = (
     <>
       <Dialog
-        open={moreOpen}
-        onClose={() => setMoreOpen(false)}
-        title="更多"
-      >
-        <div className="flex flex-col gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setMoreOpen(false);
-              setAddName("");
-              setAddRole("mainline");
-              setAddOpen(true);
-            }}
-          >
-            添加分组
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setShowDone((v) => !v);
-              setMoreOpen(false);
-            }}
-          >
-            {showDone ? "隐藏已完成" : "显示已完成"}
-          </Button>
-        </div>
-      </Dialog>
-      <Dialog
         open={addOpen}
         onClose={() => setAddOpen(false)}
         title="添加分组"
@@ -1069,6 +1039,35 @@ export function Tasks() {
           </>
         )}
       </ContextMenu>
+      <ContextMenu
+        open={menu?.kind === "board"}
+        x={menu?.kind === "board" ? menu.x : 0}
+        y={menu?.kind === "board" ? menu.y : 0}
+        onClose={() => setMenu(null)}
+      >
+        {menu?.kind === "board" && (
+          <>
+            <ContextMenuItem
+              onSelect={() => {
+                setMenu(null);
+                setAddName("");
+                setAddRole("mainline");
+                setAddOpen(true);
+              }}
+            >
+              添加分组
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() => {
+                setShowDone((v) => !v);
+                setMenu(null);
+              }}
+            >
+              {showDone ? "隐藏已完成" : "显示已完成"}
+            </ContextMenuItem>
+          </>
+        )}
+      </ContextMenu>
       <Toaster toasts={toasts} />
     </>
   );
@@ -1150,6 +1149,15 @@ export function Tasks() {
               )}
               onPointerDown={(e) => {
                 if (e.target === e.currentTarget) clearListSelection();
+              }}
+              onContextMenu={(e) => {
+                const el = e.target;
+                if (!(el instanceof HTMLElement)) return;
+                if (el.closest("[data-task-id], button, [role=checkbox], input, textarea")) {
+                  return;
+                }
+                e.preventDefault();
+                setMenu({ kind: "board", x: e.clientX, y: e.clientY });
               }}
             >
               {lists.map((list) => {
