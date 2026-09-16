@@ -12,7 +12,7 @@ alwaysApply: false
 - Run frontend tests with `npx vitest run --dir src` (never unscoped — `.worktrees/` copies inflate counts).
 - Colour: `src/index.css` `--cat-*` and `src/lib/theme.ts` (`categoryColor` / `categoryColorAt`). No hex / rgb literals in components. Merge classes with `cn()` from `src/lib/utils.ts`.
 - Pages: `Today.tsx` / `Tasks.tsx` / `Stats.tsx` / `Shop.tsx` / `Settings.tsx`. Rail id `week` is the 统计 tab (`src/lib/rail.ts`); id `tasks` is 任务. Do not add FullCalendar, dnd-kit, or Radix.
-- Task CRUD / NL input live on 任务. The Today plan column shares `TaskActionMenu`, `TaskDateDialog`, edge-resize, and ⌘C/V; it does not create tasks. Date-dialog chrome uses existing Dialog + tokens, not iOS grey controls.
+- Task CRUD / NL input live on 任务. Clicking a list row, calendar block, or Today plan block opens `TaskDetailDialog`. Notes Markdown subset lives in `src/lib/taskNotesMd.ts` and never enters judgment. The Today plan column also shares `TaskActionMenu`, `TaskDateDialog`, edge-resize, and ⌘C/V; it does not create tasks. Date-dialog chrome uses existing Dialog + tokens, not iOS grey controls.
 - Settings 「任务通知」 binds `task_notifications` (default off).
 - Each page is `<>{PageHeader}{scroll area}</>`. Keep `TRAFFIC_LIGHT_STRIP` / `TOOLBAR_ROW` / `BRAND_ROW` / `TOOLBAR_PAD_BOTTOM` in sync with the sidebar brand block.
 - Primitives in `src/components/ui/*` are hand-rolled (no Radix). Blue = primary, green = on/healthy, amber = warning, red = destructive only.
