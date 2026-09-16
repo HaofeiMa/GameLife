@@ -9,8 +9,10 @@ import {
   type RefObject,
 } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { TaskActionMenu } from "../components/TaskActionMenu";
+import { TaskActionMenu, TaskBulkMenu } from "../components/TaskActionMenu";
+import { TaskCheckbox } from "../components/TaskCheckbox";
 import { TaskDateDialog } from "../components/TaskDateDialog";
+import { TaskDetailDialog } from "../components/TaskDetailDialog";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { ContextMenu, ContextMenuItem } from "../components/ui/context-menu";
@@ -63,6 +65,7 @@ import {
   type CalEdge,
 } from "../lib/taskCalendar";
 import { lastCopiedPayload, parseTaskCopy, serializeTaskCopy } from "../lib/taskClipboard";
+import { rangeSelect, toggleSelect, visibleTaskIds } from "../lib/taskListSelect";
 import { ribbonCells } from "../lib/slotRibbon";
 import { ranksAfterDrag } from "../lib/taskReorder";
 import { LIST_MAX, LIST_MIN } from "../lib/taskSplit";
@@ -76,6 +79,7 @@ type CalDays = "3" | "7";
 
 type MenuState =
   | { kind: "task"; task: TaskView; x: number; y: number }
+  | { kind: "bulk"; x: number; y: number }
   | { kind: "list"; list: TaskListView; x: number; y: number };
 
 type CalDrag = {
@@ -179,7 +183,10 @@ export function Tasks() {
   const [focusedListId, setFocusedListId] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [dateTask, setDateTask] = useState<TaskView | null>(null);
-  const [abandonTask, setAbandonTask] = useState<TaskView | null>(null);
+  const [detailTask, setDetailTask] = useState<TaskView | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectAnchor, setSelectAnchor] = useState<string | null>(null);
+  const [abandonIds, setAbandonIds] = useState<string[]>([]);
   const [renameTarget, setRenameTarget] = useState<TaskListView | null>(null);
   const [renameName, setRenameName] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<TaskListView | null>(null);
@@ -472,11 +479,28 @@ export function Tasks() {
 
   const tasksByListRef = useRef(tasksByList);
   tasksByListRef.current = tasksByList;
+  const visibleIds = useMemo(
+    () => visibleTaskIds(lists.map((list) => list.id), tasksByList, collapsed),
+    [lists, tasksByList, collapsed],
+  );
+  const visibleIdsRef = useRef(visibleIds);
+  visibleIdsRef.current = visibleIds;
+  const selectedIdsRef = useRef(selectedIds);
+  selectedIdsRef.current = selectedIds;
+  const selectAnchorRef = useRef(selectAnchor);
+  selectAnchorRef.current = selectAnchor;
+
+  function clearListSelection() {
+    setSelectedIds([]);
+    setSelectAnchor(null);
+    setDetailTask(null);
+  }
 
   const beginListDrag = useCallback(
     (task: TaskView, listId: string, e: ReactPointerEvent<HTMLElement>) => {
       if (e.button !== 0) return;
-      if ((e.target as HTMLElement).closest("input")) return;
+      if ((e.target as HTMLElement).closest("[role=checkbox]")) return;
+      e.preventDefault();
       const originX = e.clientX;
       const originY = e.clientY;
       const pointerId = e.pointerId;
@@ -520,6 +544,8 @@ export function Tasks() {
         if (!armed) {
           if (Math.hypot(ev.clientX - originX, ev.clientY - originY) < 4) return;
           armed = true;
+          setSelectedIds([]);
+          setDetailTask(null);
           try {
             row.setPointerCapture(pointerId);
           } catch {
@@ -552,6 +578,29 @@ export function Tasks() {
         if (switched) return;
         if (!armed) {
           setListDrag(null);
+          if ((ev.target as HTMLElement).closest("[role=checkbox]")) return;
+          if (ev.shiftKey) {
+            const next = rangeSelect(
+              visibleIdsRef.current,
+              selectAnchorRef.current,
+              task.id,
+            );
+            setSelectedIds(next);
+            if (!selectAnchorRef.current) setSelectAnchor(task.id);
+            setDetailTask(null);
+            return;
+          }
+          if (ev.metaKey || ev.ctrlKey) {
+            const next = toggleSelect(selectedIdsRef.current, task.id);
+            setSelectedIds(next);
+            setSelectAnchor(task.id);
+            if (next.length !== 1) setDetailTask(null);
+            return;
+          }
+          setSelectedIds([task.id]);
+          setSelectAnchor(task.id);
+          setDateTask(null);
+          setDetailTask(task);
           return;
         }
         const drop = hitDrop(ev.clientX, ev.clientY);
@@ -627,6 +676,11 @@ export function Tasks() {
 
   function openDateDialog(task: TaskView) {
     setMenu(null);
+    if (detailTask?.id === task.id) {
+      document.getElementById("task-detail-schedule")?.focus();
+      return;
+    }
+    setDetailTask(null);
     setDateTask(task);
   }
 
@@ -655,6 +709,7 @@ export function Tasks() {
           onChange={(next) => {
             setCalDays(next);
             writeCalDays(next);
+            clearListSelection();
           }}
           options={[
             { value: "3", label: "3 天" },
@@ -755,23 +810,36 @@ export function Tasks() {
         onSaved={refresh}
         onError={addToast}
       />
+      <TaskDetailDialog
+        task={detailTask}
+        lists={lists}
+        onClose={() => setDetailTask(null)}
+        onSaved={refresh}
+        onError={addToast}
+        onAbandon={(task) => {
+          setDetailTask(null);
+          setAbandonIds([task.id]);
+        }}
+      />
       <Dialog
-        open={abandonTask != null}
-        onClose={() => setAbandonTask(null)}
+        open={abandonIds.length > 0}
+        onClose={() => setAbandonIds([])}
         title="放弃任务"
         footer={
           <>
-            <Button variant="outline" size="sm" onClick={() => setAbandonTask(null)}>
+            <Button variant="outline" size="sm" onClick={() => setAbandonIds([])}>
               取消
             </Button>
             <Button
               variant="destructive"
               size="sm"
               onClick={() => {
-                if (!abandonTask) return;
+                if (abandonIds.length === 0) return;
+                const ids = [...abandonIds];
                 void run(async () => {
-                  await deleteTask(abandonTask.id);
-                  setAbandonTask(null);
+                  for (const id of ids) await deleteTask(id);
+                  setAbandonIds([]);
+                  clearListSelection();
                 });
               }}
             >
@@ -781,7 +849,9 @@ export function Tasks() {
         }
       >
         <p className="text-[12.5px] text-muted-foreground">
-          放弃后不可恢复。确定放弃「{abandonTask?.title}」？
+          {abandonIds.length <= 1
+            ? `放弃后不可恢复。确定放弃「${board?.tasks.find((t) => t.id === abandonIds[0])?.title ?? ""}」？`
+            : `放弃后不可恢复。确定放弃 ${abandonIds.length} 条任务？`}
         </p>
       </Dialog>
       <Dialog
@@ -868,7 +938,29 @@ export function Tasks() {
         }}
         onAbandon={(task) => {
           setMenu(null);
-          setAbandonTask(task);
+          setAbandonIds([task.id]);
+        }}
+      />
+      <TaskBulkMenu
+        open={menu?.kind === "bulk"}
+        x={menu?.kind === "bulk" ? menu.x : 0}
+        y={menu?.kind === "bulk" ? menu.y : 0}
+        lists={lists}
+        onClose={() => setMenu(null)}
+        onMove={(listId) => {
+          const ids = [...selectedIds];
+          setMenu(null);
+          void run(async () => {
+            for (const id of ids) {
+              const row = (board?.tasks ?? []).find((t) => t.id === id);
+              if (!row || row.listId === listId) continue;
+              await moveTask(id, listId);
+            }
+          });
+        }}
+        onAbandon={() => {
+          setMenu(null);
+          setAbandonIds([...selectedIds]);
         }}
       />
       <ContextMenu
@@ -977,7 +1069,15 @@ export function Tasks() {
                 </div>
               )}
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+            <div
+              className={cn(
+                "min-h-0 flex-1 overflow-y-auto px-2 pb-3",
+                listDrag && "select-none",
+              )}
+              onPointerDown={(e) => {
+                if (e.target === e.currentTarget) clearListSelection();
+              }}
+            >
               {lists.map((list) => {
                 const tasks = tasksByList.get(list.id) ?? [];
                 const openCount = (board.tasks ?? []).filter(
@@ -1039,6 +1139,19 @@ export function Tasks() {
                           onContextMenu={(e) => {
                             e.preventDefault();
                             setFocusedListId(list.id);
+                            if (
+                              selectedIds.length > 1 &&
+                              selectedIds.includes(task.id)
+                            ) {
+                              setMenu({
+                                kind: "bulk",
+                                x: e.clientX,
+                                y: e.clientY,
+                              });
+                              return;
+                            }
+                            setSelectedIds([task.id]);
+                            setSelectAnchor(task.id);
                             setMenu({
                               kind: "task",
                               task,
@@ -1050,18 +1163,15 @@ export function Tasks() {
                             "flex cursor-grab items-center gap-2 rounded-[9px] py-1 pr-1.5 text-[12.5px] hover:bg-accent/40 active:cursor-grabbing",
                             "pl-[calc(0.375rem+0.875rem+0.5rem)]",
                             listDrag?.id === task.id && "opacity-50",
+                            selectedIds.includes(task.id) && "bg-accent/40",
                           )}
                         >
-                          <input
-                            type="checkbox"
+                          <TaskCheckbox
                             checked={task.done}
-                            aria-label={`完成 ${task.title}`}
-                            className="size-3.5 shrink-0"
-                            style={{ accentColor: roleDot(list.role) }}
-                            onChange={(e) => {
-                              void run(() =>
-                                toggleTaskDone(task.id, e.target.checked),
-                              );
+                            color={roleDot(list.role)}
+                            label={`完成 ${task.title}`}
+                            onToggle={(next) => {
+                              void run(() => toggleTaskDone(task.id, next));
                             }}
                           />
                           <span

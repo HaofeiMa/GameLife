@@ -51,3 +51,38 @@ export function TaskActionMenu({
     </ContextMenu>
   );
 }
+
+export function TaskBulkMenu({
+  open,
+  x,
+  y,
+  lists,
+  onClose,
+  onMove,
+  onAbandon,
+}: {
+  open: boolean;
+  x: number;
+  y: number;
+  lists: TaskListView[];
+  onClose: () => void;
+  onMove: (listId: string) => void;
+  onAbandon: () => void;
+}) {
+  return (
+    <ContextMenu open={open} x={x} y={y} onClose={onClose}>
+      {lists.length > 0 && (
+        <ContextMenuSub label="移动到">
+          {lists.map((list) => (
+            <ContextMenuItem key={list.id} onSelect={() => onMove(list.id)}>
+              {list.name}
+            </ContextMenuItem>
+          ))}
+        </ContextMenuSub>
+      )}
+      <ContextMenuItem destructive onSelect={onAbandon}>
+        放弃任务
+      </ContextMenuItem>
+    </ContextMenu>
+  );
+}
