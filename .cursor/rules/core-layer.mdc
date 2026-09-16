@@ -10,7 +10,7 @@ This crate is pure domain logic. Do not add `rusqlite`, `tauri`, filesystem, HTT
 
 - Dependencies stay `chrono` / `serde` / `serde_json` only.
 - Classification is `hint.rs`; slot decision is `judge.rs`; span math is `observe.rs`. Local task types live in `task` / `task_parse` / `task_ai`. Reward keys stay in `ledger.rs` — `settle.rs` in the app crate must call these, not reimplement them.
-- Observation beats plan. Auto-Core uses `grounded_strong_core`. Long idle (≥ `LOW_INPUT_IDLE_SECS`, 180s) **is** `Away`, after distraction and before admin / side. `reading_apps` / `CoreReading` are inert; `reading_bridge_seconds` is always 0.
+- Observation beats plan. After lock / entertainment / idle-away / GameLife-is-side, classify by matching **unfinished** task titles (all roles, ignore `start`/`end`). Mixed-role hits are `Unsure`. Policy admin/side lists do not auto-classify. Auto-Core uses matched-mainline `strong_core` ≥ 13 min, **not** `grounded_strong_core`. Unmatched work paths stay gray for AI. Long idle (≥ `LOW_INPUT_IDLE_SECS`, 180s) **is** `Away`, after distraction and before task match. `reading_apps` / `CoreReading` are inert; `reading_bridge_seconds` is always 0.
 - There is no app whitelist. `trusted_apps` does not gate Core candidacy.
 - `screenshot_path` never enters a Judge haystack. `hint` reads `app`, `title`, `url`, `document_path` only — never invent a path from a window title.
 - Tests stay in-process. Do not call `std::env::set_var("HOME", …)`.

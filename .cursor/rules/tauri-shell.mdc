@@ -13,5 +13,7 @@ alwaysApply: false
 - `resolve_slot` writes `slots` + `app_day_stats` / `host_day_stats` in one transaction. Ledger rows only in `Immediate` mode. A `final` slot must not lack its rollup.
 - Swallow only `DbOpError::AlreadyApplied` on ledger inserts. IO/FULL/CORRUPT must surface.
 - `macos/browser.rs` is the only remaining `osascript` (Chrome / Safari / Arc URL). Everything else is native API.
-- `user_version` stays 3. `device_id` is an additive column + insert trigger. Do not run `db::migrate` on another device's snapshot.
+- `user_version` is 4 (`tasks.sort` / `repeat` / `remind_json`). `device_id` is an additive column + insert trigger. Do not run `db::migrate` on another device's snapshot.
+- Slot start pins all unfinished tasks (`snapshots_open`); `select_prompt_snapshots` caps the AI prompt at 20. Do not reject `upsert_task` at 20.
+- Completing a repeating task inserts the next occurrence; uncomplete does not delete that row. After task mutations, ping `task_notify::sync_now()`. Settings `task_notifications` defaults false; request OS permission only on false→true.
 - Tests must not call `std::env::set_var("HOME", …)`. Inject directories (as `SyncContext.scratch` already does).
