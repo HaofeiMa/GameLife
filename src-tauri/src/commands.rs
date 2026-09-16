@@ -11,7 +11,7 @@ use gamelife_core::types::ActivitySeconds;
 use gamelife_core::{
     align_range, can_delete_list, clear_schedule, distraction_runs, first_core_hour,
     format_estimated_minutes, hit_rate, is_lock_screen_app, is_weekday, matched_quest_index,
-    matches_app_identity, parse_list_role_strict, parse_task_line, remind_offsets_ok,
+    matches_app_identity, parse_list_role_strict, parse_task_line, remind_offsets_ok, notes_ok,
     spawn_after_complete, streak_at_risk, sum_activity, validate_lists, wow_delta,
     xp_shop_unlocked, ParseContext, Policy, QuestDraft, RepeatRule, Task, TaskList, TaskListError,
     TaskRange, CHEST_SECS, GOLD_DAY_SECS, PRESET_MAINLINE_ID, SLOT_SECS,
@@ -1988,6 +1988,9 @@ fn upsert_task_in(conn: &Connection, task: TaskView) -> Result<(), DbOpError> {
     if !remind_offsets_ok(&stored.remind_offsets) {
         return Err(DbOpError::Rejected("bad_remind".into()));
     }
+    if !notes_ok(&stored.notes) {
+        return Err(DbOpError::Rejected("notes_too_long".into()));
+    }
     if stored.start.is_none() && stored.repeat != RepeatRule::None {
         return Err(DbOpError::Rejected("repeat_needs_schedule".into()));
     }
@@ -2825,7 +2828,7 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::Daily,
                 remind_offsets: vec![],
-            notes: String::new(),
+                notes: "指标".into(),
             },
         )
         .unwrap();
@@ -2837,6 +2840,7 @@ mod tests {
         assert!(!spawned.done);
         assert!(spawned.start.unwrap() >= today);
         assert_eq!(spawned.repeat, RepeatRule::Daily);
+        assert_eq!(spawned.notes, "指标");
 
         toggle_task_done_in(&conn, "a", false, now).unwrap();
         let after = load_tasks(&conn).unwrap();
@@ -2852,6 +2856,32 @@ mod tests {
             upsert_task_in(&conn, sample_view(&format!("t{i}"), "x")).unwrap();
         }
         assert_eq!(load_tasks(&conn).unwrap().len(), 21);
+    }
+
+    #[test]
+    fn upsert_rejects_notes_over_8192_bytes() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let mut ok = sample_view("t1", "x");
+        ok.notes = "a".repeat(8192);
+        upsert_task_in(&conn, ok).unwrap();
+        let mut bad = sample_view("t2", "y");
+        bad.notes = "a".repeat(8193);
+        let err = upsert_task_in(&conn, bad).unwrap_err();
+        assert_eq!(err, DbOpError::Rejected("notes_too_long".into()));
+    }
+
+    #[test]
+    fn duplicate_task_copies_notes() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let mut src = sample_view("src", "x");
+        src.notes = "地点：A301".into();
+        upsert_task_in(&conn, src).unwrap();
+        let copy = duplicate_task_in(&conn, "src").unwrap();
+        assert_ne!(copy.id, "src");
+        assert_eq!(copy.notes, "地点：A301");
+        assert!(!copy.done);
     }
 
     #[test]
