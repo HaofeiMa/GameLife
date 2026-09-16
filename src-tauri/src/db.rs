@@ -107,7 +107,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   range TEXT,
   sort INTEGER NOT NULL DEFAULT 0,
   repeat TEXT NOT NULL DEFAULT 'none',
-  remind_json TEXT NOT NULL DEFAULT '[]'
+  remind_json TEXT NOT NULL DEFAULT '[]',
+  notes TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS ticktick_cache (
   id TEXT PRIMARY KEY,
@@ -148,7 +149,7 @@ CREATE TABLE IF NOT EXISTS host_day_stats (
 );
 ";
 
-const TARGET_USER_VERSION: i32 = 4;
+const TARGET_USER_VERSION: i32 = 5;
 
 const WAVE1_COLUMNS: &[(&str, &str, &str)] = &[
     ("samples", "document_path", "TEXT"),
@@ -248,12 +249,10 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
     if version < 4 {
         add_column_if_missing(conn, "tasks", "sort", "INTEGER NOT NULL DEFAULT 0")?;
         add_column_if_missing(conn, "tasks", "repeat", "TEXT NOT NULL DEFAULT 'none'")?;
-        add_column_if_missing(
-            conn,
-            "tasks",
-            "remind_json",
-            "TEXT NOT NULL DEFAULT '[]'",
-        )?;
+        add_column_if_missing(conn, "tasks", "remind_json", "TEXT NOT NULL DEFAULT '[]'")?;
+    }
+    if version < 5 {
+        add_column_if_missing(conn, "tasks", "notes", "TEXT NOT NULL DEFAULT ''")?;
     }
     if version < TARGET_USER_VERSION {
         conn.pragma_update(None, "user_version", TARGET_USER_VERSION)
@@ -397,7 +396,7 @@ pub fn load_task_lists(conn: &Connection) -> Result<Vec<TaskList>, DbOpError> {
 pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, list_id, title, done, start, end, range, sort, repeat, remind_json
+            "SELECT id, list_id, title, done, start, end, range, sort, repeat, remind_json, notes
              FROM tasks ORDER BY list_id, sort, id",
         )
         .map_err(map_rusqlite)?;
@@ -421,6 +420,7 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
                 sort: r.get(7)?,
                 repeat: parse_repeat(&repeat),
                 remind_offsets: parse_remind_json(&remind_raw),
+                notes: r.get(10)?,
             })
         })
         .map_err(map_rusqlite)?;
@@ -614,7 +614,8 @@ pub fn local_device_id(conn: &Connection) -> Result<String, DbOpError> {
 /// id that snapshot carries.
 ///
 /// Adding `device_id` is idempotent and is not itself a version bump; task
-/// columns (`sort` / `repeat` / `remind_json`) are what move `user_version` to 4.
+/// columns (`sort` / `repeat` / `remind_json`) moved `user_version` to 4, and
+/// `notes` moves it to 5.
 fn tag_device_rows(conn: &Connection, device_id: &str) -> Result<(), DbOpError> {
     for table in DEVICE_TAGGED_TABLES {
         add_column_if_missing(conn, table, "device_id", "TEXT NOT NULL DEFAULT ''")?;
@@ -1278,7 +1279,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
     }
 
     #[test]
@@ -1297,7 +1298,7 @@ mod tests {
         )
         .unwrap();
         crate::db::migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
         let names = column_names(&conn, "tasks");
         assert!(names.iter().any(|c| c == "sort"));
         assert!(names.iter().any(|c| c == "repeat"));
@@ -1307,6 +1308,34 @@ mod tests {
         assert_eq!(loaded[0].sort, 0);
         assert_eq!(loaded[0].repeat, RepeatRule::None);
         assert!(loaded[0].remind_offsets.is_empty());
+        assert_eq!(loaded[0].notes, "");
+    }
+
+    #[test]
+    fn migrate_adds_task_notes_and_sets_version_5() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+               id TEXT PRIMARY KEY, list_id TEXT, title TEXT, done INTEGER,
+               start INTEGER, end INTEGER, range TEXT,
+               sort INTEGER NOT NULL DEFAULT 0,
+               repeat TEXT NOT NULL DEFAULT 'none',
+               remind_json TEXT NOT NULL DEFAULT '[]'
+             );
+             INSERT INTO tasks (id, list_id, title, done, start, end, range)
+             VALUES ('a','list-mainline','x',0,NULL,NULL,NULL);
+             PRAGMA user_version = 4;",
+        )
+        .unwrap();
+        crate::db::migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 5);
+        let names = column_names(&conn, "tasks");
+        assert!(names.iter().any(|c| c == "notes"));
+        let loaded = load_tasks(&conn).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].notes, "");
     }
 
     #[test]
@@ -1317,7 +1346,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM task_lists", [], |r| r.get(0))
             .unwrap();
@@ -1334,10 +1363,10 @@ mod tests {
     }
 
     #[test]
-    fn migrate_new_db_sets_user_version_4() {
+    fn migrate_new_db_sets_user_version_5() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
         let samples = column_names(&conn, "samples");
         assert!(samples.iter().any(|c| c == "document_path"));
         assert!(samples.iter().any(|c| c == "bundle_id"));
@@ -1426,7 +1455,7 @@ mod tests {
         )
         .unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
         let path: String = conn
             .query_row("SELECT path FROM samples WHERE ts=1", [], |r| r.get(0))
             .unwrap();
@@ -1438,7 +1467,7 @@ mod tests {
             .unwrap();
         assert_eq!(doc, None);
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
     }
 
     #[test]
@@ -1448,7 +1477,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
         conn.execute(
             "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at)
              VALUES ('tt-1','p','t','mainline',1,2,3)",
@@ -1537,8 +1566,8 @@ mod tests {
 
         migrate(&conn).unwrap();
 
-        // device_id tagging is additive; task columns bump the schema to 4.
-        assert_eq!(user_version(&conn), 4);
+        // device_id tagging is additive; notes bump the schema to 5.
+        assert_eq!(user_version(&conn), 5);
 
         let id: String = conn
             .query_row(

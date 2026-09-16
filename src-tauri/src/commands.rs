@@ -276,6 +276,8 @@ pub struct TaskView {
     pub repeat: String,
     #[serde(default)]
     pub remind_offsets: Vec<i64>,
+    #[serde(default)]
+    pub notes: String,
 }
 
 #[derive(Serialize)]
@@ -1896,6 +1898,7 @@ fn task_to_view(task: Task) -> TaskView {
         sort: task.sort,
         repeat: crate::db::repeat_sql(task.repeat).into(),
         remind_offsets: task.remind_offsets,
+        notes: task.notes,
     }
 }
 
@@ -1915,6 +1918,7 @@ fn view_to_task(view: &TaskView) -> Task {
         sort: view.sort,
         repeat: crate::db::parse_repeat(&view.repeat),
         remind_offsets: view.remind_offsets.clone(),
+        notes: view.notes.clone(),
     }
 }
 
@@ -1924,11 +1928,10 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
         Some(TaskRange::Month) => Some("month"),
         None => None,
     };
-    let remind_json =
-        serde_json::to_string(&task.remind_offsets).unwrap_or_else(|_| "[]".into());
+    let remind_json = serde_json::to_string(&task.remind_offsets).unwrap_or_else(|_| "[]".into());
     conn.execute(
-        "INSERT INTO tasks (id, list_id, title, done, start, end, range, sort, repeat, remind_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "INSERT INTO tasks (id, list_id, title, done, start, end, range, sort, repeat, remind_json, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(id) DO UPDATE SET
            list_id=excluded.list_id,
            title=excluded.title,
@@ -1938,7 +1941,8 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
            range=excluded.range,
            sort=excluded.sort,
            repeat=excluded.repeat,
-           remind_json=excluded.remind_json",
+           remind_json=excluded.remind_json,
+           notes=excluded.notes",
         params![
             task.id,
             task.list_id,
@@ -1950,6 +1954,7 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
             task.sort,
             crate::db::repeat_sql(task.repeat),
             remind_json,
+            task.notes,
         ],
     )
     .map_err(crate::db_error::map_rusqlite)?;
@@ -2028,12 +2033,7 @@ pub fn toggle_task_done(id: String, done: bool) -> Result<(), String> {
 
 /// Completing a repeating task inserts the next occurrence. Uncomplete only
 /// flips this row — it does not delete a spawned successor.
-fn toggle_task_done_in(
-    conn: &Connection,
-    id: &str,
-    done: bool,
-    now: i64,
-) -> Result<(), DbOpError> {
+fn toggle_task_done_in(conn: &Connection, id: &str, done: bool, now: i64) -> Result<(), DbOpError> {
     let mut tasks = load_tasks(conn)?;
     let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
         return Err(DbOpError::Fatal("task missing".into()));
@@ -2802,6 +2802,7 @@ mod tests {
             sort: 0,
             repeat: "none".into(),
             remind_offsets: vec![],
+            notes: String::new(),
         }
     }
 
@@ -2824,6 +2825,7 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::Daily,
                 remind_offsets: vec![],
+            notes: String::new(),
             },
         )
         .unwrap();
@@ -3001,6 +3003,7 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
+            notes: String::new(),
             },
         )
         .unwrap();
@@ -3017,6 +3020,7 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
+            notes: String::new(),
             },
         )
         .unwrap();
@@ -3553,6 +3557,7 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
+            notes: String::new(),
             },
         )
         .unwrap();
@@ -3569,6 +3574,7 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
+            notes: String::new(),
             },
         )
         .unwrap();
@@ -3585,6 +3591,7 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
+            notes: String::new(),
             },
         )
         .unwrap();
