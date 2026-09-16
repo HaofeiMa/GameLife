@@ -76,7 +76,7 @@ import {
 import { rangeSelect, toggleSelect, visibleTaskIds } from "../lib/taskListSelect";
 import { hourWashCategory, ribbonCells } from "../lib/slotRibbon";
 import { withinClickSlop } from "../lib/taskPointer";
-import { ranksAfterDrag } from "../lib/taskReorder";
+import { listDragShown, ranksAfterDrag } from "../lib/taskReorder";
 import { LIST_MAX, LIST_MIN } from "../lib/taskSplit";
 import { assignPlanLanes, planLaneSpan } from "../lib/timelinePlan";
 import { categoryColor, categoryColorAt, categoryOf, type CategoryKey } from "../lib/theme";
@@ -218,6 +218,10 @@ export function Tasks() {
     id: string;
     overListId: string;
     beforeId: string | null;
+    rowHeight: number;
+    pointerX: number;
+    pointerY: number;
+    title: string;
   } | null>(null);
   const calDragRef = useRef<CalDrag | null>(null);
   calDragRef.current = calDrag;
@@ -573,6 +577,7 @@ export function Tasks() {
       const originY = e.clientY;
       const pointerId = e.pointerId;
       const row = e.currentTarget;
+      const rowHeight = row.getBoundingClientRect().height;
       let armed = false;
       let switched = false;
 
@@ -591,12 +596,16 @@ export function Tasks() {
       function hitDrop(clientX: number, clientY: number) {
         const stack = document.elementsFromPoint(clientX, clientY);
         let listHit: string | null = null;
-        let beforeId: string | null = null;
+        let beforeId: string | null | undefined;
         for (const node of stack) {
           if (!(node instanceof HTMLElement)) continue;
           if (!listHit && node.dataset.listId) listHit = node.dataset.listId;
+          if (beforeId === undefined && node.dataset.insertBefore !== undefined) {
+            beforeId = node.dataset.insertBefore === "" ? null : node.dataset.insertBefore;
+            continue;
+          }
           if (
-            !beforeId &&
+            beforeId === undefined &&
             node.dataset.taskId &&
             node.dataset.taskId !== task.id
           ) {
@@ -604,7 +613,7 @@ export function Tasks() {
             if (!listHit || owner === listHit) beforeId = node.dataset.taskId;
           }
         }
-        return { listId: listHit, beforeId };
+        return { listId: listHit, beforeId: beforeId ?? null };
       }
 
       function onMove(ev: PointerEvent) {
@@ -636,6 +645,10 @@ export function Tasks() {
           id: task.id,
           overListId: drop.listId ?? listId,
           beforeId: drop.beforeId,
+          rowHeight,
+          pointerX: ev.clientX,
+          pointerY: ev.clientY,
+          title: task.title,
         });
       }
 
@@ -1171,10 +1184,7 @@ export function Tasks() {
                   <section
                     key={list.id}
                     data-list-id={list.id}
-                    className={cn(
-                      "pt-1",
-                      listDrag?.overListId === list.id && "rounded-lg bg-accent/40",
-                    )}
+                    className="pt-1"
                   >
                     <button
                       type="button"
@@ -1211,66 +1221,97 @@ export function Tasks() {
                       </span>
                     </button>
                     {!folded &&
-                      tasks.map((task) => (
-                        <div
-                          key={task.id}
-                          data-task-id={task.id}
-                          tabIndex={0}
-                          onFocus={() => setFocusedListId(list.id)}
-                          onPointerDown={(e) => beginListDrag(task, list.id, e)}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            setFocusedListId(list.id);
-                            if (
-                              selectedIds.length > 1 &&
-                              selectedIds.includes(task.id)
-                            ) {
-                              setMenu({
-                                kind: "bulk",
-                                x: e.clientX,
-                                y: e.clientY,
-                              });
-                              return;
-                            }
-                            setSelectedIds([task.id]);
-                            setSelectAnchor(task.id);
-                            setMenu({
-                              kind: "task",
-                              task,
-                              x: e.clientX,
-                              y: e.clientY,
-                            });
-                          }}
-                          className={cn(
-                            "flex cursor-grab items-center gap-2 rounded-[9px] py-1 pr-1.5 text-[12.5px] hover:bg-accent/40 active:cursor-grabbing",
-                            "pl-[calc(0.375rem+0.875rem+0.5rem)]",
-                            listDrag?.id === task.id && "opacity-50",
-                            selectedIds.includes(task.id) && "bg-accent/40",
-                          )}
-                        >
-                          <TaskCheckbox
-                            checked={task.done}
-                            color={roleDot(list.role)}
-                            label={`完成 ${task.title}`}
-                            onToggle={(next) => {
-                              void run(() => toggleTaskDone(task.id, next));
-                            }}
-                          />
-                          <span
-                            className={cn(
-                              "min-w-0 flex-1 truncate",
-                              task.done && "text-muted-foreground line-through",
-                            )}
-                          >
-                            {task.title}
-                          </span>
-                          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                            {task.start != null && task.end != null
-                              ? taskTimeLabel(task.start, task.end)
-                              : "未排期"}
-                          </span>
-                        </div>
-                      ))}
+                      (() => {
+                        const rawIds = tasks.map((t) => t.id);
+                        const layout = listDrag
+                          ? listDrag.overListId === list.id
+                            ? listDragShown(rawIds, listDrag.id, listDrag.beforeId)
+                            : {
+                                shown: rawIds.filter((id) => id !== listDrag.id),
+                                gapIndex: -1,
+                              }
+                          : { shown: rawIds, gapIndex: -1 };
+                        const byId = new Map(tasks.map((t) => [t.id, t]));
+                        const gap = (before: string) =>
+                          listDrag && layout.gapIndex >= 0 ? (
+                            <div
+                              key="gap"
+                              data-insert-before={before}
+                              className="transition-[height] duration-150"
+                              style={{ height: listDrag.rowHeight }}
+                            />
+                          ) : null;
+                        return (
+                          <>
+                            {layout.shown.map((id, i) => {
+                              const task = byId.get(id);
+                              if (!task) return null;
+                              return (
+                                <Fragment key={id}>
+                                  {layout.gapIndex === i ? gap(id) : null}
+                                  <div
+                                    data-task-id={task.id}
+                                    tabIndex={0}
+                                    onFocus={() => setFocusedListId(list.id)}
+                                    onPointerDown={(e) => beginListDrag(task, list.id, e)}
+                                    onContextMenu={(e) => {
+                                      e.preventDefault();
+                                      setFocusedListId(list.id);
+                                      if (
+                                        selectedIds.length > 1 &&
+                                        selectedIds.includes(task.id)
+                                      ) {
+                                        setMenu({
+                                          kind: "bulk",
+                                          x: e.clientX,
+                                          y: e.clientY,
+                                        });
+                                        return;
+                                      }
+                                      setSelectedIds([task.id]);
+                                      setSelectAnchor(task.id);
+                                      setMenu({
+                                        kind: "task",
+                                        task,
+                                        x: e.clientX,
+                                        y: e.clientY,
+                                      });
+                                    }}
+                                    className={cn(
+                                      "flex cursor-grab items-center gap-2 rounded-[9px] py-1 pr-1.5 text-[12.5px] hover:bg-accent/40 active:cursor-grabbing",
+                                      "pl-[calc(0.375rem+0.875rem+0.5rem)]",
+                                      selectedIds.includes(task.id) && "bg-accent/40",
+                                    )}
+                                  >
+                                    <TaskCheckbox
+                                      checked={task.done}
+                                      color={roleDot(list.role)}
+                                      label={`完成 ${task.title}`}
+                                      onToggle={(next) => {
+                                        void run(() => toggleTaskDone(task.id, next));
+                                      }}
+                                    />
+                                    <span
+                                      className={cn(
+                                        "min-w-0 flex-1 truncate",
+                                        task.done && "text-muted-foreground line-through",
+                                      )}
+                                    >
+                                      {task.title}
+                                    </span>
+                                    <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                                      {task.start != null && task.end != null
+                                        ? taskTimeLabel(task.start, task.end)
+                                        : "未排期"}
+                                    </span>
+                                  </div>
+                                </Fragment>
+                              );
+                            })}
+                            {layout.gapIndex === layout.shown.length ? gap("") : null}
+                          </>
+                        );
+                      })()}
                   </section>
                 );
               })}
@@ -1314,6 +1355,17 @@ export function Tasks() {
           </Card>
         </div>
       </div>
+      {listDrag && (
+        <div
+          className="pointer-events-none fixed z-50 max-w-xs rounded-[9px] border bg-card px-2 py-1.5 text-[13px] font-semibold shadow-lg"
+          style={{
+            left: listDrag.pointerX + 8,
+            top: listDrag.pointerY + 8,
+          }}
+        >
+          {listDrag.title}
+        </div>
+      )}
       {dialogs}
     </>
   );
