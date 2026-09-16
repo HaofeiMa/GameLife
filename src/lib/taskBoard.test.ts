@@ -44,10 +44,8 @@ describe("collapsed lists", () => {
 });
 
 describe("taskCommandError", () => {
-  it("maps the 20-task cap to the toast copy", () => {
-    expect(taskCommandError("too_many_judgment_tasks")).toBe(
-      "当天已排期任务超过 20，请先完成、改期或放弃。",
-    );
+  it("maps notes_too_long", () => {
+    expect(taskCommandError("notes_too_long")).toBe("备注最长 8192 字节。");
   });
 });
 

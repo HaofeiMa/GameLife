@@ -13,6 +13,7 @@ const sample: TaskView = {
   sort: 0,
   repeat: "none",
   remindOffsets: [],
+  notes: "会 A301",
 };
 
 describe("taskClipboard", () => {
@@ -20,6 +21,13 @@ describe("taskClipboard", () => {
     const raw = serializeTaskCopy(sample);
     const back = parseTaskCopy(raw);
     expect(back?.title).toBe("x");
+    expect(back?.notes).toBe("会 A301");
     expect(parseTaskCopy("not-ours")).toBeNull();
+  });
+
+  it("treats a missing notes field as empty", () => {
+    const raw = serializeTaskCopy(sample);
+    const stripped = raw.replace(/,"notes":"会 A301"/, "");
+    expect(parseTaskCopy(stripped)?.notes).toBe("");
   });
 });

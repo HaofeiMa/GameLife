@@ -113,6 +113,7 @@ export async function previewInvoke<T>(
             sort?: number;
             repeat?: string;
             remindOffsets?: number[];
+            notes?: string;
           }
         | undefined;
       if (task) {
@@ -121,6 +122,7 @@ export async function previewInvoke<T>(
           sort: task.sort ?? PREVIEW_TASK_BOARD.tasks.length,
           repeat: task.repeat ?? "none",
           remindOffsets: task.remindOffsets ?? [],
+          notes: task.notes ?? "",
         };
         const i = PREVIEW_TASK_BOARD.tasks.findIndex((t) => t.id === task.id);
         if (i >= 0) PREVIEW_TASK_BOARD.tasks[i] = row;

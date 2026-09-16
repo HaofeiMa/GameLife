@@ -615,6 +615,7 @@ export function Tasks() {
         sort: 0,
         repeat: "none",
         remindOffsets: [],
+        notes: "",
       });
       await refresh();
       setLine("");
@@ -1254,6 +1255,7 @@ function CalendarDayColumn({
           sort: 0,
           repeat: "none",
           remindOffsets: [],
+          notes: tasks.find((t) => t.id === preview.id)?.notes ?? "",
         }
       : null;
   const shown = previewTask ? [...visible, previewTask] : visible;

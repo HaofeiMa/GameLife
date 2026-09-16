@@ -149,6 +149,7 @@ function viewForDayTask(task: DayTask, views: TaskView[]): TaskView {
     sort: 0,
     repeat: "none",
     remindOffsets: [],
+    notes: "",
   };
 }
 

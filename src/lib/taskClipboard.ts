@@ -20,7 +20,9 @@ export function parseTaskCopy(raw: string): TaskView | null {
   if (!raw.startsWith(PREFIX)) return null;
   try {
     const parsed: unknown = JSON.parse(raw.slice(PREFIX.length));
-    return isTaskView(parsed) ? parsed : null;
+    if (!isTaskView(parsed)) return null;
+    const notes = typeof parsed.notes === "string" ? parsed.notes : "";
+    return { ...parsed, notes };
   } catch {
     return null;
   }

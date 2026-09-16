@@ -12,6 +12,7 @@ function task(partial: Partial<TaskView> & Pick<TaskView, "id" | "title">): Task
     sort: 0,
     repeat: "none",
     remindOffsets: [],
+    notes: "",
     ...partial,
   };
 }

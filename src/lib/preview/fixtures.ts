@@ -84,6 +84,7 @@ export const PREVIEW_TASK_BOARD: TaskBoardView = {
       sort: 0,
       repeat: "none",
       remindOffsets: [],
+      notes: "",
     },
     {
       id: "task-preview-2",
@@ -96,6 +97,7 @@ export const PREVIEW_TASK_BOARD: TaskBoardView = {
       sort: 1,
       repeat: "none",
       remindOffsets: [],
+      notes: "地点：A301",
     },
   ],
 };

@@ -106,6 +106,8 @@ export function taskCommandError(err: unknown): string {
       return "未排期不能设重复。";
     case "bad_remind":
       return "提醒时间无效。";
+    case "notes_too_long":
+      return "备注最长 8192 字节。";
     default:
       return code;
   }

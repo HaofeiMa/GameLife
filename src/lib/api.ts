@@ -49,6 +49,7 @@ export interface TaskView {
   sort: number;
   repeat: string;
   remindOffsets: number[];
+  notes: string;
 }
 
 export interface TaskBoardView {
