@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   Fragment,
   useCallback,
@@ -31,6 +31,7 @@ import {
   deleteTask,
   duplicateTask,
   getDayView,
+  getToday,
   listTaskBoard,
   moveTask,
   parseTaskLine,
@@ -67,6 +68,11 @@ import {
   type CalEdge,
 } from "../lib/taskCalendar";
 import { lastCopiedPayload, parseTaskCopy, serializeTaskCopy } from "../lib/taskClipboard";
+import {
+  formatScheduledDuration,
+  scheduledSecondsToday,
+  unfinishedCount,
+} from "../lib/taskHeaderStats";
 import { rangeSelect, toggleSelect, visibleTaskIds } from "../lib/taskListSelect";
 import { hourWashCategory, ribbonCells } from "../lib/slotRibbon";
 import { withinClickSlop } from "../lib/taskPointer";
@@ -226,6 +232,10 @@ export function Tasks() {
   const daysRef = useRef(days);
   daysRef.current = days;
   const [ribbons, setRibbons] = useState<Record<string, TodaySlot[]>>({});
+  const [wallet, setWallet] = useState<{
+    coinBalance: number;
+    xpToday: number;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -259,6 +269,12 @@ export function Tasks() {
       const next = await listTaskBoard();
       setBoard(next);
       setError(null);
+      try {
+        const t = await getToday();
+        setWallet({ coinBalance: t.coinBalance, xpToday: t.xpToday });
+      } catch {
+        setWallet(null);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -738,36 +754,42 @@ export function Tasks() {
 
   const parsedListName =
     parsed && lists.find((list) => list.id === parsed.listId)?.name;
+  const boardTasks = board?.tasks ?? [];
+  const subtitle = `未完成 ${unfinishedCount(boardTasks)} · 今日已排期 ${formatScheduledDuration(
+    scheduledSecondsToday(boardTasks, dayStartUnix(today)),
+  )}`;
 
   const header = (
     <PageHeader
       title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">任务</h1>}
-      center={
-        <Button
-          variant="outline"
-          size="icon"
-          className="text-ink-dim"
-          aria-label="更多"
-          onClick={() => setMoreOpen(true)}
-        >
-          <MoreHorizontal className="size-4" />
-        </Button>
-      }
+      subtitle={subtitle}
       actions={
-        <Segmented
-          aria-label="日历跨度"
-          size="sm"
-          value={calDays}
-          onChange={(next) => {
-            setCalDays(next);
-            writeCalDays(next);
-            clearListSelection();
-          }}
-          options={[
-            { value: "3", label: "3 天" },
-            { value: "7", label: "7 天" },
-          ]}
-        />
+        <div className="flex items-center gap-2">
+          {wallet && (
+            <>
+              <span className="flex items-center gap-[6px] text-[12.5px] font-semibold tabular-nums text-btn-ink">
+                ◉ {wallet.coinBalance}
+              </span>
+              <span className="flex items-center gap-[6px] text-[12.5px] font-semibold tabular-nums text-energy">
+                ⚡ {wallet.xpToday}
+              </span>
+            </>
+          )}
+          <Segmented
+            aria-label="日历跨度"
+            size="sm"
+            value={calDays}
+            onChange={(next) => {
+              setCalDays(next);
+              writeCalDays(next);
+              clearListSelection();
+            }}
+            options={[
+              { value: "3", label: "3 天" },
+              { value: "7", label: "7 天" },
+            ]}
+          />
+        </div>
       }
     />
   );
