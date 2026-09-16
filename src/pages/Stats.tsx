@@ -257,11 +257,11 @@ function PanelCard({
   return (
     <Card className={cn("flex flex-col", wide && "lg:col-span-2", className)}>
       <div className="flex items-baseline gap-[9px] px-[18px] pt-3 pb-[9px]">
-        <h2 className="text-[13.5px] font-semibold tracking-[-0.005em]">
+        <h2 className="text-[15.5px] font-semibold tracking-[-0.005em]">
           {title}
         </h2>
         {meta != null && (
-          <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
+          <span className="ml-auto whitespace-nowrap text-[13px] text-muted-foreground">
             {meta}
           </span>
         )}
@@ -276,7 +276,7 @@ function PanelCard({
         {caption && (
           <p
             className={cn(
-              "text-[11px] leading-relaxed text-muted-foreground",
+              "text-[13px] leading-relaxed text-muted-foreground",
               captionRule
                 ? "mt-[14px] border-t border-dashed border-hairline pt-[10px]"
                 : "mt-[12px]",
@@ -296,7 +296,7 @@ function Legend({ items }: { items: { label: string }[] }) {
       {items.map((item) => (
         <span
           key={item.label}
-          className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[11px] whitespace-nowrap"
+          className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[13px] whitespace-nowrap"
         >
           {item.label}
         </span>
@@ -308,7 +308,7 @@ function Legend({ items }: { items: { label: string }[] }) {
 /** The design's `.mini .v small` — the unit inside a value. */
 function Unit({ children }: { children: ReactNode }) {
   return (
-    <small className="ml-[3px] text-[11px] font-medium tracking-normal text-muted-foreground">
+    <small className="ml-[3px] text-[13px] font-medium tracking-normal text-muted-foreground">
       {children}
     </small>
   );
@@ -317,8 +317,8 @@ function Unit({ children }: { children: ReactNode }) {
 function MiniStat({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="space-y-0.5">
-      <p className="text-[11px] text-muted-foreground">{label}</p>
-      <p className="text-[17px] font-bold tabular-nums tracking-[-0.025em]">
+      <p className="text-[13px] text-muted-foreground">{label}</p>
+      <p className="text-[19px] font-bold tabular-nums tracking-[-0.025em]">
         {value}
       </p>
     </div>
@@ -344,7 +344,7 @@ function CategoryPanel({
       {/* .cat blocks stack with no gap of their own. */}
       {rows.map((c) => (
         <div key={c.key} className="flex flex-col gap-[3px]">
-          <div className="flex items-center gap-[7px] text-[11.5px]">
+          <div className="flex items-center gap-[7px] text-[13.5px]">
             <i
               className="size-[9px] shrink-0 rounded-[3px]"
               style={{ background: categoryColor(c.cat) }}
@@ -388,7 +388,7 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
           const total = d.core + d.side + d.chore;
           return (
             <div key={d.day} className="flex min-w-0 flex-1 flex-col items-center gap-1.5">
-              <span className="text-[11.5px] font-semibold tabular-nums">
+              <span className="text-[13.5px] font-semibold tabular-nums">
                 {dayStackCaption(weekend, total)}
               </span>
               <div
@@ -424,7 +424,7 @@ function DailyPanel({ days }: { days: WeekDayRow[] }) {
                   </>
                 )}
               </div>
-              <span className="w-full text-center text-[10px] text-muted-foreground">
+              <span className="w-full text-center text-[11px] text-muted-foreground">
                 {`周${WEEKDAYS[i] ?? ""}`}
               </span>
             </div>
@@ -455,7 +455,7 @@ function HeatPanel({ hours }: { hours: WeekHourRow[] }) {
             <div key={hour} className="flex flex-col items-center gap-1">
               <div
                 className={cn(
-                  "flex h-11 w-full items-center justify-center rounded-[8px] text-[11px] font-semibold tabular-nums transition-all duration-200",
+                  "flex h-11 w-full items-center justify-center rounded-[8px] text-[13px] font-semibold tabular-nums transition-all duration-200",
                   !observed && "bg-ribbon-gap text-dim2",
                   observed && "hover:ring-2 hover:ring-primary/40",
                 )}
@@ -480,7 +480,7 @@ function HeatPanel({ hours }: { hours: WeekHourRow[] }) {
         })}
       </div>
       {/* The mockup's .hfoot: five labels spread across the whole grid. */}
-      <div className="mt-[5px] flex justify-between text-[10px] tabular-nums text-dim2">
+      <div className="mt-[5px] flex justify-between text-[11px] tabular-nums text-dim2">
         {["08", "11", "14", "17", "21"].map((h) => (
           <span key={h}>{h}</span>
         ))}
@@ -566,7 +566,7 @@ function MonthCalendar({
         {WEEKDAYS.map((w) => (
           <div
             key={w}
-            className="pb-1 text-center text-[10px] font-medium text-muted-foreground"
+            className="pb-1 text-center text-[11px] font-medium text-muted-foreground"
           >
             {w}
           </div>
@@ -589,7 +589,7 @@ function MonthCalendar({
               onClick={() => onPickDay(c.day!)}
               title={`${c.day} · ${monthCellNote(future, coreMin)}`}
               className={cn(
-                "flex aspect-square flex-col items-center justify-center rounded-[8px] text-[10.5px] transition-all duration-200",
+                "flex aspect-square flex-col items-center justify-center rounded-[8px] text-[11.5px] transition-all duration-200",
                 !future && "hover:-translate-y-0.5 hover:shadow-md hover:shadow-primary/10",
                 future && "cursor-default opacity-50",
                 weekend && "ring-1 ring-inset ring-border",
@@ -615,7 +615,7 @@ function MonthCalendar({
               <span className="font-medium tabular-nums leading-none">
                 {c.day.slice(8)}
               </span>
-              <span className="mt-0.5 text-[9px] leading-none text-muted-foreground">
+              <span className="mt-0.5 text-[10px] leading-none text-muted-foreground">
                 {monthCellNote(future, coreMin)}
               </span>
             </button>
@@ -692,7 +692,7 @@ function RhythmPanel({ data }: { data: RhythmReportView }) {
                     />
                   )}
                 </div>
-                <span className="truncate text-[10px] text-muted-foreground">
+                <span className="truncate text-[11px] text-muted-foreground">
                   {s.day.slice(5)}
                 </span>
                 <span className="text-xs font-medium tabular-nums">
@@ -714,7 +714,7 @@ function RhythmPanel({ data }: { data: RhythmReportView }) {
           <MiniStat label="≥6h" value={pct(data.rate6h)} />
           <MiniStat label="≥8h" value={pct(data.rate8h)} />
         </div>
-        <p className="mt-4 text-[11px] text-muted-foreground">周末未达标不断连</p>
+        <p className="mt-4 text-[13px] text-muted-foreground">周末未达标不断连</p>
       </PanelCard>
 
       <PanelCard
@@ -781,7 +781,7 @@ function AppPanel({
         {apps.length === 0 ? (
           <>
             <EmptyLine>无应用明细</EmptyLine>
-            <p className="mt-2 text-[11px] text-muted-foreground">
+            <p className="mt-2 text-[13px] text-muted-foreground">
               从本版本上线后的槽才有 App 明细。
             </p>
           </>
@@ -819,7 +819,7 @@ function AppPanel({
                           title="这一类来自按窗口标题 / 网址匹配的规则，不是把整个 app 归进名单。要让整个 app 都算这一类，请在设置 → 名单里加它。"
                         >
                           <Badge tone="neutral">{listedLabel(row.listedAs)}</Badge>
-                          <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+                          <span className="whitespace-nowrap text-[13px] text-muted-foreground">
                             按标题/网址
                           </span>
                         </span>
@@ -1062,7 +1062,7 @@ export function Stats({ onPickDay }: { onPickDay: (day: string) => void }) {
 
   const header = (
     <PageHeader
-      title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">统计</h1>}
+      title={<h1 className="text-[21px] font-bold tracking-[-0.02em]">统计</h1>}
       subtitle={rangeText}
       center={
         <div className="flex items-center gap-2">

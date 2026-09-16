@@ -6,7 +6,7 @@ export function Input({ className, ...props }: React.ComponentProps<"input">) {
     <input
       className={cn(
         // The mockup's .fin: a 34px sunken field on the warm loot surface.
-        "flex h-[34px] w-full rounded-[10px] border border-pip bg-loot px-3 text-[12.5px] text-btn-ink transition-colors",
+        "flex h-[34px] w-full rounded-[10px] border border-pip bg-loot px-3 text-[14.5px] text-btn-ink transition-colors",
         "placeholder:text-dim2 disabled:cursor-not-allowed disabled:opacity-50",
         className,
       )}

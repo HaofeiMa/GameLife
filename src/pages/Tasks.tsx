@@ -78,6 +78,7 @@ import {
 } from "../lib/taskHeaderStats";
 import { rangeSelect, toggleSelect, visibleTaskIds } from "../lib/taskListSelect";
 import { hourWashCategory, ribbonCells } from "../lib/slotRibbon";
+import { listScheduleChip } from "../lib/taskScheduleLabel";
 import { withinClickSlop } from "../lib/taskPointer";
 import { listDragShown, ranksAfterDrag } from "../lib/taskReorder";
 import { LIST_MAX, LIST_MIN } from "../lib/taskSplit";
@@ -783,16 +784,16 @@ export function Tasks() {
 
   const header = (
     <PageHeader
-      title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">任务</h1>}
+      title={<h1 className="text-[21px] font-bold tracking-[-0.02em]">任务</h1>}
       subtitle={subtitle}
       actions={
         <div className="flex items-center gap-2">
           {wallet && (
             <>
-              <span className="flex items-center gap-[6px] text-[12.5px] font-semibold tabular-nums text-btn-ink">
+              <span className="flex items-center gap-[6px] text-[14.5px] font-semibold tabular-nums text-btn-ink">
                 ◉ {wallet.coinBalance}
               </span>
-              <span className="flex items-center gap-[6px] text-[12.5px] font-semibold tabular-nums text-energy">
+              <span className="flex items-center gap-[6px] text-[14.5px] font-semibold tabular-nums text-energy">
                 ⚡ {wallet.xpToday}
               </span>
             </>
@@ -914,7 +915,7 @@ export function Tasks() {
           </>
         }
       >
-        <p className="text-[12.5px] text-muted-foreground">
+        <p className="text-[14.5px] text-muted-foreground">
           {abandonIds.length <= 1
             ? `放弃后不可恢复。确定放弃「${board?.tasks.find((t) => t.id === abandonIds[0])?.title ?? ""}」？`
             : `放弃后不可恢复。确定放弃 ${abandonIds.length} 条任务？`}
@@ -980,7 +981,7 @@ export function Tasks() {
           </>
         }
       >
-        <p className="text-[12.5px] text-muted-foreground">
+        <p className="text-[14.5px] text-muted-foreground">
           确定删除「{deleteTarget?.name}」？
         </p>
       </Dialog>
@@ -992,6 +993,8 @@ export function Tasks() {
         lists={lists}
         onClose={() => setMenu(null)}
         onDate={openDateDialog}
+        onSaved={refresh}
+        onError={(message) => addToast(message)}
         onMove={(task, listId) => {
           setMenu(null);
           void run(() => moveTask(task.id, listId));
@@ -1153,7 +1156,7 @@ export function Tasks() {
                 }}
               />
               {parsed && line.trim() && (
-                <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+                <div className="mt-1.5 flex flex-wrap gap-1.5 text-[13px] text-muted-foreground">
                   <span>{parsedListName ?? listRoleLabel("mainline")}</span>
                   <span>
                     {parsed.parseOk && parsed.start != null && parsed.end != null
@@ -1222,10 +1225,10 @@ export function Tasks() {
                         style={{ background: roleDot(list.role) }}
                         title={listRoleLabel(list.role)}
                       />
-                      <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">
+                      <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">
                         {list.name}
                       </span>
-                      <span className="tabular-nums text-[11px] text-muted-foreground">
+                      <span className="tabular-nums text-[13px] text-muted-foreground">
                         {openCount}
                       </span>
                     </button>
@@ -1246,7 +1249,7 @@ export function Tasks() {
                             <div
                               key="gap"
                               data-insert-before={before}
-                              className="transition-[height] duration-150"
+                              className="mx-1 rounded-[9px] bg-muted shadow-inner transition-[height] duration-150"
                               style={{ height: listDrag.rowHeight }}
                             />
                           ) : null;
@@ -1255,6 +1258,12 @@ export function Tasks() {
                             {layout.shown.map((id, i) => {
                               const task = byId.get(id);
                               if (!task) return null;
+                              const chip = listScheduleChip(
+                                task.start,
+                                task.end,
+                                Date.now() / 1000,
+                                task.done,
+                              );
                               return (
                                 <Fragment key={id}>
                                   {layout.gapIndex === i ? gap(id) : null}
@@ -1287,7 +1296,7 @@ export function Tasks() {
                                       });
                                     }}
                                     className={cn(
-                                      "flex cursor-grab items-center gap-2 rounded-[9px] py-1 pr-1.5 text-[12.5px] hover:bg-accent/40 active:cursor-grabbing",
+                                      "flex cursor-grab items-center gap-2 rounded-[9px] py-1 pr-1.5 text-[14.5px] hover:bg-accent/40 active:cursor-grabbing",
                                       "pl-[calc(0.375rem+0.875rem+0.5rem)]",
                                       selectedIds.includes(task.id) && "bg-accent/40",
                                     )}
@@ -1308,10 +1317,15 @@ export function Tasks() {
                                     >
                                       {task.title}
                                     </span>
-                                    <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                                      {task.start != null && task.end != null
-                                        ? taskTimeLabel(task.start, task.end)
-                                        : "未排期"}
+                                    <span
+                                      className={cn(
+                                        "shrink-0 text-[13px] tabular-nums",
+                                        chip.tone === "overdue" && "text-destructive",
+                                        chip.tone === "upcoming" && "text-energy",
+                                        chip.tone === "muted" && "text-muted-foreground",
+                                      )}
+                                    >
+                                      {chip.label}
                                     </span>
                                   </div>
                                 </Fragment>
@@ -1366,7 +1380,7 @@ export function Tasks() {
       </div>
       {listDrag && (
         <div
-          className="pointer-events-none fixed z-50 max-w-xs rounded-[9px] border bg-card px-2 py-1.5 text-[13px] font-semibold shadow-lg"
+          className="pointer-events-none fixed z-50 max-w-xs rounded-[9px] border bg-card px-2 py-1.5 text-[15px] font-semibold shadow-lg"
           style={{
             left: listDrag.pointerX + 8,
             top: listDrag.pointerY + 8,
@@ -1425,7 +1439,7 @@ function TaskCalendar({
             <Fragment key={day}>
               {i > 0 ? <DayColumnGap /> : null}
               <div
-                className="min-w-0 flex-1 py-1.5 text-center text-[11px] font-medium"
+                className="min-w-0 flex-1 py-1.5 text-center text-[13px] font-medium"
                 style={
                   day === today
                     ? { background: categoryColorAt("mainline", 16) }
@@ -1442,7 +1456,7 @@ function TaskCalendar({
             {hours.map((h) => (
               <div
                 key={h}
-                className="absolute right-1 text-[10px] tabular-nums text-muted-foreground"
+                className="absolute right-1 text-[11px] tabular-nums text-muted-foreground"
                 style={{ top: h * CAL_HOUR_H + 2 }}
               >
                 {String(h).padStart(2, "0")}
@@ -1588,7 +1602,7 @@ function CalendarDayColumn({
               onBlockMenu(task, e.clientX, e.clientY);
             }}
             className={cn(
-              "absolute overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[11px] leading-tight",
+              "absolute overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[13px] leading-tight",
               !isPreview && "cursor-grab active:cursor-grabbing",
               isPreview && "pointer-events-none opacity-80",
             )}

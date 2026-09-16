@@ -54,7 +54,7 @@ export function Segmented<T extends string>({
               "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-[9px] font-medium transition-all duration-200",
               fill && "flex-1",
               // .subtabs (in-card) and .seg (page header).
-              size === "sm" ? "px-[11px] py-1 text-[12px]" : "px-3 py-1 text-[12.5px]",
+              size === "sm" ? "px-[11px] py-1 text-[14px]" : "px-3 py-1 text-[14.5px]",
               active
                 ? "bg-card font-semibold text-foreground shadow-[0_2px_6px_-3px_rgba(120,95,60,0.45)]"
                 : "text-ink-dim hover:text-foreground",

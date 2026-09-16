@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Check, Pencil, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import appIcon from "../../src-tauri/icons/128x128@2x.png";
 import { PageHeader } from "../components/PageHeader";
@@ -59,9 +59,15 @@ import {
   isCodexProvider,
   migrateVisionProviders,
   moveProvider,
+  providerTestButtonLabel,
+  providerTestDotClass,
+  providerTestDotLabel,
+  providerTestPendingNote,
   withVisionProviders,
+  type ProviderTestTone,
 } from "../lib/providers";
 import { notifySettingsChanged } from "../lib/settingsEvents";
+import { COLOR_THEMES, normalizeColorTheme } from "../lib/theme";
 import { cn } from "../lib/utils";
 
 type SettingsTab =
@@ -86,22 +92,35 @@ const TABS: { value: SettingsTab; label: string }[] = [
 function Section({
   title,
   caption,
+  actions,
   children,
   className,
 }: {
-  title: string;
+  title: ReactNode;
   caption?: ReactNode;
+  actions?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
   return (
     <Card className={cn("overflow-hidden", className)}>
       <div className="px-[18px] pt-[11px] pb-2">
-        <h2 className="text-[13.5px] font-semibold tracking-[-0.005em]">
-          {title}
-        </h2>
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            {typeof title === "string" ? (
+              <h2 className="text-[15.5px] font-semibold tracking-[-0.005em]">
+                {title}
+              </h2>
+            ) : (
+              title
+            )}
+          </div>
+          {actions ? (
+            <div className="flex shrink-0 items-center gap-1">{actions}</div>
+          ) : null}
+        </div>
         {caption && (
-          <div className="mt-[3px] text-[11px] leading-[1.5] text-muted-foreground">
+          <div className="mt-[3px] text-[13px] leading-[1.5] text-muted-foreground">
             {caption}
           </div>
         )}
@@ -124,7 +143,7 @@ function Field({
     <div className="flex flex-col gap-[6px]">
       <Label>{label}</Label>
       {children}
-      {hint && <p className="text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+      {hint && <p className="text-[13px] leading-relaxed text-muted-foreground">{hint}</p>}
     </div>
   );
 }
@@ -142,9 +161,9 @@ function Row({
   return (
     <div className="flex items-center gap-[14px] rounded-[14px] bg-loot px-[13px] py-2.5">
       <div className="min-w-0 flex-1">
-        <p className="text-[12.5px] font-semibold">{title}</p>
+        <p className="text-[14.5px] font-semibold">{title}</p>
         {description && (
-          <p className="mt-0.5 text-[11px] leading-[1.5] text-muted-foreground">
+          <p className="mt-0.5 text-[13px] leading-[1.5] text-muted-foreground">
             {description}
           </p>
         )}
@@ -312,6 +331,54 @@ function SecretField({
   );
 }
 
+function TestConnectionButton({
+  status,
+  disabled,
+  onClick,
+  note,
+}: {
+  status: ProviderTestTone;
+  disabled?: boolean;
+  onClick: () => void;
+  note?: string;
+}) {
+  const pending = providerTestPendingNote(status);
+  const shownNote = note || pending;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={disabled}
+        onClick={() => {
+          if (status === "testing") return;
+          onClick();
+        }}
+      >
+        <span
+          aria-label={providerTestDotLabel(status)}
+          className={cn(
+            "inline-block size-2 rounded-full",
+            providerTestDotClass(status),
+            status === "testing" && "animate-pulse",
+          )}
+        />
+        {providerTestButtonLabel(status)}
+      </Button>
+      {shownNote ? (
+        <p
+          className={cn(
+            "text-[13px] leading-relaxed",
+            status === "fail" ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {shownNote}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function ProviderEditor({
   title,
   spec,
@@ -327,6 +394,8 @@ function ProviderEditor({
   onKeyChange,
   onTest,
   onRefreshCodex,
+  testStatus,
+  testNote,
 }: {
   title: string;
   spec: VisionProviderSettings;
@@ -342,31 +411,119 @@ function ProviderEditor({
   onKeyChange: (value: string) => void;
   onTest: () => void;
   onRefreshCodex: () => void;
+  testStatus: ProviderTestTone;
+  testNote?: string;
 }) {
   const codex = isCodexProvider(spec);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(spec.name ?? "");
+  const skipNameCommit = useRef(false);
+
+  useEffect(() => {
+    setEditingName(false);
+    setNameDraft(spec.name ?? "");
+    skipNameCommit.current = false;
+  }, [spec.id]);
+
+  function startEditName() {
+    skipNameCommit.current = false;
+    setNameDraft(spec.name ?? "");
+    setEditingName(true);
+  }
+
+  function commitName() {
+    const skip = skipNameCommit.current;
+    skipNameCommit.current = false;
+    setEditingName(false);
+    if (skip) return;
+    const next = nameDraft.trim();
+    if (next === (spec.name ?? "").trim()) return;
+    onPatch({ name: next });
+  }
+
+  const headerTitle = codex ? (
+    title
+  ) : editingName ? (
+    <Input
+      aria-label="提供商名称"
+      value={nameDraft}
+      disabled={busy}
+      placeholder={title}
+      autoFocus
+      className="h-[26px] px-2 text-[15.5px] font-semibold"
+      onChange={(e) => setNameDraft(e.target.value)}
+      onBlur={commitName}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitName();
+        }
+        if (e.key === "Escape") {
+          skipNameCommit.current = true;
+          setNameDraft(spec.name ?? "");
+          setEditingName(false);
+        }
+      }}
+    />
+  ) : (
+    <h2
+      className="cursor-text truncate text-[15.5px] font-semibold tracking-[-0.005em]"
+      onClick={startEditName}
+    >
+      {title}
+    </h2>
+  );
+
   return (
     <Section
-      title={title}
+      title={headerTitle}
       caption={
         <span className={codex ? (codexLoggedIn ? "text-success" : undefined) : keyPresent ? "text-success" : undefined}>
           {codex ? (codexLoggedIn ? "已授权" : "未登录") : keyPresent ? "已保存" : "未配置"}
         </span>
       }
+      actions={
+        <>
+          {!codex &&
+            (editingName ? (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={busy}
+                aria-label="确定名称"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  commitName();
+                }}
+              >
+                <Check className="size-3.5" />
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={busy}
+                onClick={startEditName}
+                aria-label="编辑名称"
+              >
+                <Pencil className="size-3.5" />
+              </Button>
+            ))}
+          <Button variant="ghost" size="icon-sm" disabled={busy || !canMoveUp} onClick={() => onMove(-1)} aria-label="上移">
+            <ChevronUp className="size-4" />
+          </Button>
+          <Button variant="ghost" size="icon-sm" disabled={busy || !canMoveDown} onClick={() => onMove(1)} aria-label="下移">
+            <ChevronDown className="size-4" />
+          </Button>
+          <Button variant="ghost" size="icon-sm" disabled={busy} onClick={onRemove} aria-label="删除">
+            <X className="size-4" />
+          </Button>
+        </>
+      }
     >
-      <div className="flex justify-end gap-1">
-        <Button variant="ghost" size="icon-sm" disabled={busy || !canMoveUp} onClick={() => onMove(-1)} aria-label="上移">
-          <ChevronUp className="size-4" />
-        </Button>
-        <Button variant="ghost" size="icon-sm" disabled={busy || !canMoveDown} onClick={() => onMove(1)} aria-label="下移">
-          <ChevronDown className="size-4" />
-        </Button>
-        <Button variant="ghost" size="icon-sm" disabled={busy} onClick={onRemove} aria-label="删除">
-          <X className="size-4" />
-        </Button>
-      </div>
       {codex ? (
         <>
-          <p className="text-[11px] leading-relaxed text-muted-foreground">
+          <p className="text-[13px] leading-relaxed text-muted-foreground">
             使用本机 <code className="font-mono">codex login</code>{" "}
             的会话，不必填写 API Key。模型需能看图，判定会传截图。
           </p>
@@ -382,9 +539,12 @@ function ProviderEditor({
             <Button variant="outline" size="sm" disabled={busy} onClick={onRefreshCodex}>
               刷新登录状态
             </Button>
-            <Button variant="outline" size="sm" disabled={busy || !codexLoggedIn} onClick={onTest}>
-              测试连接
-            </Button>
+            <TestConnectionButton
+              status={testStatus}
+              disabled={busy || !codexLoggedIn}
+              onClick={onTest}
+              note={testNote}
+            />
           </div>
         </>
       ) : (
@@ -414,9 +574,12 @@ function ProviderEditor({
             onDraftChange={onKeyChange}
           />
           {keyPresent && (
-            <Button variant="outline" size="sm" disabled={busy} onClick={onTest}>
-              测试连接
-            </Button>
+            <TestConnectionButton
+              status={testStatus}
+              disabled={busy}
+              onClick={onTest}
+              note={testNote}
+            />
           )}
         </>
       )}
@@ -434,7 +597,9 @@ export function Settings() {
     codexLoggedIn: false,
   });
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
+  const testingIds = useRef(new Set<string>());
+  const [testTone, setTestTone] = useState<Record<string, ProviderTestTone>>({});
+  const [testNote, setTestNote] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tab, setTab] = useState<SettingsTab>("basic");
@@ -482,7 +647,7 @@ export function Settings() {
 
   const header = (
     <PageHeader
-      title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">设置</h1>}
+      title={<h1 className="text-[21px] font-bold tracking-[-0.02em]">设置</h1>}
       center={
         <Segmented
           size="sm"
@@ -700,16 +865,35 @@ export function Settings() {
   }
 
   async function handleTestProvider(id: string) {
-    setTesting(true);
-    setMsg(null);
+    if (testingIds.current.has(id)) return;
+    testingIds.current.add(id);
+    setTestTone((t) => ({ ...t, [id]: "testing" }));
+    setTestNote((t) => ({ ...t, [id]: "" }));
     try {
       const result = await testVisionProvider(id);
-      setMsg(result.ok ? `测试成功：${result.preview}` : result.preview);
+      setTestTone((t) => ({ ...t, [id]: result.ok ? "ok" : "fail" }));
+      setTestNote((t) => ({ ...t, [id]: result.preview }));
     } catch (e) {
-      setMsg(String(e));
+      setTestTone((t) => ({ ...t, [id]: "fail" }));
+      setTestNote((t) => ({ ...t, [id]: String(e) }));
     } finally {
-      setTesting(false);
+      testingIds.current.delete(id);
     }
+  }
+
+  function clearProviderTest(id: string) {
+    setTestTone((t) => {
+      if (!(id in t)) return t;
+      const next = { ...t };
+      delete next[id];
+      return next;
+    });
+    setTestNote((t) => {
+      if (!(id in t)) return t;
+      const next = { ...t };
+      delete next[id];
+      return next;
+    });
   }
 
   const userNeverCapture = settings.neverCaptureApps.filter(
@@ -729,29 +913,6 @@ export function Settings() {
 
           {tab === "basic" && (
             <div className="flex flex-col gap-3">
-              <Section title="外观">
-                <Row
-                  title="主题"
-                  description="跟随系统时，会跟着 macOS / Windows 的深色模式切换。"
-                >
-                  <Segmented
-                    aria-label="主题"
-                    size="sm"
-                    value={
-                      settings.theme === "light" || settings.theme === "dark"
-                        ? settings.theme
-                        : "system"
-                    }
-                    onChange={(theme) => void persistBasic({ ...settings, theme })}
-                    options={[
-                      { value: "system", label: "跟随系统" },
-                      { value: "light", label: "浅色" },
-                      { value: "dark", label: "深色" },
-                    ]}
-                  />
-                </Row>
-              </Section>
-
               <Section title="启动与导航">
                 <ToggleRow
                   title="登录时启动"
@@ -787,6 +948,81 @@ export function Settings() {
                     void persistBasic({ ...settings, taskNotifications: v })
                   }
                 />
+              </Section>
+
+              <Section title="外观">
+                <Row
+                  title="主题"
+                  description="跟随系统时，会跟着 macOS / Windows 的深色模式切换。"
+                >
+                  <Segmented
+                    aria-label="主题"
+                    size="sm"
+                    value={
+                      settings.theme === "light" || settings.theme === "dark"
+                        ? settings.theme
+                        : "system"
+                    }
+                    onChange={(theme) => void persistBasic({ ...settings, theme })}
+                    options={[
+                      { value: "system", label: "跟随系统" },
+                      { value: "light", label: "浅色" },
+                      { value: "dark", label: "深色" },
+                    ]}
+                  />
+                </Row>
+                <div className="flex flex-col gap-2 rounded-[14px] bg-loot px-[13px] py-3">
+                  <div>
+                    <p className="text-[14.5px] font-semibold">颜色主题</p>
+                    <p className="mt-0.5 text-[13px] leading-[1.5] text-muted-foreground">
+                      给页面底、侧栏和输入框上一层淡彩。主线、支线等分类色不变。
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-6 gap-x-2 gap-y-3 pt-1">
+                    {COLOR_THEMES.map((theme) => {
+                      const selected =
+                        normalizeColorTheme(settings.colorTheme) === theme.id;
+                      return (
+                        <button
+                          key={theme.id}
+                          type="button"
+                          data-accent={theme.id}
+                          aria-pressed={selected}
+                          aria-label={theme.label}
+                          onClick={() =>
+                            void persistBasic({
+                              ...settings,
+                              colorTheme: theme.id,
+                            })
+                          }
+                          className="flex flex-col items-center gap-1"
+                        >
+                          <span
+                            className={cn(
+                              "relative flex size-10 items-center justify-center rounded-[12px] bg-swatch shadow-[inset_0_0_0_1px_hsl(var(--border))]",
+                              selected && "ring-2 ring-foreground/20",
+                            )}
+                          >
+                            {selected && (
+                              <Check
+                                className={cn(
+                                  "size-4",
+                                  theme.id === "default"
+                                    ? "text-foreground"
+                                    : "text-primary-foreground",
+                                )}
+                                strokeWidth={2.5}
+                              />
+                            )}
+                          </span>
+                          <span className="text-[13px] text-muted-foreground">
+                            {theme.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </Section>
 
               <Section
@@ -827,7 +1063,7 @@ export function Settings() {
             <div className="flex flex-col gap-3">
               <Section
                 title="判定与视觉"
-                caption="按从上到下的顺序尝试。仅超时、网络错误或 HTTP 5xx 才试下一张。自定义 Key 只保存在本机 secrets.json（权限 600）。"
+                caption="按从上到下的顺序尝试。超时、网络错误、HTTP 5xx 或 429 限流才试下一张。自定义 Key 只保存在本机 secrets.json（权限 600）。"
               >
                 {!chainHasUsable(
                   settings.visionProviders,
@@ -851,7 +1087,7 @@ export function Settings() {
                   spec={spec}
                   keyPresent={Boolean(keyStatus.keys[spec.id])}
                   keyValue={keys[spec.id] ?? ""}
-                  busy={formLocked || testing}
+                  busy={formLocked}
                   codexLoggedIn={keyStatus.codexLoggedIn}
                   canMoveUp={index > 0}
                   canMoveDown={index < settings.visionProviders.length - 1}
@@ -863,20 +1099,31 @@ export function Settings() {
                       ),
                     )
                   }
-                  onRemove={() =>
+                  onRemove={() => {
+                    clearProviderTest(spec.id);
                     setSettings(
                       withVisionProviders(
                         settings,
                         settings.visionProviders.filter((p) => p.id !== spec.id),
                       ),
-                    )
-                  }
-                  onPatch={(patch) => patchProvider(spec.id, patch)}
-                  onKeyChange={(v) => setKeys({ ...keys, [spec.id]: v })}
+                    );
+                  }}
+                  onPatch={(patch) => {
+                    if (patch.baseUrl !== undefined || patch.model !== undefined) {
+                      clearProviderTest(spec.id);
+                    }
+                    patchProvider(spec.id, patch);
+                  }}
+                  onKeyChange={(v) => {
+                    clearProviderTest(spec.id);
+                    setKeys({ ...keys, [spec.id]: v });
+                  }}
                   onTest={() => void handleTestProvider(spec.id)}
                   onRefreshCodex={() => {
                     void providerKeyStatus().then(setKeyStatus);
                   }}
+                  testStatus={testTone[spec.id] ?? "idle"}
+                  testNote={testNote[spec.id]}
                 />
               ))}
 
@@ -1139,11 +1386,11 @@ export function Settings() {
                     <option value="samples">含原始采样（含窗口标题与路径）</option>
                   </Select>
                 </Field>
-                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                <p className="text-[13px] leading-relaxed text-muted-foreground">
                   计划本（任务与分组）会进入备份。
                 </p>
                 {normalizeScope(sync.scope) === "samples" && (
-                  <p className="rounded-[10px] bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-warning">
+                  <p className="rounded-[10px] bg-warning/10 px-3 py-2 text-[13px] leading-relaxed text-warning">
                     这一档会把窗口标题、URL 和文档路径一起上传。受保护窗口的脱敏只发生在 AI
                     层，数据库里仍是原文，请只在完全自控的存储上使用。
                   </p>
@@ -1293,7 +1540,7 @@ export function Settings() {
                   </Button>
                 </Row>
                 {(cloudStatus?.devices ?? []).length === 0 ? (
-                  <p className="text-[11px] text-muted-foreground">还没有读取到设备。</p>
+                  <p className="text-[13px] text-muted-foreground">还没有读取到设备。</p>
                 ) : (
                   <ul className="space-y-2">
                     {cloudStatus!.devices.map((device) => (
@@ -1303,7 +1550,7 @@ export function Settings() {
                       >
                         <div className="min-w-0">
                           <p className="text-sm font-medium">{deviceName(device)}</p>
-                          <p className="text-[11px] text-muted-foreground">
+                          <p className="text-[13px] text-muted-foreground">
                             {device.platform || "未知平台"} · 最近{" "}
                             {formatLastSeen(device.lastSeen)}
                           </p>
@@ -1387,13 +1634,13 @@ export function Settings() {
                   ].map(([label, value]) => (
                     <div key={label} className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                       <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
-                      <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                      <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-[13px]">
                         {value}
                       </code>
                     </div>
                   ))}
                 </div>
-                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                <p className="text-[13px] leading-relaxed text-muted-foreground">
                   采样间隔固定 15 秒。样本保留天数与截图保留都在「基础」里调。
                 </p>
               </Section>

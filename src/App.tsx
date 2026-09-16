@@ -39,7 +39,7 @@ function CollapsedStat({
       className="flex w-full flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 transition-colors hover:bg-background/60"
     >
       {icon}
-      <span className="text-[10px] font-medium leading-none tabular-nums">
+      <span className="text-[11px] font-medium leading-none tabular-nums">
         {value}
       </span>
     </div>
@@ -165,10 +165,10 @@ export function App() {
           />
           {expanded && (
             <div className="min-w-0">
-              <div className="truncate text-[14.5px] font-semibold tracking-[-0.01em]">
+              <div className="truncate text-[16.5px] font-semibold tracking-[-0.01em]">
                 GameLife
               </div>
-              <div className="mt-px truncate text-[10.5px] text-muted-foreground">
+              <div className="mt-px truncate text-[11.5px] text-muted-foreground">
                 今天也在存档
               </div>
             </div>
@@ -188,7 +188,7 @@ export function App() {
                 aria-current={active ? "page" : undefined}
                 title={item.label}
                 className={cn(
-                  "relative flex h-9 items-center gap-2.5 rounded-[11px] text-[13.5px] transition-all duration-200",
+                  "relative flex h-9 items-center gap-2.5 rounded-[11px] text-[15.5px] transition-all duration-200",
                   expanded ? "justify-start px-3" : "justify-center px-0",
                   active
                     ? "bg-card font-semibold text-foreground shadow-[0_2px_8px_-3px_rgba(120,95,60,0.28)]"
@@ -224,10 +224,10 @@ export function App() {
 
         {expanded && today && (
           <div className="mt-auto rounded-2xl bg-card px-3.5 py-[13px] shadow-[0_4px_14px_-10px_rgba(120,95,60,0.6)]">
-            <div className="text-[11px] text-muted-foreground">今日主线</div>
-            <div className="mt-[3px] mb-2 text-[23px] font-bold leading-none tracking-[-0.03em] tabular-nums">
+            <div className="text-[13px] text-muted-foreground">今日主线</div>
+            <div className="mt-[3px] mb-2 text-[25px] font-bold leading-none tracking-[-0.03em] tabular-nums">
               {today.creditedLabel}
-              <small className="ml-1.5 text-[11.5px] font-medium text-muted-foreground">
+              <small className="ml-1.5 text-[13.5px] font-medium text-muted-foreground">
                 / 8h
               </small>
             </div>
@@ -237,7 +237,7 @@ export function App() {
               className="h-[7px] rounded bg-track-rail"
               barClassName="rounded surface-track"
             />
-            <div className="mt-[9px] flex justify-between text-[11.5px] tabular-nums text-muted-foreground">
+            <div className="mt-[9px] flex justify-between text-[13.5px] tabular-nums text-muted-foreground">
               <span>◉ {today.coinBalance}</span>
               <span>▲ {today.streak} 天</span>
             </div>

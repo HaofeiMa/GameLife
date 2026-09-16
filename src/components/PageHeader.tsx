@@ -73,7 +73,7 @@ export function PageHeader({
               className="mx-3 h-[17px] w-px shrink-0 bg-input"
               aria-hidden
             />
-            <span className="truncate text-[12.5px] text-muted-foreground">
+            <span className="truncate text-[14.5px] text-muted-foreground">
               {subtitle}
             </span>
           </>

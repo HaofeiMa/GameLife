@@ -6,7 +6,7 @@ export function Label({ className, ...props }: React.ComponentProps<"label">) {
     <label
       className={cn(
         // The mockup's .flab.
-        "text-[11.5px] font-semibold leading-none text-btn-ink",
+        "text-[13.5px] font-semibold leading-none text-btn-ink",
         className,
       )}
       {...props}

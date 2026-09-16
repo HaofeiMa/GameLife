@@ -10,6 +10,10 @@ import {
   moveProvider,
   nextCustomId,
   providerIsReady,
+  providerTestButtonLabel,
+  providerTestDotClass,
+  providerTestDotLabel,
+  providerTestPendingNote,
 } from "./providers";
 
 function p(
@@ -134,6 +138,50 @@ describe("customPanelTitle", () => {
     ];
     expect(customPanelTitle(list, "opencode-go")).toBe("自定义 API");
     expect(customPanelTitle(list, "custom-2")).toBe("自定义 API 2");
+  });
+
+  it("uses a trimmed custom name when set", () => {
+    const list = [
+      p({ id: "opencode-go", kind: KIND_CUSTOM, name: "  OpenCode Zen  " }),
+      p({ id: "custom-3", kind: KIND_CUSTOM, name: "NVIDIA" }),
+    ];
+    expect(customPanelTitle(list, "opencode-go")).toBe("OpenCode Zen");
+    expect(customPanelTitle(list, "custom-3")).toBe("NVIDIA");
+  });
+
+  it("falls back to the numbered title when the name is blank", () => {
+    const list = [
+      p({ id: "opencode-go", kind: KIND_CUSTOM, name: "   " }),
+      p({ id: "custom-2", kind: KIND_CUSTOM, name: "" }),
+    ];
+    expect(customPanelTitle(list, "opencode-go")).toBe("自定义 API");
+    expect(customPanelTitle(list, "custom-2")).toBe("自定义 API 2");
+  });
+});
+
+describe("providerTestDot", () => {
+  it("is muted until a test finishes, then success or destructive", () => {
+    expect(providerTestDotClass("idle")).toBe("bg-muted-foreground/40");
+    expect(providerTestDotClass("testing")).toBe("bg-muted-foreground/40");
+    expect(providerTestDotClass("ok")).toBe("bg-success");
+    expect(providerTestDotClass("fail")).toBe("bg-destructive");
+  });
+
+  it("exposes a status label for the screen reader", () => {
+    expect(providerTestDotLabel("idle")).toBe("未测试");
+    expect(providerTestDotLabel("testing")).toBe("测试中");
+    expect(providerTestDotLabel("ok")).toBe("测试成功");
+    expect(providerTestDotLabel("fail")).toBe("测试失败");
+  });
+
+  it("keeps a live test readable instead of a silent grey button", () => {
+    expect(providerTestButtonLabel("testing")).toBe("测试中…");
+    expect(providerTestButtonLabel("idle")).toBe("测试连接");
+    expect(providerTestButtonLabel("ok")).toBe("测试连接");
+    expect(providerTestPendingNote("testing")).toBe("正在连接…");
+    expect(providerTestPendingNote("idle")).toBe("");
+    expect(providerTestPendingNote("ok")).toBe("");
+    expect(providerTestPendingNote("fail")).toBe("");
   });
 });
 

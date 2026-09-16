@@ -9,7 +9,7 @@ export interface SwitchProps {
   className?: string;
 }
 
-/** Green when on: "enabled" is a different idea from the blue primary action. */
+/** On-colour follows the color theme's primary, not the semantic success green. */
 export function Switch({
   checked,
   onCheckedChange,
@@ -31,7 +31,7 @@ export function Switch({
         // The mockup's .sw: 44x26 with a 20px thumb inset 3px.
         "relative inline-flex h-[26px] w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors",
         "disabled:cursor-not-allowed disabled:opacity-50",
-        checked ? "bg-success" : "bg-switch-off",
+        checked ? "bg-primary" : "bg-switch-off",
         className,
       )}
     >

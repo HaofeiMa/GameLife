@@ -45,7 +45,7 @@ export function ContextMenu({
 
   if (!open) return null;
 
-  const left = Math.min(x, Math.max(8, window.innerWidth - 208));
+  const left = Math.min(x, Math.max(8, window.innerWidth - 236));
   const top = Math.min(y, Math.max(8, window.innerHeight - 12));
 
   return createPortal(
@@ -53,7 +53,7 @@ export function ContextMenu({
       ref={menuRef}
       role="menu"
       style={{ left, top }}
-      className="fixed z-[110] min-w-[180px] rounded-[11px] border border-border bg-popover py-1 shadow-[0_10px_26px_-18px_rgba(120,95,60,0.7)]"
+      className="fixed z-[110] min-w-[220px] rounded-[11px] border border-border bg-popover py-1 shadow-[0_10px_26px_-18px_rgba(120,95,60,0.7)]"
     >
       {children}
     </div>,
@@ -82,7 +82,7 @@ export function ContextMenuItem({
         onSelect();
       }}
       className={cn(
-        "flex w-full items-center px-3 py-1.5 text-left text-[12.5px]",
+        "flex w-full items-center px-3 py-1.5 text-left text-[14.5px]",
         disabled
           ? "cursor-default text-muted-foreground"
           : destructive
@@ -115,7 +115,7 @@ export function ContextMenuSub({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-[12.5px] text-foreground hover:bg-accent"
+        className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-[14.5px] text-foreground hover:bg-accent"
       >
         {label}
         <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />

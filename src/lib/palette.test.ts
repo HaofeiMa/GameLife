@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { prepaintBackground } from "./theme";
 
 const css = readFileSync(
   fileURLToPath(new URL("../index.css", import.meta.url)),
@@ -91,9 +92,84 @@ describe("dark palette", () => {
     expect(drifted).toEqual([]);
   });
 
-  it("is warm charcoal, not cool grey", () => {
-    // #1C1917 — R >= G >= B, the mockup's named value for the dark ground.
+  it("is cool near-black for 默认, not the 暖黄 charcoal", () => {
     const bg = tokensIn(darkBlock).find((t) => t.name === "background");
-    expect(bg?.hex).toBe("#1C1917");
+    expect(bg?.hex).not.toBe("#1C1917");
+  });
+});
+
+const ACCENT_IDS = [
+  "nuanhuang",
+  "qinglan",
+  "songshi",
+  "miqing",
+  "jianjia",
+  "xinghuang",
+  "taotian",
+  "mushanzi",
+  "chenxiang",
+  "zanglan",
+] as const;
+
+function accentBlock(id: string, dark: boolean): string {
+  const re = dark
+    ? new RegExp(`\\.dark\\[data-accent="${id}"\\] \\{(.*?)\\n\\}`, "s")
+    : new RegExp(`\\[data-accent="${id}"\\] \\{(.*?)\\n\\}`, "s");
+  return re.exec(css)?.[1] ?? "";
+}
+
+describe("color-theme palettes", () => {
+  it("washes the ground tokens without touching category colours", () => {
+    for (const id of ACCENT_IDS) {
+      const light = tokensIn(accentBlock(id, false));
+      const dark = tokensIn(accentBlock(id, true));
+      expect(light.map((t) => t.name), id).toEqual(
+        expect.arrayContaining(["background", "primary", "rail", "loot", "card", "swatch"]),
+      );
+      expect(dark.map((t) => t.name), id).toEqual(
+        expect.arrayContaining(["background", "primary", "rail", "loot", "card", "swatch"]),
+      );
+      expect(light.map((t) => t.name)).not.toContain("cat-mainline");
+      expect(dark.map((t) => t.name)).not.toContain("cat-mainline");
+    }
+  });
+
+  it("round-trips every accent hex comment", () => {
+    const drifted = ACCENT_IDS.flatMap((id) =>
+      [...tokensIn(accentBlock(id, false)), ...tokensIn(accentBlock(id, true))].map(
+        (t) => ({ id, ...t, got: hslToHex(t.triplet) }),
+      ),
+    ).filter((t) => t.got !== t.hex);
+    expect(drifted).toEqual([]);
+  });
+
+  it("keeps JS prepaint colours in lockstep with CSS --background", () => {
+    for (const id of ACCENT_IDS) {
+      const light = tokensIn(accentBlock(id, false)).find((t) => t.name === "background");
+      const dark = tokensIn(accentBlock(id, true)).find((t) => t.name === "background");
+      expect(prepaintBackground("light", id), id).toBe(`hsl(${light?.triplet})`);
+      expect(prepaintBackground("dark", id), id).toBe(`hsl(${dark?.triplet})`);
+    }
+  });
+
+  it("keeps 暖黄 as the mockup parchment", () => {
+    const light = tokensIn(accentBlock("nuanhuang", false)).find((t) => t.name === "background");
+    const dark = tokensIn(accentBlock("nuanhuang", true)).find((t) => t.name === "background");
+    expect(light?.hex).toBe("#FAF6F0");
+    expect(dark?.hex).toBe("#1C1917");
+  });
+
+  it("paints 默认 from :root, slightly off pure parchment", () => {
+    const bg = tokensIn(lightBlock).find((t) => t.name === "background");
+    const darkBg = tokensIn(darkBlock).find((t) => t.name === "background");
+    expect(prepaintBackground("light", "default")).toBe(`hsl(${bg?.triplet})`);
+    expect(prepaintBackground("dark", "default")).toBe(`hsl(${darkBg?.triplet})`);
+    expect(bg?.hex).toBe("#FAFAFA");
+    expect(bg?.hex).not.toBe("#FAF6F0");
+  });
+
+  it("paints the 默认 chip white", () => {
+    const swatch = tokensIn(lightBlock).find((t) => t.name === "swatch");
+    expect(swatch?.hex).toBe("#FFFFFF");
   });
 });

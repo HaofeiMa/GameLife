@@ -367,7 +367,7 @@ function SlotStrip({
             onClick={() => onPick(slot)}
             title={`${hm(start)} · ${dominantLabel(slot.dominant)} · 计入 ${slot.creditedMinutes} 分钟`}
             className={cn(
-              "absolute inset-x-0 flex items-center overflow-hidden rounded-[5px] pl-1.5 text-left text-[10px] leading-none text-ink-slot transition-colors",
+              "absolute inset-x-0 flex items-center overflow-hidden rounded-[5px] pl-1.5 text-left text-[11px] leading-none text-ink-slot transition-colors",
               "hover:brightness-[0.97] dark:hover:brightness-110",
               live && "animate-pulse-soft",
             )}
@@ -568,7 +568,7 @@ function Timeline({
               className="absolute left-[10px] z-10 flex items-center bg-card pr-1.5"
               style={{ top: h * HOUR_H + 2 }}
             >
-              <span className="text-[10px] tabular-nums text-muted-foreground">
+              <span className="text-[11px] tabular-nums text-muted-foreground">
                 {pad2(h)}:00
               </span>
             </div>
@@ -627,7 +627,7 @@ function Timeline({
                     onMenu(viewForDayTask(task, taskViews), e.clientX, e.clientY);
                   }}
                   className={cn(
-                    "absolute overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[11px] leading-tight",
+                    "absolute overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[13px] leading-tight",
                     !isPreview && "cursor-grab active:cursor-grabbing",
                     isPreview && "pointer-events-none opacity-80",
                   )}
@@ -794,18 +794,18 @@ function TaskCompareCard({
                 <div className="flex items-baseline gap-[9px]">
                   <span
                     className={cn(
-                      "truncate text-[13px] font-semibold",
+                      "truncate text-[15px] font-semibold",
                       idle && "text-muted-foreground",
                     )}
                   >
                     {r.title}
                   </span>
-                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                  <span className="shrink-0 text-[13px] tabular-nums text-muted-foreground">
                     计划 {hm(r.start)}–{hm(r.end)}
                   </span>
                   <span
                     className={cn(
-                      "ml-auto shrink-0 text-[12.5px] font-bold tabular-nums",
+                      "ml-auto shrink-0 text-[14.5px] font-bold tabular-nums",
                       idle && "font-semibold text-dim2",
                     )}
                   >
@@ -821,7 +821,7 @@ function TaskCompareCard({
               </div>
               <span
                 className={cn(
-                  "shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-medium whitespace-nowrap",
+                  "shrink-0 rounded-full px-2 py-0.5 text-[11.5px] font-medium whitespace-nowrap",
                   COMPARE_TAG[r.state],
                 )}
               >
@@ -832,7 +832,7 @@ function TaskCompareCard({
         })}
 
         {rows.length > 0 && compare.unplannedMinutes > 0 && (
-          <p className="mt-2 flex items-center gap-2 border-t border-dashed border-hairline pt-[9px] text-[11.5px] text-muted-foreground">
+          <p className="mt-2 flex items-center gap-2 border-t border-dashed border-hairline pt-[9px] text-[13.5px] text-muted-foreground">
             计划之外还推进了
             <strong className="font-semibold text-mainline">
               {minutesLabel(compare.unplannedMinutes)}
@@ -891,14 +891,14 @@ function LootTile({
 }) {
   return (
     <div className="flex flex-col gap-[5px] rounded-[13px] bg-loot px-2.5 py-2">
-      <p className="flex items-center gap-[5px] text-[10.5px] text-muted-foreground">
+      <p className="flex items-center gap-[5px] text-[11.5px] text-muted-foreground">
         {icon}
         {label}
       </p>
-      <p className="text-[18px] font-bold leading-none tracking-[-0.035em] tabular-nums">
+      <p className="text-[20px] font-bold leading-none tracking-[-0.035em] tabular-nums">
         {value}
         {sub && (
-          <span className="ml-[3px] text-[11px] font-medium tracking-normal text-muted-foreground">
+          <span className="ml-[3px] text-[13px] font-medium tracking-normal text-muted-foreground">
             {sub}
           </span>
         )}
@@ -1103,7 +1103,7 @@ export function Today() {
 
   const header = (
     <PageHeader
-      title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">今日</h1>}
+      title={<h1 className="text-[21px] font-bold tracking-[-0.02em]">今日</h1>}
       subtitle={data ? `${data.day} ${weekdaySuffix(data.day)}` : undefined}
       actions={
         <>
@@ -1263,12 +1263,12 @@ export function Today() {
                         dayStart={dayView.dayStart}
                         slotsByStart={slotsByStart}
                       />
-                      <div className="mt-[5px] flex justify-between px-px text-[10px] tabular-nums text-muted-foreground">
+                      <div className="mt-[5px] flex justify-between px-px text-[11px] tabular-nums text-muted-foreground">
                         {[0, 4, 8, 12, 16, 20, 24].map((h) => (
                           <span key={h}>{pad2(h)}</span>
                         ))}
                       </div>
-                      <p className="mt-[11px] flex flex-wrap items-baseline gap-x-[7px] text-[12.5px]">
+                      <p className="mt-[11px] flex flex-wrap items-baseline gap-x-[7px] text-[14.5px]">
                         推进主线
                         <strong className="font-bold tabular-nums text-mainline">
                           {minutesLabel(activity.core)}
@@ -1289,7 +1289,7 @@ export function Today() {
                         {CAT_ROWS.map((row) => (
                           <span
                             key={row.key}
-                            className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[11px]"
+                            className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[13px]"
                           >
                             {row.label}
                             <b className="font-semibold tabular-nums">
@@ -1297,7 +1297,7 @@ export function Today() {
                             </b>
                           </span>
                         ))}
-                        <span className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[11px]">
+                        <span className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[13px]">
                           待复核
                           <b className="font-semibold tabular-nums">
                             {pendingMinutes}
@@ -1308,7 +1308,7 @@ export function Today() {
                         <button
                           type="button"
                           onClick={scrollToFirstPending}
-                          className="self-start text-[11.5px] text-primary hover:underline"
+                          className="self-start text-[13.5px] text-primary hover:underline"
                         >
                           {pendingCount} 条待复核，点按滚到时间轴
                         </button>
@@ -1336,13 +1336,13 @@ export function Today() {
                     <LootTile label="▲ 连胜" value={data.streak} sub="天" />
                   </div>
                   {data.rewardsPending && (
-                    <p className="text-[11px] leading-relaxed text-warning">
+                    <p className="text-[13px] leading-relaxed text-warning">
                       活动时长已实时计入。硬币与能量等各设备收齐、或超过结算宽限期后再落账。
                     </p>
                   )}
 
                   <div className="space-y-1.5">
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-[13px] text-muted-foreground">
                       宝箱 {data.chest.have} / {data.chest.need} · 黄金日{" "}
                       {data.gold.have} / {data.gold.need}
                       {data.atRisk && (
@@ -1392,7 +1392,7 @@ export function Today() {
                       >
                         <div className="min-w-0">
                           <p className="truncate">{task.title}</p>
-                          <p className="text-[11px] tabular-nums text-muted-foreground">
+                          <p className="text-[13px] tabular-nums text-muted-foreground">
                             {taskTimeLabel(task.start, task.end)}
                           </p>
                         </div>
@@ -1433,7 +1433,7 @@ export function Today() {
                             </span>
                           </button>
                           {open && (
-                            <p className="px-2 pb-1 text-[11px] text-muted-foreground">
+                            <p className="px-2 pb-1 text-[13px] text-muted-foreground">
                               {row.name} 当日 {row.minutes} 分钟 ·{" "}
                               {dominantLabel(
                                 row.dominant === "core"
@@ -1586,7 +1586,7 @@ export function Today() {
           </>
         }
       >
-        <p className="text-[12.5px] text-muted-foreground">
+        <p className="text-[14.5px] text-muted-foreground">
           放弃后不可恢复。确定放弃「{abandonTarget?.title}」？
         </p>
       </Dialog>
@@ -1606,6 +1606,8 @@ export function Today() {
           setDetailTask(null);
           setDateTask(task);
         }}
+        onSaved={refresh}
+        onError={(message) => setError(message)}
         onMove={(task, listId) => {
           setMenu(null);
           runTask(() => moveTask(task.id, listId));

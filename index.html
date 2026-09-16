@@ -11,14 +11,16 @@
       (function () {
         try {
           var cached = localStorage.getItem("gl-theme");
+          var accent = localStorage.getItem("gl-accent");
+          var bg = localStorage.getItem("gl-prepaint-bg");
           var dark =
             cached === "dark" ||
             (cached !== "light" &&
               window.matchMedia("(prefers-color-scheme: dark)").matches);
           if (dark) document.documentElement.classList.add("dark");
-          document.documentElement.style.backgroundColor = dark
-            ? "hsl(24 10% 10%)"
-            : "hsl(36 50% 96%)";
+          if (accent) document.documentElement.setAttribute("data-accent", accent);
+          document.documentElement.style.backgroundColor =
+            bg || (dark ? "hsl(220.0 1.4% 10.0%)" : "hsl(220.0 2.9% 98.0%)");
         } catch (e) {
           /* storage unavailable — the app applies the theme once settings load */
         }

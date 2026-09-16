@@ -1,25 +1,25 @@
-import { MoreHorizontal, X } from "lucide-react";
+import { Bell, Calendar, MoreHorizontal, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   duplicateTask,
   moveTask,
-  rescheduleTask,
   toggleTaskDone,
   upsertTask,
   type TaskListView,
   type TaskView,
 } from "../lib/api";
 import { taskCommandError } from "../lib/taskBoard";
-import { notesByteLength, parseTaskNotes, type NotesInline } from "../lib/taskNotesMd";
-import { alignRange, unixAt } from "../lib/taskSchedule";
+import { notesByteLength } from "../lib/taskNotesMd";
+import {
+  repeatShortLabel,
+  scheduleOverdue,
+  scheduleSummary,
+} from "../lib/taskScheduleLabel";
 import { categoryColor } from "../lib/theme";
+import { cn } from "../lib/utils";
 import { TaskActionMenu } from "./TaskActionMenu";
 import { TaskCheckbox } from "./TaskCheckbox";
-import {
-  formFromTask,
-  TaskScheduleFields,
-  type TaskScheduleForm,
-} from "./TaskScheduleFields";
+import { TaskDateCard } from "./TaskDateCard";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { Input } from "./ui/input";
@@ -36,30 +36,6 @@ function listRoleColor(role: string): string {
           ? "admin"
           : "side";
   return categoryColor(key);
-}
-
-function NotesInlineView({ nodes }: { nodes: NotesInline[] }) {
-  return (
-    <>
-      {nodes.map((node, i) => {
-        if (node.type === "strong") return <strong key={i}>{node.value}</strong>;
-        if (node.type === "link") {
-          return (
-            <a
-              key={i}
-              href={node.href}
-              target="_blank"
-              rel="noreferrer"
-              className="text-primary underline"
-            >
-              {node.text}
-            </a>
-          );
-        }
-        return <span key={i}>{node.value}</span>;
-      })}
-    </>
-  );
 }
 
 export function TaskDetailDialog({
@@ -110,24 +86,25 @@ function TaskDetailDialogBody({
 }) {
   const role = lists.find((list) => list.id === task.listId)?.role ?? "side";
   const color = listRoleColor(role);
+  const nowSec = Date.now() / 1000;
   const [title, setTitle] = useState(task.title);
   const [notes, setNotes] = useState(task.notes);
-  const [form, setForm] = useState<TaskScheduleForm>(() =>
-    formFromTask(task, Date.now() / 1000),
-  );
   const [listId, setListId] = useState(task.listId);
   const [done, setDone] = useState(task.done);
+  const [dateOpen, setDateOpen] = useState(false);
   const [more, setMore] = useState<{ x: number; y: number } | null>(null);
   const moreRef = useRef<HTMLDivElement>(null);
   const notesTimer = useRef<number>(0);
-  const scheduleTimer = useRef<number>(0);
   const snapshot = useRef(task);
   snapshot.current = { ...task, title, notes, listId, done };
+  const overdue = scheduleOverdue(task.end, nowSec, done);
+  const summary = scheduleSummary(task.start, task.end, nowSec);
+  const repeat = repeatShortLabel(task.repeat);
+  const hasRemind = task.remindOffsets.length > 0;
 
   useEffect(() => {
     return () => {
       window.clearTimeout(notesTimer.current);
-      window.clearTimeout(scheduleTimer.current);
     };
   }, []);
 
@@ -172,108 +149,76 @@ function TaskDetailDialogBody({
     }
   }
 
-  function queueSchedule(next: TaskScheduleForm) {
-    setForm(next);
-    window.clearTimeout(scheduleTimer.current);
-    scheduleTimer.current = window.setTimeout(() => {
-      void flushSchedule(next);
-    }, 400);
-  }
-
-  async function flushSchedule(next: TaskScheduleForm) {
-    try {
-      const range = alignRange(
-        unixAt(next.startDay, next.startHm),
-        unixAt(next.endDay, next.endHm),
-      );
-      await savePatch({
-        start: range.start,
-        end: range.end,
-        repeat: next.repeat,
-        remindOffsets: next.remindOffsets,
-      });
-    } catch (e) {
-      onError(taskCommandError(e));
-    }
-  }
-
-  const preview = parseTaskNotes(notes);
-
   return (
     <>
       <Dialog
         open
-        onClose={onClose}
+        onClose={() => {
+          if (dateOpen) setDateOpen(false);
+          else onClose();
+        }}
+        onDismiss={onClose}
         title="任务详情"
         className="max-w-lg"
         chrome="plain"
         header={
-          <div className="flex items-start gap-3 border-b bg-background px-5 py-3">
-            <div className="min-w-0 flex-1 rounded-xl border bg-card p-3">
-              <div className="flex items-start gap-3">
-                <div className="pt-1">
-                  <TaskCheckbox
-                    checked={done}
-                    color={color}
-                    label={`完成 ${title}`}
-                    onToggle={(next) => {
-                      setDone(next);
-                      void (async () => {
-                        try {
-                          await toggleTaskDone(task.id, next);
-                          void onSaved();
-                        } catch (e) {
-                          setDone(!next);
-                          onError(taskCommandError(e));
-                        }
-                      })();
-                    }}
-                  />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <TaskScheduleFields
-                    id="task-detail-schedule"
-                    form={form}
-                    setForm={queueSchedule}
-                    disabled={false}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="mt-2"
-                    onClick={() => {
-                      window.clearTimeout(scheduleTimer.current);
-                      void (async () => {
-                        try {
-                          await rescheduleTask(task.id, null, null);
-                          void onSaved();
-                        } catch (e) {
-                          onError(taskCommandError(e));
-                        }
-                      })();
-                    }}
-                  >
-                    清除时段
-                  </Button>
-                </div>
-              </div>
-            </div>
+          <div className="relative flex items-center gap-2 px-5 pt-3 pb-1">
+            <TaskCheckbox
+              checked={done}
+              color={color}
+              label={`完成 ${title}`}
+              onToggle={(next) => {
+                setDone(next);
+                void (async () => {
+                  try {
+                    await toggleTaskDone(task.id, next);
+                    void onSaved();
+                  } catch (e) {
+                    setDone(!next);
+                    onError(taskCommandError(e));
+                  }
+                })();
+              }}
+            />
+            <span className="h-3 w-px shrink-0 bg-border" aria-hidden />
+            <button
+              type="button"
+              className={cn(
+                "flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[14.5px] leading-snug",
+                overdue ? "text-destructive" : "text-muted-foreground",
+                "hover:bg-accent",
+              )}
+              onClick={() => setDateOpen((open) => !open)}
+            >
+              <Calendar className="size-3.5 shrink-0" />
+              <span className="truncate">{summary}</span>
+            </button>
             <button
               type="button"
               onClick={onClose}
               aria-label="关闭"
-              className="-mr-1 -mt-1 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="-mr-1 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               <X className="size-4" />
             </button>
           </div>
         }
+        layer={
+          dateOpen ? (
+            <TaskDateCard
+              key={`${task.id}-${task.start ?? "none"}-${task.end ?? "none"}`}
+              task={task}
+              onClose={() => setDateOpen(false)}
+              onSaved={onSaved}
+              onError={onError}
+            />
+          ) : null
+        }
         footer={
           <>
             <Select
               size="sm"
-              className="mr-auto w-auto min-w-36"
+              className="mr-auto w-auto min-w-28"
               value={listId}
               onChange={(e) => {
                 const next = e.target.value;
@@ -295,6 +240,20 @@ function TaskDetailDialogBody({
                 </option>
               ))}
             </Select>
+            {repeat && (
+              <span className="text-[13.5px] text-muted-foreground">{repeat}</span>
+            )}
+            {hasRemind && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="提醒"
+                onClick={() => setDateOpen(true)}
+              >
+                <Bell className="size-3.5" />
+              </Button>
+            )}
             <div ref={moreRef}>
               <Button
                 type="button"
@@ -312,61 +271,26 @@ function TaskDetailDialogBody({
           </>
         }
       >
-        <div className="flex flex-col gap-3">
-          <div className="rounded-xl border bg-card p-3">
-            <Input
-              value={title}
-              aria-label="任务名称"
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={() => void saveTitle()}
-            />
-          </div>
-          <div className="rounded-xl border bg-card p-3">
-            <Textarea
-              value={notes}
-              aria-label="备注"
-              rows={6}
-              placeholder="指标、会议链接、地点…"
-              onChange={(e) => queueNotes(e.target.value)}
-              onBlur={() => {
-                window.clearTimeout(notesTimer.current);
-                void flushNotes(notes);
-              }}
-            />
-            {preview.length > 0 && (
-              <div className="mt-3 space-y-2 text-[12.5px] leading-relaxed text-muted-foreground">
-                {preview.map((block, i) => {
-                  if (block.type === "ul") {
-                    return (
-                      <ul key={i} className="list-disc pl-5">
-                        {block.items.map((item, j) => (
-                          <li key={j}>
-                            <NotesInlineView nodes={item} />
-                          </li>
-                        ))}
-                      </ul>
-                    );
-                  }
-                  if (block.type === "ol") {
-                    return (
-                      <ol key={i} className="list-decimal pl-5">
-                        {block.items.map((item, j) => (
-                          <li key={j}>
-                            <NotesInlineView nodes={item} />
-                          </li>
-                        ))}
-                      </ol>
-                    );
-                  }
-                  return (
-                    <p key={i}>
-                      <NotesInlineView nodes={block.children} />
-                    </p>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+        <div className="flex flex-col gap-1 px-0">
+          <Input
+            value={title}
+            aria-label="任务名称"
+            className="h-auto border-0 bg-transparent px-0 text-[18px] font-semibold shadow-none"
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={() => void saveTitle()}
+          />
+          <Textarea
+            value={notes}
+            aria-label="备注"
+            rows={7}
+            placeholder="指标、会议链接、地点…"
+            className="min-h-40 resize-none border-0 bg-transparent px-0 shadow-none"
+            onChange={(e) => queueNotes(e.target.value)}
+            onBlur={() => {
+              window.clearTimeout(notesTimer.current);
+              void flushNotes(notes);
+            }}
+          />
         </div>
       </Dialog>
       <TaskActionMenu
@@ -378,8 +302,10 @@ function TaskDetailDialogBody({
         onClose={() => setMore(null)}
         onDate={() => {
           setMore(null);
-          document.getElementById("task-detail-schedule")?.focus();
+          setDateOpen(true);
         }}
+        onSaved={onSaved}
+        onError={onError}
         onMove={(_, nextList) => {
           setMore(null);
           setListId(nextList);

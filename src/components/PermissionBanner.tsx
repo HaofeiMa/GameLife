@@ -44,7 +44,7 @@ function processNote(perms: PermissionStatus) {
   const devMode = name !== "GameLife" && name !== "GameLife.app";
   return (
     <>
-      当前进程是 <code className="rounded bg-muted px-1 font-mono text-[11px]">{name}</code>
+      当前进程是 <code className="rounded bg-muted px-1 font-mono text-[13px]">{name}</code>
       {devMode ? "（开发模式，不是 GameLife.app）" : ""}
       。系统设置里请允许这个进程，不要只允许 Cursor 或 node。
     </>
@@ -89,14 +89,14 @@ export function PermissionBanner() {
         {!perms.accessibility && (
           <li>
             辅助功能：系统设置 → 隐私与安全性 → 辅助功能 → 允许{" "}
-            <code className="rounded bg-warning/20 px-1 font-mono text-[11px]">{name}</code>
+            <code className="rounded bg-warning/20 px-1 font-mono text-[13px]">{name}</code>
           </li>
         )}
         {!perms.screenRecording && (
           <li>
             屏幕录制：先点下方按钮弹出系统授权。若列表里没有，点 + 选择：
             {perms.processPath ? (
-              <code className="mt-0.5 block break-all rounded bg-warning/20 px-1 font-mono text-[11px]">
+              <code className="mt-0.5 block break-all rounded bg-warning/20 px-1 font-mono text-[13px]">
                 {perms.processPath}
               </code>
             ) : (
@@ -160,7 +160,7 @@ export function PermissionPanel() {
         {perms.processPath && (
           <p className="break-all text-xs leading-relaxed text-muted-foreground">
             路径：
-            <code className="rounded bg-muted px-1 font-mono text-[11px]">
+            <code className="rounded bg-muted px-1 font-mono text-[13px]">
               {perms.processPath}
             </code>
           </p>
@@ -199,7 +199,7 @@ export function PermissionPanel() {
                   )}
                   {row.granted ? "已允许" : "未允许"} · {row.label}
                 </p>
-                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                <p className="text-[13px] leading-relaxed text-muted-foreground">
                   {row.hint}
                 </p>
               </div>
@@ -235,7 +235,7 @@ export function PermissionPanel() {
           </Button>
         )}
 
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
+        <p className="text-[13px] leading-relaxed text-muted-foreground">
           Chrome / Safari / Arc 的当前标签 URL 需要「自动化」权限；拒绝则 URL 为空，不影响采样与截图。
         </p>
         {msg && (

@@ -169,7 +169,7 @@ function WishGlyph({ name }: { name: string }) {
   }
   const glyph = name.trim().slice(0, 1) || "礼";
   return (
-    <span className="text-[18px] font-semibold" aria-hidden="true">
+    <span className="text-[20px] font-semibold" aria-hidden="true">
       {glyph}
     </span>
   );
@@ -324,7 +324,7 @@ function GiftCard({
             onChange={(e) => setEditDuration(e.target.value)}
           />
         )}
-        {err && <p className="text-[11px] text-destructive">{err}</p>}
+        {err && <p className="text-[13px] text-destructive">{err}</p>}
         <div className="mt-auto flex gap-2">
           <Button type="submit" size="sm" disabled={busy} className="flex-1">
             保存
@@ -385,10 +385,10 @@ function GiftCard({
       >
         <WishGlyph name={wish.name} />
       </div>
-      <p className="line-clamp-2 text-[13px] font-semibold leading-[1.35]">
+      <p className="line-clamp-2 text-[15px] font-semibold leading-[1.35]">
         {wish.name}
       </p>
-      <p className="flex items-center gap-1 text-[11.5px] tabular-nums text-muted-foreground">
+      <p className="flex items-center gap-1 text-[13.5px] tabular-nums text-muted-foreground">
         <i className="not-italic" aria-hidden>
           {isEnergy ? "⚡" : "◉"}
         </i>
@@ -401,7 +401,7 @@ function GiftCard({
           </>
         )}
       </p>
-      {err && <p className="mt-2 text-[11px] text-destructive">{err}</p>}
+      {err && <p className="mt-2 text-[13px] text-destructive">{err}</p>}
 
       <button
         type="button"
@@ -502,7 +502,7 @@ function AddCard({ kind, onCreated }: { kind: "coin" | "xp"; onCreated: () => vo
           onChange={(e) => setDuration(e.target.value)}
         />
       )}
-      {err && <p className="text-[11px] text-destructive">{err}</p>}
+      {err && <p className="text-[13px] text-destructive">{err}</p>}
       <div className="mt-auto flex gap-2">
         <Button type="submit" size="sm" disabled={busy} className="flex-1">
           添加
@@ -537,9 +537,9 @@ function GiftSection({
   return (
     <section className="space-y-3">
       <div className="flex items-baseline gap-[9px] px-0.5 pb-[9px]">
-        <h2 className="text-[13.5px] font-semibold">{title}</h2>
-        <span className="text-[11px] text-muted-foreground">{hint}</span>
-        <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+        <h2 className="text-[15.5px] font-semibold">{title}</h2>
+        <span className="text-[13px] text-muted-foreground">{hint}</span>
+        <span className="ml-auto text-[13px] tabular-nums text-muted-foreground">
           共 {kind === "coin" ? week.coinBalance : week.xpToday}
         </span>
       </div>
@@ -599,14 +599,14 @@ export function Shop() {
 
   const header = (
     <PageHeader
-      title={<h1 className="text-[19px] font-bold tracking-[-0.02em]">商店</h1>}
+      title={<h1 className="text-[21px] font-bold tracking-[-0.02em]">商店</h1>}
       actions={
         week ? (
           <div className="flex items-center gap-2">
-            <span className="flex items-center gap-[6px] text-[12.5px] font-semibold tabular-nums text-btn-ink">
+            <span className="flex items-center gap-[6px] text-[14.5px] font-semibold tabular-nums text-btn-ink">
               ◉ {week.coinBalance}
             </span>
-            <span className="flex items-center gap-[6px] text-[12.5px] font-semibold tabular-nums text-energy">
+            <span className="flex items-center gap-[6px] text-[14.5px] font-semibold tabular-nums text-energy">
               ⚡ {week.xpToday}
             </span>
           </div>
@@ -656,17 +656,17 @@ export function Shop() {
           {session && (
             <Card className="surface-session flex items-center gap-5 rounded-[18px] border-transparent px-[18px] py-2 text-white shadow-[0_16px_34px_-22px_rgba(67,169,122,0.95)]">
               <div className="min-w-0 flex-1">
-                <div className="text-[11px] font-semibold tracking-[0.08em] opacity-85">
+                <div className="text-[13px] font-semibold tracking-[0.08em] opacity-85">
                   进行中 · 剩余
                 </div>
                 <div className="mt-0.5 text-base font-semibold">
                   {session.name}
-                  <span className="ml-2.5 text-[11.5px] font-normal opacity-85">
+                  <span className="ml-2.5 text-[13.5px] font-normal opacity-85">
                     到期 {formatClock(session.endsAt)} · 结束后仍按规则判定娱乐
                   </span>
                 </div>
               </div>
-              <div className="animate-pulse-soft shrink-0 text-[26px] font-bold leading-[1.1] tracking-[-0.04em] tabular-nums">
+              <div className="animate-pulse-soft shrink-0 text-[28px] font-bold leading-[1.1] tracking-[-0.04em] tabular-nums">
                 {formatMmSs(remainSecs)}
               </div>
             </Card>
@@ -702,7 +702,7 @@ export function Shop() {
                 <EmptyLine>还没有兑换。</EmptyLine>
               ) : (
                 <div className="flex flex-col">
-                  <div className="flex items-center gap-[14px] border-b border-hairline pb-1.5 text-[11px] text-muted-foreground">
+                  <div className="flex items-center gap-[14px] border-b border-hairline pb-1.5 text-[13px] text-muted-foreground">
                     <span className="flex-[0_0_118px]">时间</span>
                     <span className="min-w-0 flex-1">商品</span>
                     <span className="flex-[0_0_56px]">类型</span>
@@ -712,19 +712,19 @@ export function Shop() {
                   {history.map((r: RedemptionView) => (
                     <div
                       key={r.id}
-                      className="flex items-center gap-[14px] border-b border-dashed border-hairline py-[7px] text-[12.5px] last:border-b-0"
+                      className="flex items-center gap-[14px] border-b border-dashed border-hairline py-[7px] text-[14.5px] last:border-b-0"
                     >
-                      <span className="flex-[0_0_118px] text-[11.5px] tabular-nums text-muted-foreground">
+                      <span className="flex-[0_0_118px] text-[13.5px] tabular-nums text-muted-foreground">
                         {formatRedemptionTs(r.ts)}
                       </span>
                       <span className="min-w-0 flex-1 truncate">{r.name}</span>
-                      <span className="flex-[0_0_56px] text-[11.5px] text-muted-foreground">
+                      <span className="flex-[0_0_56px] text-[13.5px] text-muted-foreground">
                         {r.kind === "coin" ? "硬币" : "能量"}
                       </span>
                       <span className="flex-[0_0_62px] text-right font-semibold tabular-nums">
                         {r.spent}
                       </span>
-                      <span className="flex-[0_0_66px] text-right text-[11.5px] text-muted-foreground">
+                      <span className="flex-[0_0_66px] text-right text-[13.5px] text-muted-foreground">
                         {r.status === "进行中" ? (
                           <span className="font-semibold text-ok-ink">进行中</span>
                         ) : (

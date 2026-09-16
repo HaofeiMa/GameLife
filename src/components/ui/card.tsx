@@ -67,11 +67,11 @@ export function CardCh({
 }) {
   return (
     <div className="flex items-baseline gap-[9px] px-[18px] pt-3 pb-[9px]">
-      <h2 className="text-[13.5px] font-semibold tracking-[-0.005em]">
+      <h2 className="text-[15.5px] font-semibold tracking-[-0.005em]">
         {title}
       </h2>
       {meta != null && (
-        <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
+        <span className="ml-auto whitespace-nowrap text-[13px] text-muted-foreground">
           {meta}
         </span>
       )}

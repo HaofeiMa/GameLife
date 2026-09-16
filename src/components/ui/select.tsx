@@ -25,10 +25,10 @@ export function Select({
       <select
         className={cn(
           // The mockup's .fin, with the chevron the mockup paints in --dim2.
-          "w-full cursor-default appearance-none rounded-[10px] border border-pip bg-loot text-[12.5px] text-btn-ink transition-colors",
+          "w-full cursor-default appearance-none rounded-[10px] border border-pip bg-loot text-[14.5px] text-btn-ink transition-colors",
           "disabled:cursor-not-allowed disabled:opacity-50",
           size === "sm"
-            ? "h-[30px] pl-2 pr-7 text-[11.5px]"
+            ? "h-[30px] pl-2 pr-7 text-[13.5px]"
             : "h-[34px] pl-3 pr-8",
         )}
         {...props}

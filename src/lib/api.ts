@@ -240,6 +240,8 @@ export interface VisionProviderSettings {
   id: string;
   /** "custom" | "codex". Empty/missing means a pre-migration preset. */
   kind?: string;
+  /** Display name for a custom card. Empty falls back to 「自定义 API」. */
+  name?: string;
   baseUrl: string;
   model: string;
 }
@@ -312,6 +314,8 @@ export interface AppSettings {
   categoryGuides: CategoryGuides;
   /** system | light | dark — see src/lib/theme.ts */
   theme: string;
+  /** default | qinglan | … — see src/lib/theme.ts COLOR_THEMES */
+  colorTheme: string;
   /** Unused by the UI; kept so old config.json still loads. */
   todayTimelineMode: string;
   sync: SyncSettings;

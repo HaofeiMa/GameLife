@@ -134,10 +134,41 @@ export function customPanelTitle(
   providers: VisionProviderSettings[],
   id: string,
 ): string {
+  const named = providers.find((p) => p.id === id)?.name?.trim();
+  if (named) return named;
   const customs = providers.filter((p) => p.kind === KIND_CUSTOM);
   const index = customs.findIndex((p) => p.id === id);
   if (index <= 0) return "自定义 API";
   return `自定义 API ${index + 1}`;
+}
+
+export type ProviderTestTone = "idle" | "testing" | "ok" | "fail";
+
+export function providerTestDotClass(status: ProviderTestTone): string {
+  if (status === "ok") return "bg-success";
+  if (status === "fail") return "bg-destructive";
+  return "bg-muted-foreground/40";
+}
+
+export function providerTestDotLabel(status: ProviderTestTone): string {
+  switch (status) {
+    case "testing":
+      return "测试中";
+    case "ok":
+      return "测试成功";
+    case "fail":
+      return "测试失败";
+    default:
+      return "未测试";
+  }
+}
+
+export function providerTestButtonLabel(status: ProviderTestTone): string {
+  return status === "testing" ? "测试中…" : "测试连接";
+}
+
+export function providerTestPendingNote(status: ProviderTestTone): string {
+  return status === "testing" ? "正在连接…" : "";
 }
 
 export function providerIsReady(

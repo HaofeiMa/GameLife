@@ -23,7 +23,11 @@ export interface DialogProps {
   className?: string;
   /** Replace the default title row. `title` remains the accessible name. */
   header?: ReactNode;
-  chrome?: "muted" | "plain";
+  chrome?: "muted" | "plain" | "float";
+  /** Backdrop click. Defaults to `onClose`. Escape still calls `onClose`. */
+  onDismiss?: () => void;
+  /** Sibling overlay inside this dialog (not a nested Dialog). */
+  layer?: ReactNode;
 }
 
 /**
@@ -41,9 +45,13 @@ export function Dialog({
   className,
   header,
   chrome = "muted",
+  onDismiss,
+  layer,
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const titleId = useId();
   const descriptionId = useId();
 
@@ -57,13 +65,14 @@ export function Dialog({
     const firstField = panel?.querySelector<HTMLElement>(FOCUSABLE);
     (firstField ?? panel)?.focus();
 
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        onClose();
-        return;
-      }
+    function onEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onCloseRef.current();
+    }
+
+    function onTab(event: KeyboardEvent) {
       if (event.key !== "Tab") return;
 
       const node = panelRef.current;
@@ -89,16 +98,18 @@ export function Dialog({
       }
     }
 
-    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("keydown", onEscape);
+    document.addEventListener("keydown", onTab, true);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
     return () => {
-      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("keydown", onEscape);
+      document.removeEventListener("keydown", onTab, true);
       document.body.style.overflow = previousOverflow;
       restoreRef.current?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -106,7 +117,7 @@ export function Dialog({
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
       <div
         className="animate-fade-in fixed inset-0 bg-black/45 backdrop-blur-[2px]"
-        onClick={onClose}
+        onClick={onDismiss ?? onClose}
         aria-hidden
       />
       <div
@@ -116,8 +127,17 @@ export function Dialog({
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
+        className="relative z-10 outline-none"
+      >
+      <div
         className={cn(
-          "animate-rise relative z-10 flex max-h-[85vh] w-full max-w-md flex-col rounded-xl border bg-background shadow-2xl outline-none",
+          "animate-rise flex max-h-[85vh] w-full max-w-md flex-col outline-none",
+          chrome === "float"
+            ? "overflow-visible border-0 bg-transparent p-0 shadow-none"
+            : cn(
+                "overflow-hidden rounded-xl border shadow-2xl",
+                chrome === "plain" ? "bg-card" : "bg-background",
+              ),
           className,
         )}
       >
@@ -128,11 +148,15 @@ export function Dialog({
             </h2>
             {header}
           </>
+        ) : chrome === "float" ? (
+          <h2 id={titleId} className="sr-only">
+            {title}
+          </h2>
         ) : (
           <div
             className={cn(
-              "flex items-start justify-between gap-4 border-b px-5 py-4",
-              chrome === "plain" ? "bg-background" : "bg-muted/30",
+              "flex items-start justify-between gap-4 px-5 py-4",
+              chrome === "plain" ? "bg-card" : "border-b bg-muted/30",
             )}
           >
             <div className="space-y-1">
@@ -159,16 +183,30 @@ export function Dialog({
           </div>
         )}
         {children && (
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+          <div
+            className={
+              chrome === "float"
+                ? "contents"
+                : "min-h-0 flex-1 overflow-y-auto px-5 py-4"
+            }
+          >
+            {children}
+          </div>
         )}
         {footer && (
           <div
             className={cn(
-              "flex items-center justify-end gap-2 border-t px-5 py-3",
-              chrome === "plain" ? "bg-background" : "bg-muted/30",
+              "flex items-center justify-end gap-2 px-5 py-3",
+              chrome === "plain" ? "rounded-b-xl bg-card" : "border-t bg-muted/30",
             )}
           >
             {footer}
+          </div>
+        )}
+      </div>
+        {layer && (
+          <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2">
+            {layer}
           </div>
         )}
       </div>
