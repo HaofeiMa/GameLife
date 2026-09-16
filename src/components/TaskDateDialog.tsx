@@ -89,6 +89,7 @@ function TaskDateDialogBody({
       onClose={onClose}
       title="更改日期"
       className="max-w-lg"
+      chrome="plain"
       footer={
         <>
           <Button
@@ -106,7 +107,9 @@ function TaskDateDialogBody({
         </>
       }
     >
-      <TaskScheduleFields form={form} setForm={setForm} disabled={busy} />
+      <div className="rounded-xl border bg-card p-3">
+        <TaskScheduleFields form={form} setForm={setForm} disabled={busy} />
+      </div>
     </Dialog>
   );
 }

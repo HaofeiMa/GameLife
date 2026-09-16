@@ -206,53 +206,58 @@ function TaskDetailDialogBody({
         onClose={onClose}
         title="任务详情"
         className="max-w-lg"
+        chrome="plain"
         header={
-          <div className="flex items-start gap-3 border-b bg-muted/30 px-5 py-3">
-            <div className="pt-1">
-              <TaskCheckbox
-                checked={done}
-                color={color}
-                label={`完成 ${title}`}
-                onToggle={(next) => {
-                  setDone(next);
-                  void (async () => {
-                    try {
-                      await toggleTaskDone(task.id, next);
-                      void onSaved();
-                    } catch (e) {
-                      setDone(!next);
-                      onError(taskCommandError(e));
-                    }
-                  })();
-                }}
-              />
-            </div>
-            <div className="min-w-0 flex-1">
-              <TaskScheduleFields
-                id="task-detail-schedule"
-                form={form}
-                setForm={queueSchedule}
-                disabled={false}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="mt-2"
-                onClick={() => {
-                  window.clearTimeout(scheduleTimer.current);
-                  void (async () => {
-                    try {
-                      await rescheduleTask(task.id, null, null);
-                      void onSaved();
-                    } catch (e) {
-                      onError(taskCommandError(e));
-                    }
-                  })();
-                }}
-              >
-                清除时段
-              </Button>
+          <div className="flex items-start gap-3 border-b bg-background px-5 py-3">
+            <div className="min-w-0 flex-1 rounded-xl border bg-card p-3">
+              <div className="flex items-start gap-3">
+                <div className="pt-1">
+                  <TaskCheckbox
+                    checked={done}
+                    color={color}
+                    label={`完成 ${title}`}
+                    onToggle={(next) => {
+                      setDone(next);
+                      void (async () => {
+                        try {
+                          await toggleTaskDone(task.id, next);
+                          void onSaved();
+                        } catch (e) {
+                          setDone(!next);
+                          onError(taskCommandError(e));
+                        }
+                      })();
+                    }}
+                  />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <TaskScheduleFields
+                    id="task-detail-schedule"
+                    form={form}
+                    setForm={queueSchedule}
+                    disabled={false}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="mt-2"
+                    onClick={() => {
+                      window.clearTimeout(scheduleTimer.current);
+                      void (async () => {
+                        try {
+                          await rescheduleTask(task.id, null, null);
+                          void onSaved();
+                        } catch (e) {
+                          onError(taskCommandError(e));
+                        }
+                      })();
+                    }}
+                  >
+                    清除时段
+                  </Button>
+                </div>
+              </div>
             </div>
             <button
               type="button"
@@ -308,56 +313,60 @@ function TaskDetailDialogBody({
         }
       >
         <div className="flex flex-col gap-3">
-          <Input
-            value={title}
-            aria-label="任务名称"
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => void saveTitle()}
-          />
-          <Textarea
-            value={notes}
-            aria-label="备注"
-            rows={6}
-            placeholder="指标、会议链接、地点…"
-            onChange={(e) => queueNotes(e.target.value)}
-            onBlur={() => {
-              window.clearTimeout(notesTimer.current);
-              void flushNotes(notes);
-            }}
-          />
-          {preview.length > 0 && (
-            <div className="space-y-2 text-[12.5px] leading-relaxed text-muted-foreground">
-              {preview.map((block, i) => {
-                if (block.type === "ul") {
+          <div className="rounded-xl border bg-card p-3">
+            <Input
+              value={title}
+              aria-label="任务名称"
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={() => void saveTitle()}
+            />
+          </div>
+          <div className="rounded-xl border bg-card p-3">
+            <Textarea
+              value={notes}
+              aria-label="备注"
+              rows={6}
+              placeholder="指标、会议链接、地点…"
+              onChange={(e) => queueNotes(e.target.value)}
+              onBlur={() => {
+                window.clearTimeout(notesTimer.current);
+                void flushNotes(notes);
+              }}
+            />
+            {preview.length > 0 && (
+              <div className="mt-3 space-y-2 text-[12.5px] leading-relaxed text-muted-foreground">
+                {preview.map((block, i) => {
+                  if (block.type === "ul") {
+                    return (
+                      <ul key={i} className="list-disc pl-5">
+                        {block.items.map((item, j) => (
+                          <li key={j}>
+                            <NotesInlineView nodes={item} />
+                          </li>
+                        ))}
+                      </ul>
+                    );
+                  }
+                  if (block.type === "ol") {
+                    return (
+                      <ol key={i} className="list-decimal pl-5">
+                        {block.items.map((item, j) => (
+                          <li key={j}>
+                            <NotesInlineView nodes={item} />
+                          </li>
+                        ))}
+                      </ol>
+                    );
+                  }
                   return (
-                    <ul key={i} className="list-disc pl-5">
-                      {block.items.map((item, j) => (
-                        <li key={j}>
-                          <NotesInlineView nodes={item} />
-                        </li>
-                      ))}
-                    </ul>
+                    <p key={i}>
+                      <NotesInlineView nodes={block.children} />
+                    </p>
                   );
-                }
-                if (block.type === "ol") {
-                  return (
-                    <ol key={i} className="list-decimal pl-5">
-                      {block.items.map((item, j) => (
-                        <li key={j}>
-                          <NotesInlineView nodes={item} />
-                        </li>
-                      ))}
-                    </ol>
-                  );
-                }
-                return (
-                  <p key={i}>
-                    <NotesInlineView nodes={block.children} />
-                  </p>
-                );
-              })}
-            </div>
-          )}
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </Dialog>
       <TaskActionMenu

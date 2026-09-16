@@ -23,6 +23,7 @@ export interface DialogProps {
   className?: string;
   /** Replace the default title row. `title` remains the accessible name. */
   header?: ReactNode;
+  chrome?: "muted" | "plain";
 }
 
 /**
@@ -39,6 +40,7 @@ export function Dialog({
   footer,
   className,
   header,
+  chrome = "muted",
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
@@ -127,7 +129,12 @@ export function Dialog({
             {header}
           </>
         ) : (
-          <div className="flex items-start justify-between gap-4 border-b bg-muted/30 px-5 py-4">
+          <div
+            className={cn(
+              "flex items-start justify-between gap-4 border-b px-5 py-4",
+              chrome === "plain" ? "bg-background" : "bg-muted/30",
+            )}
+          >
             <div className="space-y-1">
               <h2 id={titleId} className="text-sm font-semibold leading-tight">
                 {title}
@@ -155,7 +162,12 @@ export function Dialog({
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
         )}
         {footer && (
-          <div className="flex items-center justify-end gap-2 border-t bg-muted/30 px-5 py-3">
+          <div
+            className={cn(
+              "flex items-center justify-end gap-2 border-t px-5 py-3",
+              chrome === "plain" ? "bg-background" : "bg-muted/30",
+            )}
+          >
             {footer}
           </div>
         )}
