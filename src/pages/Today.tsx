@@ -6,6 +6,8 @@ import { EntertainmentBanner } from "../components/EntertainmentBanner";
 import { PageHeader } from "../components/PageHeader";
 import { PermissionBanner } from "../components/PermissionBanner";
 import { PlatformNotice } from "../components/PlatformNotice";
+import { TaskActionMenu } from "../components/TaskActionMenu";
+import { TaskDateDialog } from "../components/TaskDateDialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardCh } from "../components/ui/card";
@@ -16,17 +18,25 @@ import { Progress } from "../components/ui/progress";
 import { Select } from "../components/ui/select";
 import { SkeletonPanel } from "../components/ui/skeleton";
 import {
+  deleteTask,
+  duplicateTask,
   endToday,
   freezeDay,
   getDayView,
   getToday,
+  listTaskBoard,
+  moveTask,
+  reorderTask,
   reportMisclassification,
   rescheduleTask,
   reviewSlot,
+  upsertTask,
   type AppTopRow,
   type DayTask,
   type DayView,
   type SlotActivityMinutes,
+  type TaskBoardView,
+  type TaskView,
   type TodaySlot,
   type TodayView,
 } from "../lib/api";
@@ -51,7 +61,9 @@ import {
   splitTimedPlan,
 } from "../lib/timelinePlan";
 import { useTimelineSplit } from "../hooks/useTimelineSplit";
-import { moveSameDay } from "../lib/planDrag";
+import { lastCopiedPayload, parseTaskCopy, serializeTaskCopy } from "../lib/taskClipboard";
+import type { CalEdge } from "../lib/taskCalendar";
+import { moveSameDay, resizeSameDay } from "../lib/planDrag";
 import { cn } from "../lib/utils";
 
 const GOLD_DAY_MSG = "黄金日已达成。继续记录，但不再获得硬币或能量。";
@@ -113,6 +125,31 @@ function hm(ts: number): string {
     minute: "2-digit",
     hour12: false,
   });
+}
+
+function nextListSort(tasks: TaskView[], listId: string): number {
+  let max = -1;
+  for (const task of tasks) {
+    if (task.listId === listId && task.sort > max) max = task.sort;
+  }
+  return max + 1;
+}
+
+function viewForDayTask(task: DayTask, views: TaskView[]): TaskView {
+  const found = views.find((row) => row.id === task.id);
+  if (found) return found;
+  return {
+    id: task.id,
+    listId: "list-mainline",
+    title: task.title,
+    done: false,
+    start: task.start,
+    end: task.end,
+    range: null,
+    sort: 0,
+    repeat: "none",
+    remindOffsets: [],
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -371,6 +408,8 @@ function Timeline({
   onPick,
   scrollRef,
   onMovePlan,
+  taskViews,
+  onMenu,
 }: {
   dayView: DayView;
   slotsByStart: Map<number, TodaySlot>;
@@ -392,6 +431,8 @@ function Timeline({
   onPick: (slot: TodaySlot) => void;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onMovePlan: (id: string, start: number, end: number) => void;
+  taskViews: TaskView[];
+  onMenu: (task: TaskView, x: number, y: number) => void;
 }) {
   const dayStart = dayView.dayStart;
   const totalHeight = HOURS.length * HOUR_H;
@@ -406,6 +447,7 @@ function Timeline({
     start: number;
     end: number;
     originY: number;
+    edge?: CalEdge;
   } | null>(null);
   const previewRef = useRef(preview);
   previewRef.current = preview;
@@ -459,7 +501,15 @@ function Timeline({
       const drag = dragRef.current;
       if (!drag || drag.id !== draggingId) return;
       const slots = Math.round((e.clientY - drag.originY) / SLOT_H);
-      const next = moveSameDay(drag.start, drag.end, dayStart, slots);
+      const next = drag.edge
+        ? resizeSameDay(
+            drag.start,
+            drag.end,
+            drag.edge,
+            (drag.edge === "end" ? drag.end : drag.start) + slots * 900,
+            dayStart,
+          )
+        : moveSameDay(drag.start, drag.end, dayStart, slots);
       setPreview({ id: drag.id, start: next.start, end: next.end });
     }
     function onUp() {
@@ -528,14 +578,18 @@ function Timeline({
                   t.end === mark.end &&
                   t.title === mark.title,
               );
+              const isPreview = preview?.id === task?.id;
               return (
                 <div
                   key={`${task?.id ?? mark.title}-${mark.rowStart}-${mark.lane}`}
                   title={`${mark.title} · ${listRoleLabel(mark.role)}`}
+                  data-task-id={task?.id}
+                  tabIndex={task ? 0 : undefined}
                   onPointerDown={(e) => {
-                    if (e.button !== 0 || !task) return;
+                    if (e.button !== 0 || !task || isPreview) return;
                     e.preventDefault();
                     e.stopPropagation();
+                    e.currentTarget.focus();
                     const original = timed.find((row) => row.id === task.id) ?? task;
                     dragRef.current = {
                       id: original.id,
@@ -549,7 +603,17 @@ function Timeline({
                       end: original.end,
                     });
                   }}
-                  className="absolute cursor-grab overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[11px] leading-tight active:cursor-grabbing"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!task || isPreview) return;
+                    onMenu(viewForDayTask(task, taskViews), e.clientX, e.clientY);
+                  }}
+                  className={cn(
+                    "absolute overflow-hidden rounded-[5px] px-1.5 py-0.5 text-[11px] leading-tight",
+                    !isPreview && "cursor-grab active:cursor-grabbing",
+                    isPreview && "pointer-events-none opacity-80",
+                  )}
                   style={{
                     left: `${(mark.lane / lanes) * 100}%`,
                     width: `calc(${(span / lanes) * 100}% - 4px)`,
@@ -559,6 +623,54 @@ function Timeline({
                     borderLeft: `3px solid ${categoryColor(cat)}`,
                   }}
                 >
+                  {!isPreview && task && (
+                    <>
+                      <div
+                        className="absolute inset-x-0 top-0 h-1.5 cursor-ns-resize"
+                        onPointerDown={(e) => {
+                          if (e.button !== 0) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const original =
+                            timed.find((row) => row.id === task.id) ?? task;
+                          dragRef.current = {
+                            id: original.id,
+                            start: original.start,
+                            end: original.end,
+                            originY: e.clientY,
+                            edge: "start",
+                          };
+                          setPreview({
+                            id: original.id,
+                            start: original.start,
+                            end: original.end,
+                          });
+                        }}
+                      />
+                      <div
+                        className="absolute inset-x-0 bottom-0 h-1.5 cursor-ns-resize"
+                        onPointerDown={(e) => {
+                          if (e.button !== 0) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const original =
+                            timed.find((row) => row.id === task.id) ?? task;
+                          dragRef.current = {
+                            id: original.id,
+                            start: original.start,
+                            end: original.end,
+                            originY: e.clientY,
+                            edge: "end",
+                          };
+                          setPreview({
+                            id: original.id,
+                            start: original.start,
+                            end: original.end,
+                          });
+                        }}
+                      />
+                    </>
+                  )}
                   <span className="line-clamp-6 font-semibold text-foreground/85">
                     {mark.title}
                   </span>
@@ -793,6 +905,14 @@ export function Today() {
   const [selected, setSelected] = useState<TodaySlot | null>(null);
   const [openApp, setOpenApp] = useState<string | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [board, setBoard] = useState<TaskBoardView | null>(null);
+  const [dateTask, setDateTask] = useState<TaskView | null>(null);
+  const [abandonTarget, setAbandonTarget] = useState<TaskView | null>(null);
+  const [menu, setMenu] = useState<{
+    task: TaskView;
+    x: number;
+    y: number;
+  } | null>(null);
   const timelineSplit = useTimelineSplit();
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
@@ -802,8 +922,12 @@ export function Today() {
       setData(t);
       const day = calDay ?? t.day;
       if (!calDay) setCalDay(t.day);
-      const view = await getDayView(day);
+      const [view, nextBoard] = await Promise.all([
+        getDayView(day),
+        listTaskBoard(),
+      ]);
       setDayView(view);
+      setBoard(nextBoard);
       setFreezeDate((prev) => {
         if (prev && t.freezeCandidates.includes(prev)) return prev;
         return t.defaultFreezeDate ?? t.freezeCandidates[0] ?? "";
@@ -814,11 +938,11 @@ export function Today() {
     }
   }, [calDay]);
 
-  const onMovePlan = useCallback(
-    (id: string, start: number, end: number) => {
+  const runTask = useCallback(
+    (fn: () => Promise<void>) => {
       void (async () => {
         try {
-          await rescheduleTask(id, start, end);
+          await fn();
           await refresh();
         } catch (e) {
           setError(taskCommandError(e));
@@ -826,6 +950,13 @@ export function Today() {
       })();
     },
     [refresh],
+  );
+
+  const onMovePlan = useCallback(
+    (id: string, start: number, end: number) => {
+      runTask(() => rescheduleTask(id, start, end));
+    },
+    [runTask],
   );
 
   useEffect(() => {
@@ -846,7 +977,68 @@ export function Today() {
   useEffect(() => {
     setSelected(null);
     setOpenApp(null);
+    setMenu(null);
   }, [calDay]);
+
+  useEffect(() => {
+    function typingInField(el: EventTarget | null): boolean {
+      return (
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        (el instanceof HTMLElement && el.isContentEditable)
+      );
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.key !== "c" && event.key !== "C" && event.key !== "v" && event.key !== "V") {
+        return;
+      }
+      if (typingInField(event.target) || typingInField(document.activeElement)) return;
+      const tasks = [
+        ...(board?.tasks ?? []),
+        ...(dayView?.tasks ?? []),
+      ];
+      if (event.key === "c" || event.key === "C") {
+        const row =
+          document.activeElement instanceof HTMLElement
+            ? document.activeElement.closest("[data-task-id]")
+            : null;
+        const id = row?.getAttribute("data-task-id");
+        const task =
+          tasks.find((item) => item.id === id) ??
+          (id
+            ? (dayView?.dayTasks ?? [])
+                .filter((item) => item.id === id)
+                .map((item) => viewForDayTask(item, tasks))[0]
+            : undefined);
+        if (!task) return;
+        event.preventDefault();
+        const raw = serializeTaskCopy(task);
+        void navigator.clipboard.writeText(raw).catch(() => undefined);
+        return;
+      }
+      const parsed = lastCopiedPayload() ? parseTaskCopy(lastCopiedPayload() ?? "") : null;
+      if (!parsed) return;
+      event.preventDefault();
+      const listId = parsed.listId;
+      const id = crypto.randomUUID();
+      const sort = nextListSort(board?.tasks ?? tasks, listId);
+      runTask(async () => {
+        await upsertTask({
+          ...parsed,
+          id,
+          listId,
+          done: false,
+          sort: 0,
+        });
+        await reorderTask(id, listId, sort);
+      });
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [board, dayView, runTask]);
 
   async function handleEndToday() {
     setBusy(true);
@@ -1023,6 +1215,8 @@ export function Today() {
                 onPick={setSelected}
                 scrollRef={timelineRef}
                 onMovePlan={onMovePlan}
+                taskViews={[...(board?.tasks ?? []), ...(dayView.tasks ?? [])]}
+                onMenu={(task, x, y) => setMenu({ task, x, y })}
               />
             </div>
 
@@ -1322,6 +1516,67 @@ export function Today() {
           onChange={() => void refresh()}
         />
       )}
+      <TaskDateDialog
+        task={dateTask}
+        onClose={() => setDateTask(null)}
+        onSaved={refresh}
+        onError={(message) => setError(message)}
+      />
+      <Dialog
+        open={abandonTarget != null}
+        onClose={() => setAbandonTarget(null)}
+        title="放弃任务"
+        footer={
+          <>
+            <Button variant="outline" size="sm" onClick={() => setAbandonTarget(null)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (!abandonTarget) return;
+                runTask(async () => {
+                  await deleteTask(abandonTarget.id);
+                  setAbandonTarget(null);
+                });
+              }}
+            >
+              放弃
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[12.5px] text-muted-foreground">
+          放弃后不可恢复。确定放弃「{abandonTarget?.title}」？
+        </p>
+      </Dialog>
+      <TaskActionMenu
+        open={menu != null}
+        x={menu?.x ?? 0}
+        y={menu?.y ?? 0}
+        task={menu?.task ?? null}
+        lists={board?.lists ?? []}
+        onClose={() => setMenu(null)}
+        onDate={(task) => {
+          setMenu(null);
+          setDateTask(task);
+        }}
+        onMove={(task, listId) => {
+          setMenu(null);
+          runTask(() => moveTask(task.id, listId));
+        }}
+        onDuplicate={(task) => {
+          setMenu(null);
+          runTask(async () => {
+            await duplicateTask(task.id);
+          });
+        }}
+        onAbandon={(task) => {
+          setMenu(null);
+          setAbandonTarget(task);
+        }}
+      />
     </>
   );
 }

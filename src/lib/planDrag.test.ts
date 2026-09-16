@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { moveSameDay } from "./planDrag";
+import { moveSameDay, resizeSameDay } from "./planDrag";
 
 describe("moveSameDay", () => {
   it("clamps a dragged block inside the day", () => {
@@ -14,5 +14,13 @@ describe("moveSameDay", () => {
     const moved = moveSameDay(3600, 5400, day, 1);
     expect(moved.start).toBe(4500);
     expect(moved.end).toBe(6300);
+  });
+});
+
+describe("resizeSameDay", () => {
+  it("resizeSameDay clamps into the local day", () => {
+    const day = 1_000_000;
+    const r = resizeSameDay(day, day + 1800, "end", day + 86400, day);
+    expect(r.end).toBeLessThanOrEqual(day + 96 * 900);
   });
 });
