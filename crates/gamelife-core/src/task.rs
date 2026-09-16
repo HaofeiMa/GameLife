@@ -56,6 +56,11 @@ pub enum ResizeEdge {
 }
 
 pub const ALLOWED_REMIND_OFFSETS: [i64; 5] = [0, 5, 15, 30, 60];
+pub const MAX_NOTES_BYTES: usize = 8192;
+
+pub fn notes_ok(notes: &str) -> bool {
+    notes.len() <= MAX_NOTES_BYTES
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
@@ -72,6 +77,8 @@ pub struct Task {
     pub repeat: RepeatRule,
     #[serde(default)]
     pub remind_offsets: Vec<i64>,
+    #[serde(default)]
+    pub notes: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +258,7 @@ pub fn spawn_after_complete(
         sort,
         repeat: done.repeat,
         remind_offsets: done.remind_offsets.clone(),
+        notes: done.notes.clone(),
     })
 }
 
@@ -556,6 +564,7 @@ mod tests {
             sort: 0,
             repeat: RepeatRule::None,
             remind_offsets: vec![],
+            notes: String::new(),
         }
     }
 
@@ -573,6 +582,7 @@ mod tests {
             sort: 0,
             repeat: RepeatRule::None,
             remind_offsets: vec![],
+            notes: String::new(),
         };
         let day0 = 1_778_083_200;
         assert!(in_judgment_set(&t, &lists[2], day0, day0 + 86400));
@@ -867,6 +877,48 @@ mod tests {
     }
 
     #[test]
+    fn notes_ok_is_utf8_bytes() {
+        assert!(notes_ok(""));
+        assert!(notes_ok(&"a".repeat(8192)));
+        assert!(!notes_ok(&"a".repeat(8193)));
+    }
+
+    #[test]
+    fn new_task_notes_default_empty() {
+        let t = timed("a", PRESET_MAINLINE_ID, 0, 1800);
+        assert_eq!(t.notes, "");
+    }
+
+    #[test]
+    fn spawn_after_complete_copies_notes() {
+        let mut t = timed("a", PRESET_MAINLINE_ID, 0, 1800);
+        t.repeat = RepeatRule::Daily;
+        t.notes = "指标 0.91".into();
+        let next = spawn_after_complete(&t, "b".into(), 86_400, 1).expect("next");
+        assert_eq!(next.notes, "指标 0.91");
+        assert_ne!(next.id, t.id);
+    }
+
+    #[test]
+    fn snapshot_json_has_no_notes_field() {
+        let mut open = timed("u", PRESET_MAINLINE_ID, 0, 1800);
+        open.notes = "secret-never-judge".into();
+        let snaps = snapshots_open(&[open], &lists());
+        let json = serde_json::to_string(&snaps).unwrap();
+        assert!(!json.contains("secret-never-judge"));
+        assert!(!json.contains("notes"));
+    }
+
+    #[test]
+    fn task_json_missing_notes_deserializes_empty() {
+        let t: Task = serde_json::from_str(
+            r#"{"id":"a","list_id":"list-mainline","title":"x","done":false,"start":null,"end":null,"range":null}"#,
+        )
+        .unwrap();
+        assert_eq!(t.notes, "");
+    }
+
+    #[test]
     fn clear_schedule_drops_repeat() {
         let mut t = timed("a", PRESET_MAINLINE_ID, 0, 1800);
         t.repeat = RepeatRule::Weekly;
@@ -906,6 +958,7 @@ mod tests {
             sort: 0,
             repeat: RepeatRule::None,
             remind_offsets: vec![],
+            notes: String::new(),
         };
         let snaps = snapshots_open(&[open], &lists);
         assert_eq!(snaps.len(), 1);
