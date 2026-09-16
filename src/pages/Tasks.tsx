@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -54,6 +55,7 @@ import {
   toggleCollapsed,
 } from "../lib/taskBoard";
 import {
+  CAL_DAY_GAP,
   CAL_GUTTER,
   CAL_HOUR_H,
   calendarDays,
@@ -66,7 +68,8 @@ import {
 } from "../lib/taskCalendar";
 import { lastCopiedPayload, parseTaskCopy, serializeTaskCopy } from "../lib/taskClipboard";
 import { rangeSelect, toggleSelect, visibleTaskIds } from "../lib/taskListSelect";
-import { ribbonCells } from "../lib/slotRibbon";
+import { hourWashCategory, ribbonCells } from "../lib/slotRibbon";
+import { withinClickSlop } from "../lib/taskPointer";
 import { ranksAfterDrag } from "../lib/taskReorder";
 import { LIST_MAX, LIST_MIN } from "../lib/taskSplit";
 import { assignPlanLanes, planLaneSpan } from "../lib/timelinePlan";
@@ -89,6 +92,8 @@ type CalDrag = {
   grabOffset: number;
   start: number;
   end: number;
+  originX: number;
+  originY: number;
 };
 
 function nextCalRange(drag: CalDrag, ts: number): { start: number; end: number } {
@@ -198,6 +203,11 @@ export function Tasks() {
   const parseGen = useRef(0);
   const gridRef = useRef<HTMLDivElement>(null);
   const [calDrag, setCalDrag] = useState<CalDrag | null>(null);
+  const [pendingCalClick, setPendingCalClick] = useState<{
+    task: TaskView;
+    originX: number;
+    originY: number;
+  } | null>(null);
   const [listDrag, setListDrag] = useState<{
     id: string;
     overListId: string;
@@ -205,6 +215,8 @@ export function Tasks() {
   } | null>(null);
   const calDragRef = useRef<CalDrag | null>(null);
   calDragRef.current = calDrag;
+  const pendingCalClickRef = useRef(pendingCalClick);
+  pendingCalClickRef.current = pendingCalClick;
   const { listWidth, dragging, splitRef, handleProps } = useTaskSplit();
   const today = todayIso();
   const days = useMemo(
@@ -293,6 +305,8 @@ export function Tasks() {
           grabOffset: 0,
           start: range.start,
           end: range.end,
+          originX: clientX,
+          originY: clientY,
         });
         return;
       }
@@ -305,6 +319,8 @@ export function Tasks() {
           grabOffset,
           start: task.start,
           end: task.end,
+          originX: clientX,
+          originY: clientY,
         });
       } else {
         const placed = ts != null ? dropRange(ts) : { start: 0, end: 1800 };
@@ -314,6 +330,8 @@ export function Tasks() {
           grabOffset: 0,
           start: placed.start,
           end: placed.end,
+          originX: clientX,
+          originY: clientY,
         });
       }
     },
@@ -331,10 +349,44 @@ export function Tasks() {
       if ((e.target as HTMLElement).closest("input")) return;
       e.preventDefault();
       e.stopPropagation();
+      if (fromBlock && !edge) {
+        setPendingCalClick({ task, originX: e.clientX, originY: e.clientY });
+        return;
+      }
+      setPendingCalClick(null);
       beginCalDragAt(task, e.clientX, e.clientY, fromBlock, edge);
     },
     [beginCalDragAt],
   );
+
+  useEffect(() => {
+    if (!pendingCalClick) return;
+    function onMove(e: PointerEvent) {
+      const pending = pendingCalClickRef.current;
+      if (!pending) return;
+      if (withinClickSlop(e.clientX - pending.originX, e.clientY - pending.originY)) {
+        return;
+      }
+      setPendingCalClick(null);
+      beginCalDragAt(pending.task, e.clientX, e.clientY, true, null);
+    }
+    function onUp(e: PointerEvent) {
+      const pending = pendingCalClickRef.current;
+      setPendingCalClick(null);
+      if (!pending) return;
+      if (e.shiftKey || e.metaKey || e.ctrlKey) return;
+      setDateTask(null);
+      setDetailTask(pending.task);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [beginCalDragAt, pendingCalClick]);
 
   const draggingId = calDrag?.task.id ?? null;
   useEffect(() => {
@@ -1237,6 +1289,14 @@ export function Tasks() {
   );
 }
 
+function DayColumnGap() {
+  return (
+    <div className="relative shrink-0 self-stretch" style={{ width: CAL_DAY_GAP }}>
+      <div className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-hour-line" />
+    </div>
+  );
+}
+
 function TaskCalendar({
   days,
   today,
@@ -1269,18 +1329,20 @@ function TaskCalendar({
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0">
         <div className="shrink-0" style={{ width: CAL_GUTTER }} />
-        {days.map((day) => (
-          <div
-            key={day}
-            className="min-w-0 flex-1 py-1.5 text-center text-[11px] font-medium"
-            style={
-              day === today
-                ? { background: categoryColorAt("mainline", 16) }
-                : undefined
-            }
-          >
-            {dayColumnLabel(day)}
-          </div>
+        {days.map((day, i) => (
+          <Fragment key={day}>
+            {i > 0 ? <DayColumnGap /> : null}
+            <div
+              className="min-w-0 flex-1 py-1.5 text-center text-[11px] font-medium"
+              style={
+                day === today
+                  ? { background: categoryColorAt("mainline", 16) }
+                  : undefined
+              }
+            >
+              {dayColumnLabel(day)}
+            </div>
+          </Fragment>
         ))}
       </div>
       <div ref={gridRef} className="min-h-0 flex-1 overflow-auto">
@@ -1296,18 +1358,19 @@ function TaskCalendar({
               </div>
             ))}
           </div>
-          {days.map((day) => (
-            <CalendarDayColumn
-              key={day}
-              day={day}
-              today={today}
-              tasks={tasks}
-              lists={lists}
-              preview={preview}
-              onBlockDown={onBlockDown}
-              onBlockMenu={onBlockMenu}
-              slots={ribbons[day] ?? []}
-            />
+          {days.map((day, i) => (
+            <Fragment key={day}>
+              {i > 0 ? <DayColumnGap /> : null}
+              <CalendarDayColumn
+                day={day}
+                tasks={tasks}
+                lists={lists}
+                preview={preview}
+                onBlockDown={onBlockDown}
+                onBlockMenu={onBlockMenu}
+                slots={ribbons[day] ?? []}
+              />
+            </Fragment>
           ))}
         </div>
       </div>
@@ -1317,7 +1380,6 @@ function TaskCalendar({
 
 function CalendarDayColumn({
   day,
-  today,
   tasks,
   lists,
   preview,
@@ -1326,7 +1388,6 @@ function CalendarDayColumn({
   slots,
 }: {
   day: string;
-  today: string;
   tasks: TaskView[];
   lists: TaskListView[];
   preview: { id: string; start: number; end: number } | null;
@@ -1393,32 +1454,28 @@ function CalendarDayColumn({
   const cells = ribbonCells(slots, dayStart);
 
   return (
-    <div
-      className="relative min-w-0 flex-1"
-      style={
-        day === today
-          ? { background: categoryColorAt("mainline", 8) }
-          : undefined
-      }
-    >
+    <div className="relative min-w-0 flex-1">
+      {hours.map((h) => {
+        const wash = hourWashCategory(cells, h);
+        return (
+          <div
+            key={`wash-${h}`}
+            className="pointer-events-none absolute inset-x-0"
+            style={{
+              top: h * CAL_HOUR_H,
+              height: CAL_HOUR_H,
+              background: wash ? categoryColorAt(wash, 10) : undefined,
+            }}
+          />
+        );
+      })}
       {hours.slice(1).map((h) => (
         <div
-          key={h}
+          key={`line-${h}`}
           className="absolute inset-x-0 border-t border-hour-line"
           style={{ top: h * CAL_HOUR_H }}
         />
       ))}
-      <div className="pointer-events-none absolute inset-y-0 right-0 w-1">
-        {cells.map((cat, i) => (
-          <div
-            key={i}
-            style={{
-              height: CAL_HOUR_H / 4,
-              background: cat ? categoryColor(cat) : undefined,
-            }}
-          />
-        ))}
-      </div>
       {items.map((mark) => {
         const cat = categoryOf(mark.role);
         const span = planLaneSpan(mark, items, lanes);
@@ -1445,8 +1502,8 @@ function CalendarDayColumn({
               isPreview && "pointer-events-none opacity-80",
             )}
             style={{
-              left: `${(mark.lane / lanes) * 100}%`,
-              width: `calc(${(span / lanes) * 100}% - 4px)`,
+              left: `calc(${(mark.lane / lanes) * 100}% + 6px)`,
+              width: `calc(${(span / lanes) * 100}% - 16px)`,
               top: mark.rowStart * (CAL_HOUR_H / 4) + 1,
               height: mark.rowSpan * (CAL_HOUR_H / 4) - 2,
               background: `color-mix(in srgb, ${categoryColor(cat)} 28%, hsl(var(--card)))`,
