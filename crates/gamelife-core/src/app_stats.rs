@@ -63,6 +63,14 @@ pub struct DayStatDelta {
     pub protected: i64,
 }
 
+/// macOS lock screen (`loginwindow`). It is absence, not an app the user ran.
+pub fn is_lock_screen_app(app: &str, bundle_id: Option<&str>) -> bool {
+    if bundle_id.is_some_and(|id| id.eq_ignore_ascii_case("com.apple.loginwindow")) {
+        return true;
+    }
+    app.eq_ignore_ascii_case("loginwindow")
+}
+
 pub fn deltas_from_slot(
     day_samples: &[Sample],
     hints: &[Hint],
@@ -71,6 +79,9 @@ pub fn deltas_from_slot(
     let secs = SAMPLE_INTERVAL_SECS as i64;
     let mut grouped: BTreeMap<(String, String, Option<String>), DayStatDelta> = BTreeMap::new();
     for (sample, hint) in day_samples.iter().zip(hints.iter()) {
+        if is_lock_screen_app(&sample.app, sample.bundle_id.as_deref()) {
+            continue;
+        }
         let protected = sample.secure_input
             || matches_app_identity(&sample.app, sample.bundle_id.as_deref(), never);
         let bundle_id = sample.bundle_id.clone().unwrap_or_default();
@@ -155,5 +166,18 @@ mod tests {
         assert_eq!(deltas[0].core, 15);
         assert_eq!(deltas[0].protected, 0);
         assert_eq!(deltas[0].samples, 1);
+    }
+
+    #[test]
+    fn lock_screen_sample_is_not_an_app_delta() {
+        let mut lock = sample("loginwindow");
+        lock.bundle_id = Some("com.apple.loginwindow".into());
+        lock.screen_locked = true;
+        let cursor = sample("Cursor");
+        let deltas = deltas_from_slot(&[lock, cursor], &[Hint::Away, Hint::CoreCandidate], &[]);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].app, "Cursor");
+        assert_eq!(deltas[0].core, 15);
+        assert_eq!(deltas[0].away, 0);
     }
 }
