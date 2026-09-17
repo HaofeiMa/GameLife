@@ -89,7 +89,7 @@ describe("start hour chart labels", () => {
     const labels = days.map((day, i) => startHourXLabel(day, i, days.length));
     const shown = labels.filter((label): label is string => label != null);
     expect(shown[0]).toBe("09-01");
-    expect(shown.at(-1)).toBe("09-22");
+    expect(shown[shown.length - 1]).toBe("09-22");
     expect(shown.length).toBeLessThanOrEqual(6);
     expect(shown.length).toBeGreaterThanOrEqual(4);
   });
