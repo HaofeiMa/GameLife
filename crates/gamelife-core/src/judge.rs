@@ -9,7 +9,7 @@ const AWAY_DOMINANT_SECS: i64 = 600;
 const STRONG_CORE_AUTO_SECS: i64 = 780;
 const SIDE_DISTRACTION_DOMINANT_SECS: i64 = 300;
 const SIDE_DISTRACTION_MAX_FOR_AUTO_CORE: i64 = 60;
-const VISION_CONFIDENCE_MIN: f64 = 0.7;
+pub const VISION_CONFIDENCE_MIN: f64 = 0.7;
 const LEGAL_VISION_CATEGORIES: &[&str] = &[
     "core_research",
     "research_support",

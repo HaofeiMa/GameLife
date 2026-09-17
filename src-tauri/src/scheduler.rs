@@ -9,24 +9,22 @@ use serde::Deserialize;
 use gamelife_core::judge::{Dominant, JudgeOutput, VisionResult};
 use gamelife_core::types::{ActivitySeconds, Hint};
 use gamelife_core::{
-    activity_summary_for_vision, analyze_slot_evidence, apply_category_match, apply_task_match,
-    builtin_never_capture, builtin_side_project_rules, can_use_freeze, capture_on_resume,
-    credited_core_spans, default_distraction_rules, default_v01, deltas_from_slot,
-    early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved, hint_sample,
-    is_weekday, judge_slot, matches_app_identity, new_milestones, normalize_quest_list,
-    parse_category_match_json, parse_quest_versions_json, parse_task_match_json,
-    parse_task_snapshot_json, recompute_streak, schedule_capture, settle_outcome,
-    slot_end_exclusive, slot_start, spans_for_slot, vision_quest_label, CaptureContext,
-    CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest, QuestDraft,
-    QuestListError, Sample, TaskSnapshot, VisionContext, CHEST_SECS, TASK_MATCH_MIN,
+    activity_summary_for_vision, analyze_slot_evidence, builtin_never_capture,
+    builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
+    default_distraction_rules, default_v01, deltas_from_slot, early_start_anchor,
+    early_start_coins_for_local_secs, heartbeat_unobserved, hint_sample, is_weekday, judge_slot,
+    matches_app_identity, new_milestones, normalize_quest_list, parse_quest_versions_json,
+    parse_task_snapshot_json, recompute_streak, schedule_capture, settle_from_text_ai,
+    settle_outcome, slot_end_exclusive, slot_start, spans_for_slot, vision_quest_label,
+    CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest,
+    QuestDraft, QuestListError, Sample, SlotEvidence, TaskSnapshot, VisionContext, CHEST_SECS,
+    VISION_CONFIDENCE_MIN,
 };
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
 use crate::db_error::{map_rusqlite, DbOpError};
 use crate::resolve::resolve_slot;
-use crate::text_ai::{
-    build_text_ai_prompt, call_text_json_chain, sample_summary_lines, SampleLine,
-};
+use crate::text_ai::{build_text_ai_prompt, sample_summary_lines, SampleLine};
 use crate::vision;
 
 const AWAY_DOMINANT_SECS: i64 = 600;
@@ -222,6 +220,45 @@ pub fn maybe_vision_for_gray_zone(
         return None;
     }
     vision::analyze_screenshot_with_chain(screenshot_path, chain, ctx, never).ok()
+}
+
+fn settle_gray_text_from_bodies(
+    output: JudgeOutput,
+    evidence: &SlotEvidence,
+    tasks: &[TaskSnapshot],
+    chain: &[vision::VisionEndpoint],
+    mut body_for: impl FnMut(&vision::VisionEndpoint) -> Result<String, vision::VisionCallError>,
+) -> JudgeOutput {
+    match vision::try_provider_chain(chain, |ep| {
+        let raw = body_for(ep)?;
+        settle_from_text_ai(output.clone(), evidence, tasks, &raw)
+            .ok_or(vision::VisionCallError::Parse)
+    }) {
+        Ok(next) => next,
+        Err(_) => output,
+    }
+}
+
+fn settle_gray_vision_from_results(
+    chain: &[vision::VisionEndpoint],
+    mut result_for: impl FnMut(
+        &vision::VisionEndpoint,
+    ) -> Result<VisionResult, vision::VisionCallError>,
+    mut judge: impl FnMut(VisionResult) -> JudgeOutput,
+) -> Option<JudgeOutput> {
+    vision::try_provider_chain(chain, |ep| {
+        let v = result_for(ep)?;
+        if v.confidence < VISION_CONFIDENCE_MIN {
+            return Err(vision::VisionCallError::Parse);
+        }
+        let judged = judge(v);
+        if judged.pending {
+            Err(vision::VisionCallError::Parse)
+        } else {
+            Ok(judged)
+        }
+    })
+    .ok()
 }
 
 pub fn apply_screenshot_retention(path: &Path, retention: ScreenshotRetention) {
@@ -1577,29 +1614,18 @@ fn finalize_slot_end_in(
     let summary = sample_summary_lines(&lines);
     let gray =
         output.pending || matches!(output.dominant, Dominant::PendingReview | Dominant::Unknown);
-    let mut matched_text = false;
     if gray && !summary.is_empty() {
         let prompt = build_text_ai_prompt(&tasks, &policy.category_guides, &policy, &summary);
-        if let Ok(raw) = call_text_json_chain(&chain, &prompt) {
-            if tasks.is_empty() {
-                if let Ok(Some(m)) = parse_category_match_json(&raw) {
-                    if m.confidence >= TASK_MATCH_MIN {
-                        output = apply_category_match(output, &evidence, &m);
-                        matched_text = true;
-                    }
-                }
-            } else if let Ok(Some(m)) = parse_task_match_json(&raw, &tasks) {
-                if m.confidence >= TASK_MATCH_MIN {
-                    output = apply_task_match(output, &evidence, &m);
-                    matched_text = true;
-                }
-            }
-        }
+        output = settle_gray_text_from_bodies(output, &evidence, &tasks, &chain, |ep| {
+            vision::complete_json(ep, &prompt, None)
+        });
     }
 
-    if !matched_text && gray {
-        let vision = match (screenshot_path.as_ref(), capture_ctx) {
-            (Some(path), Some(capture_ctx)) => {
+    if output.pending && gray {
+        let vision_out = match (screenshot_path.as_ref(), capture_ctx) {
+            (Some(path), Some(capture_ctx))
+                if !decidable && capture == CaptureStatus::Captured =>
+            {
                 let ctx = VisionContext {
                     slot_start,
                     slot_end,
@@ -1607,22 +1633,38 @@ fn finalize_slot_end_in(
                     capture: capture_ctx,
                     activity_summary: activity_summary_for_vision(&evidence, &samples),
                 };
-                maybe_vision_for_gray_zone(decidable, capture, Path::new(path), ctx, &never, &chain)
+                match vision::prepare_screenshot_request(Path::new(path), ctx, &never) {
+                    Ok((jpeg, sanitized, match_context)) => settle_gray_vision_from_results(
+                        &chain,
+                        |ep| {
+                            vision::call_vision_endpoint(
+                                &jpeg,
+                                ep,
+                                &sanitized,
+                                match_context.clone(),
+                            )
+                        },
+                        |v| {
+                            judge_slot(JudgeInput {
+                                slot_start,
+                                slot_end,
+                                samples: &samples,
+                                quests: &quests,
+                                tasks: &tasks,
+                                policy: &policy,
+                                capture,
+                                vision: Some(v),
+                                manual_core: None,
+                            })
+                        },
+                    ),
+                    Err(()) => None,
+                }
             }
             _ => None,
         };
-        if vision.is_some() {
-            output = judge_slot(JudgeInput {
-                slot_start,
-                slot_end,
-                samples: &samples,
-                quests: &quests,
-                tasks: &tasks,
-                policy: &policy,
-                capture,
-                vision,
-                manual_core: None,
-            });
+        if let Some(next) = vision_out {
+            output = next;
         }
     }
 
@@ -2180,6 +2222,119 @@ mod tests {
         // Minimal valid JPEG header for vision resize tests if needed.
         f.write_all(&[0xFF, 0xD8, 0xFF, 0xD9]).map_err(|_| ())?;
         Ok(())
+    }
+
+    fn pending_output(observed: i64) -> JudgeOutput {
+        JudgeOutput {
+            dominant: Dominant::PendingReview,
+            activity: ActivitySeconds::default(),
+            credited_core_seconds: 0,
+            credited_side_seconds: 0,
+            credited_chore_seconds: 0,
+            observed_seconds: observed,
+            used_vision: false,
+            pending: true,
+        }
+    }
+
+    fn empty_evidence(observed: i64) -> SlotEvidence {
+        SlotEvidence {
+            hints: vec![],
+            spans: vec![],
+            activity: ActivitySeconds::default(),
+            strong_core_seconds: 0,
+            grounded_strong_core_seconds: 0,
+            reading_bridge_seconds: 0,
+            observed_seconds: observed,
+        }
+    }
+
+    fn compat(url: &str) -> vision::VisionEndpoint {
+        vision::VisionEndpoint::compat(url.into(), "m".into(), "sk".into())
+    }
+
+    #[test]
+    fn gray_text_chain_skips_client_and_low_confidence_until_admin_lands() {
+        let chain = [
+            compat("https://a.test/v1"),
+            compat("https://b.test/v1"),
+            compat("https://c.test/v1"),
+        ];
+        let ev = empty_evidence(900);
+        let out = settle_gray_text_from_bodies(
+            pending_output(900),
+            &ev,
+            &[],
+            &chain,
+            |ep| {
+                if ep.base_url.contains("a.test") {
+                    Err(vision::VisionCallError::Client)
+                } else if ep.base_url.contains("b.test") {
+                    Ok(r#"{"category":"admin","confidence":0.4}"#.into())
+                } else {
+                    Ok(r#"{"category":"admin","confidence":0.9}"#.into())
+                }
+            },
+        );
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::Admin);
+    }
+
+    #[test]
+    fn gray_vision_chain_skips_low_confidence_and_still_pending() {
+        let chain = [
+            compat("https://a.test/v1"),
+            compat("https://b.test/v1"),
+            compat("https://c.test/v1"),
+        ];
+        let out = settle_gray_vision_from_results(
+            &chain,
+            |ep| {
+                if ep.base_url.contains("a.test") {
+                    Ok(VisionResult {
+                        wants_core: false,
+                        confidence: 0.4,
+                        match_context: None,
+                        category: "admin".into(),
+                    })
+                } else if ep.base_url.contains("b.test") {
+                    Ok(VisionResult {
+                        wants_core: true,
+                        confidence: 0.95,
+                        match_context: None,
+                        category: "core_research".into(),
+                    })
+                } else {
+                    Ok(VisionResult {
+                        wants_core: false,
+                        confidence: 0.9,
+                        match_context: None,
+                        category: "admin".into(),
+                    })
+                }
+            },
+            |v| {
+                let lands = v.confidence >= 0.7 && v.category == "admin";
+                JudgeOutput {
+                    dominant: if lands {
+                        Dominant::Admin
+                    } else {
+                        Dominant::PendingReview
+                    },
+                    activity: ActivitySeconds::default(),
+                    credited_core_seconds: 0,
+                    credited_side_seconds: 0,
+                    credited_chore_seconds: 0,
+                    observed_seconds: 900,
+                    used_vision: lands,
+                    pending: !lands,
+                }
+            },
+        )
+        .expect("third provider should land");
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::Admin);
+        assert!(out.used_vision);
     }
 
     #[test]

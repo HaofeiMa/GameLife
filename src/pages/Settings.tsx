@@ -1063,7 +1063,7 @@ export function Settings() {
             <div className="flex flex-col gap-3">
               <Section
                 title="判定与视觉"
-                caption="按从上到下的顺序尝试。超时、网络错误、HTTP 5xx 或 429 限流才试下一张。自定义 Key 只保存在本机 secrets.json（权限 600）。"
+                caption="按从上到下的顺序尝试。某一家没给出可落地的结论（拒绝、超时、限流、解析失败或置信度不够）就试下一张。自定义 Key 只保存在本机 secrets.json（权限 600）。"
               >
                 {!chainHasUsable(
                   settings.visionProviders,

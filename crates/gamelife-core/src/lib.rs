@@ -37,7 +37,7 @@ pub use hint::{hint_sample, is_grounded_core_sample};
 pub use judge::{
     analyze_slot_evidence, credited_core_spans, judge_slot, parse_vision_json, sum_unsure_spans,
     Dominant, JudgeInput, JudgeOutput, SlotEvidence, VisionMatchContext, VisionParseError,
-    VisionResult,
+    VisionResult, VISION_CONFIDENCE_MIN,
 };
 pub use ledger::{
     admin_xp_key, support_xp_key, tick_keys_for_credited, tick_keys_for_discount, RewardEvent,
@@ -79,8 +79,8 @@ pub use task::{
 };
 pub use task_ai::{
     apply_category_match, apply_task_match, parse_category_match_json, parse_task_match_json,
-    payout_base_seconds, CategoryMatch, CategoryMatchError, TaskMatch, TaskMatchError,
-    TASK_MATCH_MIN,
+    payout_base_seconds, settle_from_text_ai, CategoryMatch, CategoryMatchError, TaskMatch,
+    TaskMatchError, TASK_MATCH_MIN,
 };
 pub use task_parse::{parse_task_line, ParseContext, ParsedTask};
 pub use time::{is_weekday, slot_end_exclusive, slot_start};

@@ -200,6 +200,27 @@ pub fn apply_category_match(
     output
 }
 
+/// Apply a text-AI reply only when it actually settles the slot (confidence ≥ 0.7 and not pending).
+pub fn settle_from_text_ai(
+    output: JudgeOutput,
+    ev: &SlotEvidence,
+    tasks: &[TaskSnapshot],
+    raw: &str,
+) -> Option<JudgeOutput> {
+    let next = if tasks.is_empty() {
+        let m = parse_category_match_json(raw).ok()??;
+        apply_category_match(output, ev, &m)
+    } else {
+        let m = parse_task_match_json(raw, tasks).ok()??;
+        apply_task_match(output, ev, &m)
+    };
+    if next.pending {
+        None
+    } else {
+        Some(next)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +386,88 @@ mod tests {
         assert_eq!(dist.credited_chore_seconds, 0);
         assert_eq!(dist.dominant, Dominant::Distraction);
         assert!(!dist.pending);
+    }
+
+    #[test]
+    fn text_ai_low_confidence_or_null_does_not_settle() {
+        let ev = empty_evidence(900);
+        let pending = empty_output(900);
+        assert!(settle_from_text_ai(
+            pending.clone(),
+            &ev,
+            &[],
+            r#"{"category":"admin","confidence":0.4}"#,
+        )
+        .is_none());
+        assert!(settle_from_text_ai(
+            pending.clone(),
+            &ev,
+            &[],
+            r#"{"category":null,"confidence":0.9}"#,
+        )
+        .is_none());
+        assert!(settle_from_text_ai(pending, &ev, &[], "not-json").is_none());
+    }
+
+    #[test]
+    fn text_ai_confident_admin_settles_empty_board() {
+        let ev = empty_evidence(900);
+        let out = settle_from_text_ai(
+            empty_output(900),
+            &ev,
+            &[],
+            r#"{"category":"admin","confidence":0.9}"#,
+        )
+        .expect("should settle");
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::Admin);
+    }
+
+    #[test]
+    fn text_ai_core_without_strong_core_does_not_settle() {
+        let ev = empty_evidence(900);
+        assert!(settle_from_text_ai(
+            empty_output(900),
+            &ev,
+            &[],
+            r#"{"category":"core_research","confidence":0.95}"#,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn text_ai_null_task_does_not_settle_even_at_high_confidence() {
+        let snaps = [TaskSnapshot {
+            id: "t1".into(),
+            title: "HDP".into(),
+            role: ListRole::Mainline,
+        }];
+        let ev = empty_evidence(900);
+        assert!(settle_from_text_ai(
+            empty_output(900),
+            &ev,
+            &snaps,
+            r#"{"task_id":null,"confidence":0.9}"#,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn text_ai_mainline_task_match_settles() {
+        let snaps = [TaskSnapshot {
+            id: "t1".into(),
+            title: "HDP".into(),
+            role: ListRole::Mainline,
+        }];
+        let ev = empty_evidence(900);
+        let out = settle_from_text_ai(
+            empty_output(900),
+            &ev,
+            &snaps,
+            r#"{"task_id":"t1","confidence":0.9}"#,
+        )
+        .expect("should settle");
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::CoreResearch);
     }
 }

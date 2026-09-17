@@ -105,14 +105,11 @@ pub fn classify_http_status(status: u16) -> VisionCallError {
     }
 }
 
-pub fn should_try_next_provider(err: &VisionCallError) -> bool {
-    matches!(
-        err,
-        VisionCallError::Transport | VisionCallError::RateLimited
-    )
+pub fn should_try_next_provider(_err: &VisionCallError) -> bool {
+    true
 }
 
-/// Walk usable endpoints. Timeout / 5xx / 429 try the next; 4xx Client and Parse stop.
+/// Walk usable endpoints. Any failure (timeout, 5xx, 429, 4xx, parse) tries the next.
 pub fn try_provider_chain<'a, T>(
     chain: &'a [VisionEndpoint],
     mut call: impl FnMut(&'a VisionEndpoint) -> Result<T, VisionCallError>,
@@ -363,7 +360,7 @@ pub fn call_vision_endpoint(
     parse_vision_json(&content, match_context).map_err(|_| VisionCallError::Parse)
 }
 
-/// Timeout / network / HTTP 5xx / 429 on an endpoint try the next usable one.
+/// Any endpoint failure tries the next usable one.
 pub fn analyze_with_chain(
     jpeg_bytes: &[u8],
     chain: &[VisionEndpoint],
@@ -426,12 +423,11 @@ pub fn analyze_screenshot(
     )
 }
 
-pub fn analyze_screenshot_with_chain(
+pub fn prepare_screenshot_request(
     path: &Path,
-    chain: &[VisionEndpoint],
     ctx: VisionContext,
     never_capture: &[String],
-) -> Result<VisionResult, ()> {
+) -> Result<(Vec<u8>, SanitizedVisionContext, Option<VisionMatchContext>), ()> {
     let match_context = Some(VisionMatchContext {
         app: ctx.capture.app.clone(),
         title: ctx.capture.title.clone(),
@@ -439,6 +435,16 @@ pub fn analyze_screenshot_with_chain(
     });
     let sanitized = sanitize_vision_context(ctx, never_capture).map_err(|_| ())?;
     let jpeg = read_and_prepare_jpeg(path)?;
+    Ok((jpeg, sanitized, match_context))
+}
+
+pub fn analyze_screenshot_with_chain(
+    path: &Path,
+    chain: &[VisionEndpoint],
+    ctx: VisionContext,
+    never_capture: &[String],
+) -> Result<VisionResult, ()> {
+    let (jpeg, sanitized, match_context) = prepare_screenshot_request(path, ctx, never_capture)?;
     analyze_with_chain(&jpeg, chain, &sanitized, match_context)
 }
 
@@ -629,12 +635,15 @@ mod tests {
     }
 
     #[test]
-    fn http_429_is_retryable_unlike_401_or_400() {
+    fn any_http_error_is_retryable_including_401_and_403() {
         assert_eq!(classify_http_status(429), VisionCallError::RateLimited);
         assert!(should_try_next_provider(&VisionCallError::RateLimited));
         assert!(should_try_next_provider(&VisionCallError::Transport));
-        assert!(!should_try_next_provider(&classify_http_status(401)));
-        assert!(!should_try_next_provider(&classify_http_status(400)));
+        assert!(should_try_next_provider(&VisionCallError::Client));
+        assert!(should_try_next_provider(&VisionCallError::Parse));
+        assert!(should_try_next_provider(&classify_http_status(401)));
+        assert!(should_try_next_provider(&classify_http_status(400)));
+        assert!(should_try_next_provider(&classify_http_status(403)));
         assert!(should_try_next_provider(&classify_http_status(503)));
     }
 
@@ -658,14 +667,31 @@ mod tests {
     }
 
     #[test]
-    fn provider_chain_stops_on_client_error() {
-        let chain = [compat("https://a.test/v1"), compat("https://b.test/v1")];
+    fn provider_chain_tries_next_after_client_or_parse() {
+        let chain = [
+            compat("https://a.test/v1"),
+            compat("https://b.test/v1"),
+            compat("https://c.test/v1"),
+        ];
         let mut seen = Vec::new();
-        let out: Result<(), _> = try_provider_chain(&chain, |ep| {
+        let out = try_provider_chain(&chain, |ep| {
             seen.push(ep.base_url.clone());
-            Err(VisionCallError::Client)
+            if ep.base_url.contains("a.test") {
+                Err(VisionCallError::Client)
+            } else if ep.base_url.contains("b.test") {
+                Err(VisionCallError::Parse)
+            } else {
+                Ok("ok")
+            }
         });
-        assert_eq!(out, Err(VisionCallError::Client));
-        assert_eq!(seen, vec!["https://a.test/v1".to_string()]);
+        assert_eq!(out, Ok("ok"));
+        assert_eq!(
+            seen,
+            vec![
+                "https://a.test/v1".to_string(),
+                "https://b.test/v1".to_string(),
+                "https://c.test/v1".to_string()
+            ]
+        );
     }
 }
