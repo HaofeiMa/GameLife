@@ -227,7 +227,7 @@ macOS Apple Silicon 用户可以直接使用 Release 中提供的安装包。
 下载：
 
 ```text
-GameLife_0.2.0_aarch64.dmg
+GameLife_0.3.0_aarch64.dmg
 ```
 
 打开 DMG，将 GameLife 拖入「应用程序」，然后启动。
