@@ -43,17 +43,10 @@ pub(crate) fn status_from_code(code: isize) -> LoginItemStatus {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{
-        login_item_op, should_open_login_items, status_from_code, LoginItemOp, LoginItemStatus,
-    };
+    use super::{login_item_op, should_open_login_items, status_from_code, LoginItemOp};
     use crate::macos::notify::bundle_supports_user_notifications;
-    use objc2::runtime::{AnyClass, AnyObject, Bool};
-    use objc2::msg_send;
     use objc2_foundation::NSBundle;
-    use std::ffi::CStr;
-
-    #[link(name = "ServiceManagement", kind = "framework")]
-    extern "C" {}
+    use objc2_service_management::SMAppService;
 
     fn bundled() -> bool {
         let bundle = NSBundle::mainBundle();
@@ -66,71 +59,28 @@ mod imp {
         bundle_supports_user_notifications(identifier.as_deref(), &url)
     }
 
-    fn service_class() -> Option<&'static AnyClass> {
-        AnyClass::get(CStr::from_bytes_with_nul(b"SMAppService\0").ok()?)
-    }
-
-    fn with_service(f: impl FnOnce(*mut AnyObject) + std::panic::UnwindSafe) {
+    pub fn apply(enabled: bool) {
         if !bundled() {
             return;
         }
-        let Some(cls) = service_class() else {
-            eprintln!("login item: SMAppService unavailable");
-            return;
-        };
-        if let Err(exc) = objc2::exception::catch(|| unsafe {
-            let service: *mut AnyObject = msg_send![cls, mainApp];
-            if !service.is_null() {
-                f(service);
+        if let Err(exc) = objc2::exception::catch(|| {
+            let service = unsafe { SMAppService::mainAppService() };
+            let status = status_from_code(unsafe { service.status() }.0);
+            match login_item_op(enabled, status) {
+                LoginItemOp::None => {}
+                LoginItemOp::Register => {
+                    let _ = unsafe { service.registerAndReturnError() };
+                    if should_open_login_items(status_from_code(unsafe { service.status() }.0)) {
+                        unsafe { SMAppService::openSystemSettingsLoginItems() };
+                    }
+                }
+                LoginItemOp::Unregister => {
+                    let _ = unsafe { service.unregisterAndReturnError() };
+                }
             }
         }) {
             eprintln!("login item: SMAppService threw: {exc:?}");
         }
-    }
-
-    fn read_status(service: *mut AnyObject) -> LoginItemStatus {
-        let code: isize = unsafe { msg_send![service, status] };
-        status_from_code(code)
-    }
-
-    fn register(service: *mut AnyObject) {
-        unsafe {
-            let mut error: *mut AnyObject = std::ptr::null_mut();
-            let _ok: Bool = msg_send![service, registerAndReturnError: &mut error];
-        }
-    }
-
-    fn unregister(service: *mut AnyObject) {
-        unsafe {
-            let mut error: *mut AnyObject = std::ptr::null_mut();
-            let _ok: Bool = msg_send![service, unregisterAndReturnError: &mut error];
-        }
-    }
-
-    fn open_login_items() {
-        let Some(cls) = service_class() else {
-            return;
-        };
-        if let Err(exc) = objc2::exception::catch(|| unsafe {
-            let _: () = msg_send![cls, openSystemSettingsLoginItems];
-        }) {
-            eprintln!("login item: openSystemSettingsLoginItems threw: {exc:?}");
-        }
-    }
-
-    pub fn apply(enabled: bool) {
-        with_service(|service| {
-            match login_item_op(enabled, read_status(service)) {
-                LoginItemOp::None => {}
-                LoginItemOp::Register => {
-                    register(service);
-                    if should_open_login_items(read_status(service)) {
-                        open_login_items();
-                    }
-                }
-                LoginItemOp::Unregister => unregister(service),
-            }
-        });
     }
 }
 
