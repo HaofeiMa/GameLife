@@ -162,6 +162,7 @@ pub fn run() {
             if !crate::macos::screen_recording_granted() {
                 let _ = crate::macos::request_screen_recording();
             }
+            crate::macos::apply_login_at_startup(load_settings().login_at_startup);
 
             let open_i = MenuItem::with_id(app, "open", "打开", true, None::<&str>)?;
             let pause_30_i = MenuItem::with_id(app, "pause_30", "暂停 30", true, None::<&str>)?;

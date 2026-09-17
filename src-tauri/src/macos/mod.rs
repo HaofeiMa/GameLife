@@ -2,11 +2,13 @@ mod browser;
 mod capture;
 mod document;
 mod input;
+mod login_item;
 mod notify;
 mod snapshot;
 mod window_id;
 pub use browser::{fetch_browser_url, fetch_browser_url_for, url_for, BROWSER_URL_TIMEOUT};
 pub use capture::CAPTURE_TIMEOUT;
+pub use login_item::apply_login_at_startup;
 pub use notify::{
     cancel_all_task_notifications, replace_task_notifications, request_authorization,
     PendingTaskNotification,
