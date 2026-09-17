@@ -82,7 +82,7 @@ pub use task_ai::{
     payout_base_seconds, settle_from_text_ai, CategoryMatch, CategoryMatchError, TaskMatch,
     TaskMatchError, TASK_MATCH_MIN,
 };
-pub use task_parse::{parse_task_line, ParseContext, ParsedTask};
+pub use task_parse::{parse_task_line, ParseContext, ParseSpan, ParsedTask};
 pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
 pub use url::{host_is_research, optional_stripped_url, strip_url_query_fragment, url_host};

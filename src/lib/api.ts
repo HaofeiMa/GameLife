@@ -63,6 +63,7 @@ export interface ParsedTaskView {
   start: number | null;
   end: number | null;
   parseOk: boolean;
+  spans: { start: number; end: number }[];
 }
 
 export interface EntertainmentView {
@@ -407,6 +408,10 @@ export function toggleTaskDone(id: string, done: boolean): Promise<void> {
 
 export function reorderTask(id: string, listId: string, sort: number): Promise<void> {
   return invoke("reorder_task", { id, listId, sort });
+}
+
+export function reorderList(id: string, sort: number): Promise<void> {
+  return invoke("reorder_list", { id, sort });
 }
 
 export function duplicateTask(id: string): Promise<TaskView> {

@@ -22,15 +22,15 @@ describe("scheduleSummary", () => {
     const start = unix(2026, 9, 15, 16, 0);
     const end = unix(2026, 9, 15, 17, 30);
     expect(scheduleSummary(start, end, NOW)).toBe(
-      "昨天，9月15日，下午 4:00 – 下午 5:30",
+      "昨天，9月15日，下午 16:00 – 下午 17:30",
     );
   });
 
-  it("names today and uses 上午 / 下午", () => {
+  it("names today and uses 上午 / 中午", () => {
     const start = unix(2026, 9, 16, 10, 0);
     const end = unix(2026, 9, 16, 12, 0);
     expect(scheduleSummary(start, end, NOW)).toBe(
-      "今天，9月16日，上午 10:00 – 下午 12:00",
+      "今天，9月16日，上午 10:00 – 中午 12:00",
     );
   });
 
@@ -38,7 +38,7 @@ describe("scheduleSummary", () => {
     const start = unix(2026, 9, 15, 22, 0);
     const end = unix(2026, 9, 16, 2, 0);
     expect(scheduleSummary(start, end, NOW)).toBe(
-      "昨天，9月15日 下午 10:00 – 今天，9月16日 上午 2:00",
+      "昨天，9月15日 晚上 22:00 – 今天，9月16日 上午 2:00",
     );
   });
 
@@ -64,10 +64,22 @@ describe("scheduleOverdue", () => {
 });
 
 describe("listScheduleChip", () => {
-  it("shows today's start clock", () => {
+  it("shows today's start clock in 24h with 中午 / 下午 / 晚上", () => {
     expect(
       listScheduleChip(unix(2026, 9, 16, 19, 0), unix(2026, 9, 16, 20, 0), NOW, false),
-    ).toEqual({ label: "下午 7:00", tone: "upcoming" });
+    ).toEqual({ label: "晚上 19:00", tone: "upcoming" });
+    expect(
+      listScheduleChip(unix(2026, 9, 16, 12, 0), unix(2026, 9, 16, 13, 0), NOW, false),
+    ).toEqual({ label: "中午 12:00", tone: "upcoming" });
+    expect(
+      listScheduleChip(unix(2026, 9, 16, 11, 0), unix(2026, 9, 16, 12, 0), NOW, false),
+    ).toEqual({ label: "中午 11:00", tone: "upcoming" });
+    expect(
+      listScheduleChip(unix(2026, 9, 16, 14, 0), unix(2026, 9, 16, 15, 0), NOW, false),
+    ).toEqual({ label: "下午 14:00", tone: "upcoming" });
+    expect(
+      listScheduleChip(unix(2026, 9, 16, 13, 0), unix(2026, 9, 16, 14, 0), NOW, false),
+    ).toEqual({ label: "下午 13:00", tone: "upcoming" });
   });
 
   it("marks a past time today overdue", () => {

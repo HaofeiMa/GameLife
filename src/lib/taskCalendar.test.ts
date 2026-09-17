@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calendarDays, CAL_DAY_GAP, CAL_GUTTER, dropRange, hitCalendarTs, resizeRange } from "./taskCalendar";
+import { calendarDays, CAL_DAY_GAP, CAL_GUTTER, CAL_HOUR_H, dropRange, hitCalendarTs, nowLineTop, resizeRange, showNowLine } from "./taskCalendar";
 
 describe("calendarDays", () => {
   it("three days are today and the next two", () => {
@@ -49,5 +49,21 @@ describe("hitCalendarTs", () => {
     const days = ["2026-09-16", "2026-09-17"];
     const grid = { left: 0, top: 0, width: 40 + 200 + 10 + 200, scrollTop: 0 };
     expect(hitCalendarTs(days, 50, 10, grid, 32)).toBeNull();
+  });
+});
+
+describe("nowLineTop", () => {
+  it("places 90 minutes at 1.5 hour heights", () => {
+    const dayStart = 1_000_000;
+    expect(nowLineTop(dayStart + 90 * 60, dayStart)).toBe(1.5 * CAL_HOUR_H);
+  });
+});
+
+describe("showNowLine", () => {
+  it("only draws on today's column during that day", () => {
+    const dayStart = 1_000_000;
+    expect(showNowLine("2026-09-17", "2026-09-17", dayStart + 10, dayStart)).toBe(true);
+    expect(showNowLine("2026-09-18", "2026-09-17", dayStart + 10, dayStart)).toBe(false);
+    expect(showNowLine("2026-09-17", "2026-09-17", dayStart + 86400, dayStart)).toBe(false);
   });
 });

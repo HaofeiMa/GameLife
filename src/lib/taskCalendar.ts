@@ -11,6 +11,19 @@ export const CAL_BLOCK_INSET_LEFT = 2;
 export const CAL_BLOCK_INSET_RIGHT = 6;
 export const CAL_LANE_GAP = 4;
 
+export function nowLineTop(now: number, dayStart: number): number {
+  return ((now - dayStart) / 3600) * CAL_HOUR_H;
+}
+
+export function showNowLine(
+  day: string,
+  today: string,
+  now: number,
+  dayStart: number,
+): boolean {
+  return day === today && now >= dayStart && now < dayStart + 86400;
+}
+
 export function mondayOf(day: string): string {
   const [y, m, d] = day.split("-").map(Number);
   const dt = new Date(y, m - 1, d);

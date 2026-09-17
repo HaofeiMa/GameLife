@@ -6,9 +6,11 @@ function clock(ts: number): string {
   const [h, m] = localTimeOf(ts).split(":").map(Number);
   const hour = Number.isFinite(h) ? h : 0;
   const minute = Number.isFinite(m) ? m : 0;
-  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
-  const period = hour < 12 ? "上午" : "下午";
-  return `${period} ${hour12}:${String(minute).padStart(2, "0")}`;
+  const mm = String(minute).padStart(2, "0");
+  if (hour >= 11 && hour < 13) return `中午 ${hour}:${mm}`;
+  if (hour >= 18) return `晚上 ${hour}:${mm}`;
+  if (hour >= 13) return `下午 ${hour}:${mm}`;
+  return `上午 ${hour}:${mm}`;
 }
 
 function relativeDay(day: string, today: string): string | null {

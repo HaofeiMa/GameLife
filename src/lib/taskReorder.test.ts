@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { listDragShown, ranksAfterDrag } from "./taskReorder";
+import { listDragShown, ranksAfterDrag, unscheduledBeforeId } from "./taskReorder";
+
+const timed = (id: string) => ({ id, start: 1, end: 2 });
+const open = (id: string) => ({ id, start: null, end: null });
 
 describe("ranksAfterDrag", () => {
   it("moves an id before another", () => {
@@ -28,5 +31,21 @@ describe("listDragShown", () => {
       shown: ["a", "b"],
       gapIndex: 2,
     });
+  });
+});
+
+describe("unscheduledBeforeId", () => {
+  const dest = [timed("t1"), timed("t2"), open("u1"), open("u2")];
+
+  it("keeps a drop before another unscheduled row", () => {
+    expect(unscheduledBeforeId(dest, "u2", "u1")).toBe("u1");
+  });
+
+  it("clamps a drop onto a timed row to the top of the unscheduled block", () => {
+    expect(unscheduledBeforeId(dest, "u2", "t1")).toBe("u1");
+  });
+
+  it("appends when dropping at the end", () => {
+    expect(unscheduledBeforeId(dest, "u1", null)).toBeNull();
   });
 });

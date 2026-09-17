@@ -295,6 +295,7 @@ pub struct ParsedTaskView {
     pub start: Option<i64>,
     pub end: Option<i64>,
     pub parse_ok: bool,
+    pub spans: Vec<gamelife_core::ParseSpan>,
 }
 
 #[derive(Serialize)]
@@ -2128,6 +2129,7 @@ pub fn parse_task_line_cmd(
             start: parsed.start,
             end: parsed.end,
             parse_ok: parsed.parse_ok,
+            spans: parsed.spans,
         })
     })
 }
@@ -2176,6 +2178,22 @@ pub fn rename_list(id: String, name: String) -> Result<(), String> {
             .execute(
                 "UPDATE task_lists SET name = ?1 WHERE id = ?2",
                 params![name, id],
+            )
+            .map_err(crate::db_error::map_rusqlite)?;
+        if n == 0 {
+            return Err(DbOpError::Fatal("list missing".into()));
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn reorder_list(id: String, sort: i64) -> Result<(), String> {
+    with_db_err(|conn| {
+        let n = conn
+            .execute(
+                "UPDATE task_lists SET sort = ?1 WHERE id = ?2",
+                params![sort, id],
             )
             .map_err(crate::db_error::map_rusqlite)?;
         if n == 0 {
@@ -2242,31 +2260,42 @@ pub fn move_task(id: String, list_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn reschedule_task(id: String, start: Option<i64>, end: Option<i64>) -> Result<(), String> {
-    let out = with_db_err(|conn| {
-        let mut tasks = load_tasks(conn)?;
-        let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
-            return Err(DbOpError::Fatal("task missing".into()));
-        };
-        match (start, end) {
-            (None, None) => clear_schedule(task),
-            (Some(s), Some(e)) => {
-                let (s, e) = align_range(s, e);
-                task.start = Some(s);
-                task.end = Some(e);
-            }
-            _ => return Err(DbOpError::Rejected("need_start_and_end".into())),
-        }
-        if task.start.is_none() && task.repeat != RepeatRule::None {
-            return Err(DbOpError::Rejected("repeat_needs_schedule".into()));
-        }
-        let stored = task.clone();
-        persist_task(conn, &stored)?;
-        Ok(())
-    });
+    let out = with_db_err(|conn| reschedule_task_in(conn, &id, start, end));
     if out.is_ok() {
         ping_task_notifications();
     }
     out
+}
+
+fn reschedule_task_in(
+    conn: &Connection,
+    id: &str,
+    start: Option<i64>,
+    end: Option<i64>,
+) -> Result<(), DbOpError> {
+    let mut tasks = load_tasks(conn)?;
+    let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
+        return Err(DbOpError::Fatal("task missing".into()));
+    };
+    match (start, end) {
+        (None, None) => {
+            let list_id = task.list_id.clone();
+            clear_schedule(task);
+            task.sort = next_list_sort(conn, &list_id)?;
+        }
+        (Some(s), Some(e)) => {
+            let (s, e) = align_range(s, e);
+            task.start = Some(s);
+            task.end = Some(e);
+        }
+        _ => return Err(DbOpError::Rejected("need_start_and_end".into())),
+    }
+    if task.start.is_none() && task.repeat != RepeatRule::None {
+        return Err(DbOpError::Rejected("repeat_needs_schedule".into()));
+    }
+    let stored = task.clone();
+    persist_task(conn, &stored)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2890,6 +2919,25 @@ mod tests {
         assert_ne!(copy.id, "src");
         assert_eq!(copy.notes, "地点：A301");
         assert!(!copy.done);
+    }
+
+    #[test]
+    fn clearing_schedule_appends_among_unscheduled() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let mut timed = sample_view("timed", "有时段");
+        timed.start = Some(1_000);
+        timed.end = Some(1_900);
+        timed.sort = 0;
+        upsert_task_in(&conn, timed).unwrap();
+        let mut inbox = sample_view("inbox", "未排");
+        inbox.sort = 10;
+        upsert_task_in(&conn, inbox).unwrap();
+        reschedule_task_in(&conn, "timed", None, None).unwrap();
+        let tasks = load_tasks(&conn).unwrap();
+        let cleared = tasks.iter().find(|t| t.id == "timed").unwrap();
+        assert_eq!(cleared.start, None);
+        assert!(cleared.sort > 10, "cleared sort {}", cleared.sort);
     }
 
     #[test]

@@ -98,6 +98,7 @@ export async function previewInvoke<T>(
         start: null,
         end: null,
         parseOk: false,
+        spans: [],
       } as T;
     }
     case "upsert_task": {
@@ -201,6 +202,14 @@ export async function previewInvoke<T>(
         task.listId = String(args?.listId ?? task.listId);
         if (typeof args?.sort === "number") task.sort = args.sort;
       }
+      return undefined as T;
+    }
+    case "reorder_list": {
+      const list = PREVIEW_TASK_BOARD.lists.find(
+        (row) => row.id === String(args?.id ?? ""),
+      );
+      if (list && typeof args?.sort === "number") list.sort = args.sort;
+      PREVIEW_TASK_BOARD.lists.sort((a, b) => a.sort - b.sort || a.id.localeCompare(b.id));
       return undefined as T;
     }
     case "duplicate_task": {

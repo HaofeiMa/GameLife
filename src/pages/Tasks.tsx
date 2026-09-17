@@ -12,6 +12,7 @@ import {
 import { PageHeader } from "../components/PageHeader";
 import { TaskActionMenu, TaskBulkMenu } from "../components/TaskActionMenu";
 import { TaskCheckbox } from "../components/TaskCheckbox";
+import { TaskComposer } from "../components/TaskComposer";
 import { TaskDateDialog } from "../components/TaskDateDialog";
 import { TaskDetailDialog } from "../components/TaskDetailDialog";
 import { Button } from "../components/ui/button";
@@ -36,6 +37,7 @@ import {
   moveTask,
   parseTaskLine,
   renameList,
+  reorderList,
   reorderTask,
   rescheduleTask,
   toggleTaskDone,
@@ -66,6 +68,8 @@ import {
   dayColumnLabel,
   dropRange,
   hitCalendarTs,
+  nowLineTop,
+  showNowLine,
   moveRangeToDrop,
   resizeRange,
   type CalEdge,
@@ -80,7 +84,8 @@ import { rangeSelect, toggleSelect, visibleTaskIds } from "../lib/taskListSelect
 import { hourWashCategory, ribbonCells } from "../lib/slotRibbon";
 import { listScheduleChip } from "../lib/taskScheduleLabel";
 import { withinClickSlop } from "../lib/taskPointer";
-import { listDragShown, ranksAfterDrag } from "../lib/taskReorder";
+import { listDragShown, ranksAfterDrag, unscheduledBeforeId } from "../lib/taskReorder";
+import { hasSchedule, sortTasks } from "../lib/taskSort";
 import { LIST_MAX, LIST_MIN } from "../lib/taskSplit";
 import { assignPlanLanes, planLaneSpan } from "../lib/timelinePlan";
 import { categoryColor, categoryColorAt, categoryOf, type CategoryKey } from "../lib/theme";
@@ -222,6 +227,15 @@ export function Tasks() {
     id: string;
     overListId: string;
     beforeId: string | null;
+    timed: boolean;
+    rowHeight: number;
+    pointerX: number;
+    pointerY: number;
+    title: string;
+  } | null>(null);
+  const [groupDrag, setGroupDrag] = useState<{
+    id: string;
+    beforeId: string | null;
     rowHeight: number;
     pointerX: number;
     pointerY: number;
@@ -240,6 +254,7 @@ export function Tasks() {
   const daysRef = useRef(days);
   daysRef.current = days;
   const [ribbons, setRibbons] = useState<Record<string, TodaySlot[]>>({});
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [wallet, setWallet] = useState<{
     coinBalance: number;
     xpToday: number;
@@ -263,6 +278,11 @@ export function Tasks() {
       cancelled = true;
     };
   }, [days]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 15_000);
+    return () => clearInterval(id);
+  }, []);
 
   const addToast = useCallback((text: string) => {
     const id = ++toastIdRef.current;
@@ -459,6 +479,8 @@ export function Tasks() {
     () => (board?.lists ?? []).slice().sort((a, b) => a.sort - b.sort),
     [board],
   );
+  const listsRef = useRef(lists);
+  listsRef.current = lists;
 
   const currentListId =
     (focusedListId && lists.some((list) => list.id === focusedListId)
@@ -553,7 +575,7 @@ export function Tasks() {
     for (const [id, tasks] of map) {
       map.set(
         id,
-        tasks.slice().sort((a, b) => a.sort - b.sort || a.title.localeCompare(b.title, "zh")),
+        sortTasks(tasks, "time"),
       );
     }
     return map;
@@ -651,10 +673,16 @@ export function Tasks() {
           return;
         }
         const drop = hitDrop(ev.clientX, ev.clientY);
+        const dest = drop.listId ?? listId;
+        const destTasks = tasksByListRef.current.get(dest) ?? [];
+        const timed = hasSchedule(task);
         setListDrag({
           id: task.id,
-          overListId: drop.listId ?? listId,
-          beforeId: drop.beforeId,
+          overListId: dest,
+          beforeId: timed
+            ? drop.beforeId
+            : unscheduledBeforeId(destTasks, task.id, drop.beforeId),
+          timed,
           rowHeight,
           pointerX: ev.clientX,
           pointerY: ev.clientY,
@@ -696,15 +724,26 @@ export function Tasks() {
         }
         const drop = hitDrop(ev.clientX, ev.clientY);
         const dest = drop.listId ?? listId;
-        const ids = (tasksByListRef.current.get(dest) ?? []).map((item) => item.id);
-        const ranks = ranksAfterDrag(
-          ids.includes(task.id) ? ids : [...ids, task.id],
-          task.id,
-          drop.beforeId,
-        );
         setListDrag(null);
         void (async () => {
           try {
+            if (hasSchedule(task)) {
+              if (dest !== listId) {
+                await reorderTask(task.id, dest, task.sort);
+                await refresh();
+              }
+              return;
+            }
+            const destTasks = tasksByListRef.current.get(dest) ?? [];
+            const beforeId = unscheduledBeforeId(destTasks, task.id, drop.beforeId);
+            const ids = destTasks
+              .filter((item) => !hasSchedule(item) || item.id === task.id)
+              .map((item) => item.id);
+            const ranks = ranksAfterDrag(
+              ids.includes(task.id) ? ids : [...ids, task.id],
+              task.id,
+              beforeId,
+            );
             for (const rank of ranks) {
               await reorderTask(rank.id, dest, rank.sort);
             }
@@ -720,6 +759,87 @@ export function Tasks() {
       window.addEventListener("pointercancel", onUp);
     },
     [addToast, beginCalDragAt, refresh],
+  );
+
+  const beginGroupDrag = useCallback(
+    (list: TaskListView, e: ReactPointerEvent<HTMLElement>) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const originX = e.clientX;
+      const originY = e.clientY;
+      const pointerId = e.pointerId;
+      const row = e.currentTarget;
+      const section = row.closest("section");
+      const rowHeight = (section ?? row).getBoundingClientRect().height;
+      let armed = false;
+
+      function hitBefore(clientX: number, clientY: number): string | null {
+        const stack = document.elementsFromPoint(clientX, clientY);
+        for (const node of stack) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (node.dataset.groupInsertBefore !== undefined) {
+            return node.dataset.groupInsertBefore === ""
+              ? null
+              : node.dataset.groupInsertBefore;
+          }
+          const owner = node.closest("[data-list-id]")?.getAttribute("data-list-id");
+          if (owner && owner !== list.id) return owner;
+        }
+        return null;
+      }
+
+      function onMove(ev: PointerEvent) {
+        if (!armed) {
+          if (Math.hypot(ev.clientX - originX, ev.clientY - originY) < 4) return;
+          armed = true;
+          try {
+            row.setPointerCapture(pointerId);
+          } catch {
+            /* already captured */
+          }
+        }
+        setGroupDrag({
+          id: list.id,
+          beforeId: hitBefore(ev.clientX, ev.clientY),
+          rowHeight,
+          pointerX: ev.clientX,
+          pointerY: ev.clientY,
+          title: list.name,
+        });
+      }
+
+      function onUp(ev: PointerEvent) {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        if (!armed) {
+          setGroupDrag(null);
+          const next = toggleCollapsed(collapsed, list.id);
+          setCollapsed(next);
+          writeCollapsed(next);
+          return;
+        }
+        const beforeId = hitBefore(ev.clientX, ev.clientY);
+        const ids = listsRef.current.map((item) => item.id);
+        const ranks = ranksAfterDrag(ids, list.id, beforeId);
+        setGroupDrag(null);
+        void (async () => {
+          try {
+            for (const rank of ranks) {
+              await reorderList(rank.id, rank.sort);
+            }
+            await refresh();
+          } catch (err) {
+            addToast(taskCommandError(err));
+          }
+        })();
+      }
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [addToast, collapsed, refresh],
   );
 
   async function run(action: () => Promise<void>) {
@@ -1139,21 +1259,15 @@ export function Tasks() {
             style={{ width: listWidth }}
           >
             <div className="shrink-0 px-3.5 pt-3 pb-2">
-              <Input
+              <TaskComposer
                 value={line}
-                placeholder="明天上午十点到十二点，写方法节 #主线"
-                aria-label="添加任务"
-                onChange={(e) => {
-                  const value = e.target.value;
+                lists={lists}
+                spans={parsed?.spans ?? []}
+                onChange={(value) => {
                   setLine(value);
                   void runParse(value, currentListId);
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void submitLine();
-                  }
-                }}
+                onSubmit={() => void submitLine()}
               />
               {parsed && line.trim() && (
                 <div className="mt-1.5 flex flex-wrap gap-1.5 text-[13px] text-muted-foreground">
@@ -1171,6 +1285,7 @@ export function Tasks() {
               className={cn(
                 "min-h-0 flex-1 overflow-y-auto px-2 pb-3",
                 listDrag && "select-none",
+                groupDrag && "select-none",
               )}
               onPointerDown={(e) => {
                 if (e.target === e.currentTarget) clearListSelection();
@@ -1185,7 +1300,26 @@ export function Tasks() {
                 setMenu({ kind: "board", x: e.clientX, y: e.clientY });
               }}
             >
-              {lists.map((list) => {
+              {(() => {
+                const listIds = lists.map((item) => item.id);
+                const groupLayout = groupDrag
+                  ? listDragShown(listIds, groupDrag.id, groupDrag.beforeId)
+                  : { shown: listIds, gapIndex: -1 };
+                const listById = new Map(lists.map((item) => [item.id, item]));
+                const groupGap = (before: string) =>
+                  groupDrag && groupLayout.gapIndex >= 0 ? (
+                    <div
+                      key="group-gap"
+                      data-group-insert-before={before}
+                      className="mx-1 rounded-[9px] bg-muted shadow-inner"
+                      style={{ height: groupDrag.rowHeight }}
+                    />
+                  ) : null;
+                return (
+                  <>
+                    {groupLayout.shown.map((id, gi) => {
+                const list = listById.get(id);
+                if (!list) return null;
                 const tasks = tasksByList.get(list.id) ?? [];
                 const openCount = (board.tasks ?? []).filter(
                   (t) => t.listId === list.id && !t.done,
@@ -1193,6 +1327,8 @@ export function Tasks() {
                 const folded = collapsed.includes(list.id);
                 const Chevron = folded ? ChevronRight : ChevronDown;
                 return (
+                  <Fragment key={list.id}>
+                    {groupLayout.gapIndex === gi ? groupGap(id) : null}
                   <section
                     key={list.id}
                     data-list-id={list.id}
@@ -1202,11 +1338,7 @@ export function Tasks() {
                       type="button"
                       tabIndex={0}
                       onFocus={() => setFocusedListId(list.id)}
-                      onClick={() => {
-                        const next = toggleCollapsed(collapsed, list.id);
-                        setCollapsed(next);
-                        writeCollapsed(next);
-                      }}
+                      onPointerDown={(e) => beginGroupDrag(list, e)}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         setFocusedListId(list.id);
@@ -1237,7 +1369,12 @@ export function Tasks() {
                         const rawIds = tasks.map((t) => t.id);
                         const layout = listDrag
                           ? listDrag.overListId === list.id
-                            ? listDragShown(rawIds, listDrag.id, listDrag.beforeId)
+                            ? listDrag.timed
+                              ? {
+                                  shown: rawIds.filter((id) => id !== listDrag.id),
+                                  gapIndex: -1,
+                                }
+                              : listDragShown(rawIds, listDrag.id, listDrag.beforeId)
                             : {
                                 shown: rawIds.filter((id) => id !== listDrag.id),
                                 gapIndex: -1,
@@ -1336,8 +1473,15 @@ export function Tasks() {
                         );
                       })()}
                   </section>
+                  </Fragment>
                 );
-              })}
+                })}
+                    {groupLayout.gapIndex === groupLayout.shown.length
+                      ? groupGap("")
+                      : null}
+                  </>
+                );
+              })()}
             </div>
           </Card>
           <div
@@ -1374,6 +1518,7 @@ export function Tasks() {
                 setMenu({ kind: "task", task, x, y })
               }
               ribbons={ribbons}
+              now={now}
             />
           </Card>
         </div>
@@ -1387,6 +1532,17 @@ export function Tasks() {
           }}
         >
           {listDrag.title}
+        </div>
+      )}
+      {groupDrag && (
+        <div
+          className="pointer-events-none fixed z-50 max-w-xs rounded-[9px] border bg-card px-2 py-1.5 text-[15px] font-semibold shadow-lg"
+          style={{
+            left: groupDrag.pointerX + 8,
+            top: groupDrag.pointerY + 8,
+          }}
+        >
+          {groupDrag.title}
         </div>
       )}
       {dialogs}
@@ -1405,6 +1561,7 @@ function DayColumnGap() {
 function TaskCalendar({
   days,
   today,
+  now,
   tasks,
   lists,
   preview,
@@ -1415,6 +1572,7 @@ function TaskCalendar({
 }: {
   days: string[];
   today: string;
+  now: number;
   tasks: TaskView[];
   lists: TaskListView[];
   preview: { id: string; start: number; end: number } | null;
@@ -1430,6 +1588,16 @@ function TaskCalendar({
 }) {
   const hours = Array.from({ length: 24 }, (_, h) => h);
   const height = 24 * CAL_HOUR_H;
+  const scrolledForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!days.includes(today) || scrolledForRef.current === today) return;
+    const el = gridRef.current;
+    if (!el || el.clientHeight === 0) return;
+    scrolledForRef.current = today;
+    const dayStart = dayStartUnix(today);
+    const top = nowLineTop(now, dayStart);
+    el.scrollTop = Math.max(0, 32 + top - el.clientHeight / 3);
+  }, [days, today, now, gridRef]);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div ref={gridRef} className="min-h-0 flex-1 overflow-auto">
@@ -1468,6 +1636,8 @@ function TaskCalendar({
               {i > 0 ? <DayColumnGap /> : null}
               <CalendarDayColumn
                 day={day}
+                today={today}
+                now={now}
                 tasks={tasks}
                 lists={lists}
                 preview={preview}
@@ -1485,6 +1655,8 @@ function TaskCalendar({
 
 function CalendarDayColumn({
   day,
+  today,
+  now,
   tasks,
   lists,
   preview,
@@ -1493,6 +1665,8 @@ function CalendarDayColumn({
   slots,
 }: {
   day: string;
+  today: string;
+  now: number;
   tasks: TaskView[];
   lists: TaskListView[];
   preview: { id: string; start: number; end: number } | null;
@@ -1639,6 +1813,16 @@ function CalendarDayColumn({
           </div>
         );
       })}
+      {showNowLine(day, today, now, dayStart) && (
+        <div
+          className="pointer-events-none absolute inset-x-0 z-20 flex items-center"
+          style={{ top: nowLineTop(now, dayStart) }}
+          aria-hidden
+        >
+          <span className="absolute -left-[9px] -top-[4px] size-[9px] rounded-full border-2 border-card bg-destructive" />
+          <span className="h-0 w-full border-t-2 border-destructive" />
+        </div>
+      )}
     </div>
   );
 }
