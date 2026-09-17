@@ -32,7 +32,9 @@ export async function previewInvoke<T>(
         Number(args?.month ?? new Date().getMonth() + 1),
       ) as T;
     case "get_rhythm_report":
-      return previewRhythm() as T;
+      return previewRhythm(
+        args?.kind === "month" ? "month" : "week",
+      ) as T;
     case "get_app_report":
       return PREVIEW_APPS as T;
     case "get_settings":

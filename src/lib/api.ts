@@ -177,6 +177,8 @@ export interface MonthDayCell {
   creditedCore: number;
   isWeekend: boolean;
   isFuture: boolean;
+  /** Dominant category per local hour (0–23). Empty string = no slots. */
+  hours: string[];
 }
 
 export interface MonthReportView {
@@ -190,9 +192,16 @@ export interface MonthReportView {
   completedDays: number;
 }
 
+export interface RhythmBand {
+  startHour: number;
+  endHour: number;
+  category: string;
+}
+
 export interface RhythmStartHour {
   day: string;
   hour: number | null;
+  bands: RhythmBand[];
 }
 
 export interface RhythmReportView {

@@ -12,7 +12,9 @@ import type {
   ObservationStatus,
   PermissionStatus,
   ProviderKeyStatus,
+  RhythmBand,
   RhythmReportView,
+  RhythmStartHour,
   SlotActivityMinutes,
   SyncStatus,
   TodaySlot,
@@ -252,9 +254,12 @@ const WISHES: WishView[] = [
   { id: "film", name: "胶卷一筒", kind: "coin", price: 96, durationMinutes: null },
   { id: "keyboard", name: "机械键盘", kind: "coin", price: 640, durationMinutes: null },
   { id: "walk", name: "出门散步", kind: "xp", price: 40, durationMinutes: 20 },
-  { id: "episode", name: "一集动画", kind: "xp", price: 60, durationMinutes: 25 },
   { id: "game", name: "打一局游戏", kind: "xp", price: 90, durationMinutes: 40 },
 ];
+
+const NOW_SECS = Math.floor(Date.now() / 1000);
+const WALK_REMAIN_SECS = 12 * 60 + 40;
+const WALK_ENDS_AT = NOW_SECS + WALK_REMAIN_SECS;
 
 export const PREVIEW_TODAY: TodayView = {
   day: TODAY,
@@ -271,7 +276,7 @@ export const PREVIEW_TODAY: TodayView = {
   creditedSeconds: CREDITED_SECONDS,
   creditedLabel: formatEstimatedMinutes(CREDITED_SECONDS),
   coinsToday: 18,
-  xpToday: 240,
+  xpToday: 200,
   xpShopUnlocked: true,
   chest: { unlocked: false, have: CREDITED_SECONDS, need: 21600 },
   gold: { unlocked: false, have: CREDITED_SECONDS, need: 28800 },
@@ -388,11 +393,24 @@ export const PREVIEW_WEEK: WeekView = {
   pendingReview: 0,
   wishes: WISHES,
   coinBalance: 1280,
-  xpToday: 240,
+  xpToday: 200,
   xpShopUnlocked: true,
-  activeEntertainment: null,
+  activeEntertainment: {
+    name: "出门散步",
+    endsAt: WALK_ENDS_AT,
+    remainingSecs: WALK_REMAIN_SECS,
+  },
   endedEntertainment: null,
   redemptions: [
+    {
+      id: "r-walk-now",
+      name: "出门散步",
+      ts: NOW_SECS - 7 * 60 + 20,
+      durationMinutes: 20,
+      kind: "xp",
+      spent: 40,
+      status: "进行中",
+    },
     {
       id: "r1",
       name: "出门散步",
@@ -424,6 +442,45 @@ export const PREVIEW_WEEK: WeekView = {
   daysGe8h: 2,
 };
 
+function previewDayHours(
+  dayIndex: number,
+  isFuture: boolean,
+  isWeekend: boolean,
+  creditedCore: number,
+): string[] {
+  const hours = Array.from({ length: 24 }, () => "");
+  if (isFuture) return hours;
+  if (isWeekend && creditedCore === 0) {
+    hours[10] = "away";
+    hours[11] = "unobserved";
+    return hours;
+  }
+  if (isWeekend) {
+    hours[9] = "side";
+    hours[10] = "side";
+    hours[11] = "admin";
+    hours[14] = "entertainment";
+    hours[15] = "away";
+    return hours;
+  }
+  hours[7] = "away";
+  hours[8] = "core";
+  hours[9] = "core";
+  hours[10] = dayIndex % 5 === 0 ? "support" : "core";
+  hours[11] = "core";
+  hours[12] = "admin";
+  hours[13] = "core";
+  hours[14] = "core";
+  hours[15] = dayIndex % 4 === 0 ? "pending" : "core";
+  hours[16] = "core";
+  hours[17] = "side";
+  hours[18] = "admin";
+  hours[20] = "entertainment";
+  hours[21] = "away";
+  hours[22] = "unobserved";
+  return hours;
+}
+
 export function previewMonth(year: number, month: number): MonthReportView {
   const n = daysInMonth(year, month);
   const days = Array.from({ length: n }, (_, i) => {
@@ -438,7 +495,13 @@ export function previewMonth(year: number, month: number): MonthReportView {
     } else if (!isFuture && isWeekend) {
       creditedCore = i % 2 === 0 ? 0 : 5400;
     }
-    return { day, creditedCore, isWeekend, isFuture };
+    return {
+      day,
+      creditedCore,
+      isWeekend,
+      isFuture,
+      hours: previewDayHours(i, isFuture, isWeekend, creditedCore),
+    };
   });
   return {
     days,
@@ -460,21 +523,58 @@ export function previewMonth(year: number, month: number): MonthReportView {
   };
 }
 
-export function previewRhythm(): RhythmReportView {
-  const monday = mondayOf(TODAY);
+export function previewRhythm(kind: "week" | "month" = "week"): RhythmReportView {
+  const startHours =
+    kind === "month" ? monthStartHours() : weekStartHours();
   return {
-    startHours: Array.from({ length: 7 }, (_, i) => {
-      const day = addDaysIso(monday, i);
-      if (day > TODAY) return { day, hour: null };
-      const weekend = atLocalMidnight(day).getDay() % 6 === 0;
-      return { day, hour: weekend ? null : 8 };
-    }),
+    startHours,
     rate6h: 0.72,
     rate8h: 0.41,
     distractionRunCount: 3,
     distractionRunSlots: 5,
     peakHours: [9, 10, 11, 14, 15, 16],
   };
+}
+
+function previewDayBands(hour: number | null): RhythmBand[] {
+  if (hour == null) return [];
+  const bands: RhythmBand[] = [];
+  if (hour < 12) bands.push({ startHour: hour, endHour: 12, category: "core" });
+  bands.push({ startHour: 12, endHour: 13, category: "away" });
+  bands.push({ startHour: 13, endHour: 17, category: "core" });
+  bands.push({ startHour: 17, endHour: 17.5, category: "side" });
+  bands.push({ startHour: 21, endHour: 21.75, category: "distraction" });
+  return bands;
+}
+
+function weekStartHours(): RhythmStartHour[] {
+  const monday = mondayOf(TODAY);
+  return Array.from({ length: 7 }, (_, i) => {
+    const day = addDaysIso(monday, i);
+    if (day > TODAY) return { day, hour: null, bands: [] };
+    const weekend = atLocalMidnight(day).getDay() % 6 === 0;
+    const hour = weekend ? null : 8;
+    return { day, hour, bands: previewDayBands(hour) };
+  });
+}
+
+function monthStartHours(): RhythmStartHour[] {
+  const year = Number(TODAY.slice(0, 4));
+  const month = Number(TODAY.slice(5, 7));
+  const n = daysInMonth(year, month);
+  const rows: RhythmStartHour[] = [];
+  for (let i = 1; i <= n; i++) {
+    const day = `${year}-${pad(month)}-${pad(i)}`;
+    const weekday = atLocalMidnight(day).getDay();
+    if (weekday === 0 || weekday === 6) continue;
+    if (day > TODAY) {
+      rows.push({ day, hour: null, bands: [] });
+      continue;
+    }
+    const hour = i % 7 === 0 ? 12 : i % 4 === 0 ? 9 : 8;
+    rows.push({ day, hour, bands: previewDayBands(hour) });
+  }
+  return rows;
 }
 
 export const PREVIEW_APPS: AppReportView = {

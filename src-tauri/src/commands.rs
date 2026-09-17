@@ -11,10 +11,11 @@ use gamelife_core::types::ActivitySeconds;
 use gamelife_core::{
     align_range, can_delete_list, clear_schedule, distraction_runs, first_core_hour,
     format_estimated_minutes, hit_rate, is_lock_screen_app, is_weekday, matched_quest_index,
-    matches_app_identity, parse_list_role_strict, parse_task_line, remind_offsets_ok, notes_ok,
-    spawn_after_complete, streak_at_risk, sum_activity, validate_lists, wow_delta,
-    xp_shop_unlocked, ParseContext, Policy, QuestDraft, RepeatRule, Task, TaskList, TaskListError,
-    TaskRange, CHEST_SECS, GOLD_DAY_SECS, PRESET_MAINLINE_ID, SLOT_SECS,
+    matches_app_identity, merge_observation_bands, month_day_hours, parse_list_role_strict,
+    parse_task_line, remind_offsets_ok, notes_ok, spawn_after_complete, streak_at_risk, sum_activity,
+    validate_lists, wow_delta, xp_shop_unlocked, HourContribution, ParseContext, Policy, QuestDraft,
+    RepeatRule, Task, TaskList, TaskListError, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
+    PRESET_MAINLINE_ID, SLOT_SECS,
 };
 
 use crate::config::{
@@ -335,6 +336,7 @@ pub struct MonthDayCell {
     pub credited_core: i64,
     pub is_weekend: bool,
     pub is_future: bool,
+    pub hours: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -350,11 +352,20 @@ pub struct MonthReportView {
     pub completed_days: i64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RhythmBand {
+    pub start_hour: f64,
+    pub end_hour: f64,
+    pub category: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RhythmStartHour {
     pub day: String,
     pub hour: Option<i32>,
+    pub bands: Vec<RhythmBand>,
 }
 
 #[derive(Serialize)]
@@ -733,6 +744,16 @@ fn is_pending_status(status: &str) -> bool {
     status == "pending_review" || status == "unknown"
 }
 
+fn rhythm_band_category(slot: &RangeSlot) -> String {
+    if is_pending_status(&slot.status) {
+        return "pending".into();
+    }
+    if slot.category.is_empty() {
+        return "unobserved".into();
+    }
+    slot.category.clone()
+}
+
 fn is_final_status(status: &str) -> bool {
     status == "final"
 }
@@ -806,6 +827,19 @@ fn credited_by_day(slots: &[RangeSlot]) -> BTreeMap<String, i64> {
         }
     }
     map
+}
+
+fn hours_for_day(slots: &[RangeSlot], day: &str) -> Vec<String> {
+    let contribs: Vec<HourContribution> = slots
+        .iter()
+        .filter(|slot| slot.day == day)
+        .map(|slot| HourContribution {
+            hour: local_hour(slot.slot_start),
+            pending: is_pending_status(&slot.status),
+            activity: slot.activity.clone(),
+        })
+        .collect();
+    month_day_hours(&contribs)
 }
 
 fn range_credited_and_count(
@@ -1648,6 +1682,7 @@ fn build_month_report_from(
             credited_core: *credited_map.get(&key).unwrap_or(&0),
             is_weekend: !is_weekday(d),
             is_future: key.as_str() > today,
+            hours: hours_for_day(&slots, &key),
         });
         d += chrono::Duration::days(1);
     }
@@ -1729,6 +1764,7 @@ fn build_rhythm_report_from(
     let slots = load_slots_in_range(stats_db(conn, stats), &start_s, &end_s)?;
     let credited_map = credited_by_day(&slots);
     let mut starts_by_day: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    let mut offsets_by_day: BTreeMap<String, Vec<(i64, String)>> = BTreeMap::new();
     for slot in &slots {
         if slot.credited_core > 0 {
             starts_by_day
@@ -1736,6 +1772,13 @@ fn build_rhythm_report_from(
                 .or_default()
                 .push(slot.slot_start);
         }
+        let Some(midnight) = start_of_named_day(&slot.day) else {
+            continue;
+        };
+        offsets_by_day
+            .entry(slot.day.clone())
+            .or_default()
+            .push((slot.slot_start - midnight, rhythm_band_category(slot)));
     }
     let mut start_hours = Vec::new();
     let mut d = start;
@@ -1752,7 +1795,23 @@ fn build_rhythm_report_from(
                 let day_start = start_of_named_day(&key)?;
                 first_core_hour(&ordered, day_start)
             });
-            start_hours.push(RhythmStartHour { day: key, hour });
+            let bands = offsets_by_day
+                .get(&key)
+                .cloned()
+                .map(merge_observation_bands)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| RhythmBand {
+                    start_hour: b.start_hour,
+                    end_hour: b.end_hour,
+                    category: b.category,
+                })
+                .collect();
+            start_hours.push(RhythmStartHour {
+                day: key,
+                hour,
+                bands,
+            });
         }
         d += chrono::Duration::days(1);
     }
@@ -3549,6 +3608,10 @@ mod tests {
         assert!(!friday.is_weekend);
         assert!(!friday.is_future);
         assert_eq!(friday.credited_core, 28800);
+        assert_eq!(friday.hours.len(), 24);
+        assert_eq!(friday.hours[8], "core");
+        assert_eq!(friday.hours[12], "distraction");
+        assert_eq!(friday.hours[0], "");
         let saturday = month.days.iter().find(|d| d.day == "2026-09-12").unwrap();
         assert!(saturday.is_weekend);
         let future = month.days.iter().find(|d| d.day == "2026-09-13").unwrap();
@@ -3558,6 +3621,16 @@ mod tests {
         assert_eq!(rhythm.start_hours.len(), 7);
         let fri = rhythm.start_hours.iter().find(|h| h.day == day).unwrap();
         assert_eq!(fri.hour, Some(8));
+        assert!(
+            fri.bands.iter().any(|b| b.category == "core_research"),
+            "friday core slot should paint a band, got {:?}",
+            fri.bands
+        );
+        assert!(
+            fri.bands.iter().any(|b| b.category == "distraction"),
+            "friday entertainment slots should paint a band, got {:?}",
+            fri.bands
+        );
         assert!((rhythm.rate_8h - 0.2).abs() < 1e-9);
         assert_eq!(rhythm.distraction_run_count, 1);
         assert_eq!(rhythm.distraction_run_slots, 3);

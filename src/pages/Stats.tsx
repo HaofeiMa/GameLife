@@ -28,17 +28,27 @@ import {
   type WeekView,
 } from "../lib/api";
 import { addDays } from "../lib/calendar";
-import { calendarCells } from "../lib/monthGrid";
+import { calendarCells, detailHourCells, hourChipKind, MONTH_WEEKDAY_HEADERS } from "../lib/monthGrid";
 import {
   dayStackCaption,
+  hourCellTitle,
   monthCellNote,
   monthShowsLedgerCards,
+  readMonthCalendarMode,
+  START_HOUR_Y_TICKS,
+  startHourBandBox,
+  startHourXLabel,
+  startHourYPercent,
   weekHasObservation,
   weekRangeLabel,
+  writeMonthCalendarMode,
+  type MonthCalendarMode,
 } from "../lib/statsView";
 import {
+  CATEGORY_LABELS,
   categoryBarFill,
   categoryColor,
+  categoryOf,
   type CategoryKey,
 } from "../lib/theme";
 import { cn } from "../lib/utils";
@@ -48,7 +58,7 @@ type Segment = "week" | "month" | "rhythm" | "app";
 const SEGMENTS: { value: Segment; label: string }[] = [
   { value: "week", label: "周" },
   { value: "month", label: "月" },
-  { value: "rhythm", label: "节奏" },
+  { value: "rhythm", label: "习惯" },
   { value: "app", label: "应用" },
 ];
 
@@ -74,6 +84,17 @@ const MONTH_CATEGORIES: { key: keyof SlotActivityMinutes; cat: CategoryKey; labe
   { key: "distraction", cat: "entertainment", label: "娱乐" },
   { key: "away", cat: "away", label: "离开" },
   { key: "unobserved", cat: "unobserved", label: "未观测" },
+];
+
+const DETAIL_HOUR_LEGEND: { cat: CategoryKey; label: string }[] = [
+  { cat: "mainline", label: "主线" },
+  { cat: "support", label: "辅助" },
+  { cat: "side", label: "支线" },
+  { cat: "admin", label: "杂项" },
+  { cat: "entertainment", label: "娱乐" },
+  { cat: "away", label: "离开" },
+  { cat: "unobserved", label: "未观测" },
+  { cat: "pending", label: "待复核" },
 ];
 
 /**
@@ -107,6 +128,14 @@ const LIST_FIELDS = Object.values(LIST_FIELD);
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
+}
+
+function formatHourMark(hour: number): string {
+  if (hour >= 24) return "24:00";
+  const whole = Math.floor(hour);
+  const minutes = Math.round((hour - whole) * 60);
+  if (minutes === 60) return `${whole + 1}:00`;
+  return `${whole}:${pad2(minutes)}`;
 }
 
 function todayIso(): string {
@@ -237,6 +266,7 @@ function monthAnchor(year: number, month: number): string {
 function PanelCard({
   title,
   meta,
+  actions,
   caption,
   captionRule,
   children,
@@ -246,6 +276,7 @@ function PanelCard({
 }: {
   title: string;
   meta?: ReactNode;
+  actions?: ReactNode;
   caption?: string;
   /** The mockup draws a dashed rule over the note in 按类别 only. */
   captionRule?: boolean;
@@ -256,10 +287,16 @@ function PanelCard({
 }) {
   return (
     <Card className={cn("flex flex-col", wide && "lg:col-span-2", className)}>
-      <div className="flex items-baseline gap-[9px] px-[18px] pt-3 pb-[9px]">
+      <div
+        className={cn(
+          "flex gap-[9px] px-[18px] pt-3 pb-[9px]",
+          actions != null ? "items-center" : "items-baseline",
+        )}
+      >
         <h2 className="text-[15.5px] font-semibold tracking-[-0.005em]">
           {title}
         </h2>
+        {actions}
         {meta != null && (
           <span className="ml-auto whitespace-nowrap text-[13px] text-muted-foreground">
             {meta}
@@ -554,16 +591,39 @@ function MonthCalendar({
   today: string;
   onPickDay: (day: string) => void;
 }) {
+  const [mode, setMode] = useState<MonthCalendarMode>(() =>
+    readMonthCalendarMode(window.localStorage),
+  );
   const byDay = new Map(days.map((d) => [d.day, d]));
   const cells = calendarCells(year, month);
+  const setCalendarMode = (next: MonthCalendarMode) => {
+    setMode(next);
+    writeMonthCalendarMode(window.localStorage, next);
+  };
   return (
     <PanelCard
       wide
-      title="热力月历"
-      caption="颜色按当天 credited 主线秒 / 28800（8h）钳制 0–1。周末同样着色。点格打开该日日报。"
+      title="月历"
+      actions={
+        <Segmented
+          size="sm"
+          aria-label="月历视图"
+          value={mode}
+          onChange={setCalendarMode}
+          options={[
+            { value: "heat", label: "热力月历" },
+            { value: "detail", label: "详细月历" },
+          ]}
+        />
+      }
+      caption={
+        mode === "heat"
+          ? "颜色按当天 credited 主线秒 / 28800（8h）钳制 0–1。周末同样着色。点格打开该日日报。"
+          : "每个日子 5×5：前 24 格是 0–23 点的主导类别（与今日时间轴同一套颜色），右下角空着。点格打开该日日报。"
+      }
     >
       <div className="grid grid-cols-7 gap-[5px]">
-        {WEEKDAYS.map((w) => (
+        {MONTH_WEEKDAY_HEADERS.map((w) => (
           <div
             key={w}
             className="pb-1 text-center text-[11px] font-medium text-muted-foreground"
@@ -576,6 +636,19 @@ function MonthCalendar({
           const row = byDay.get(c.day);
           const weekend = row?.isWeekend ?? isWeekendDay(c.day);
           const future = row?.isFuture ?? false;
+          if (mode === "detail") {
+            return (
+              <DetailDayCell
+                key={c.day}
+                day={c.day}
+                hours={row?.hours ?? []}
+                weekend={weekend}
+                future={future}
+                today={today}
+                onPickDay={onPickDay}
+              />
+            );
+          }
           const coreMin = Math.floor((row?.creditedCore ?? 0) / 60);
           const credited = row?.creditedCore ?? 0;
           // 18%…90% of the mainline colour, keyed on the day's minutes
@@ -622,7 +695,94 @@ function MonthCalendar({
           );
         })}
       </div>
+      {mode === "detail" && (
+        <div className="flex flex-wrap gap-[6px]">
+          {DETAIL_HOUR_LEGEND.map((item) => (
+            <span
+              key={item.cat}
+              className="flex items-center gap-[6px] rounded-[8px] bg-legend px-2 py-[3px] text-[13px] whitespace-nowrap"
+            >
+              <span
+                className="size-2 shrink-0 rounded-[2px]"
+                style={{ background: categoryColor(item.cat) }}
+              />
+              {item.label}
+            </span>
+          ))}
+        </div>
+      )}
     </PanelCard>
+  );
+}
+
+function hourChipFill(
+  hour: number,
+  cat: string | null,
+  future: boolean,
+): string | undefined {
+  const kind = hourChipKind(hour, cat, future);
+  if (kind === "none") return undefined;
+  if (kind === "category" && cat) return categoryColor(categoryOf(cat));
+  return "hsl(var(--card))";
+}
+
+function DetailDayCell({
+  day,
+  hours,
+  weekend,
+  future,
+  today,
+  onPickDay,
+}: {
+  day: string;
+  hours: string[];
+  weekend: boolean;
+  future: boolean;
+  today: string;
+  onPickDay: (day: string) => void;
+}) {
+  const cells = detailHourCells(hours);
+  return (
+    <button
+      type="button"
+      onClick={() => onPickDay(day)}
+      className={cn(
+        "relative aspect-square w-full overflow-hidden rounded-[8px] transition-shadow duration-200",
+        !future && "hover:shadow-md hover:shadow-primary/10",
+        future && "cursor-default opacity-50",
+        weekend && "ring-1 ring-inset ring-border",
+        day === today && "ring-2 ring-inset ring-primary",
+      )}
+      style={{
+        background: future ? "hsl(var(--cal-future))" : "hsl(var(--idle-soft))",
+      }}
+    >
+      <span
+        aria-hidden
+        className="invisible block pt-[100%]"
+      />
+      <div className="absolute inset-0 grid grid-cols-5 grid-rows-5 gap-px p-px">
+        {cells.map((cat, hour) => (
+          <span
+            key={hour}
+            title={hour < 24 && !future ? hourCellTitle(day, hour, cat) : undefined}
+            className="min-h-0 min-w-0"
+            style={{
+              background: hourChipFill(hour, cat, future),
+            }}
+          />
+        ))}
+      </div>
+      <span
+        className={cn(
+          "pointer-events-none absolute top-0.5 left-0.5 z-10 rounded-[3px] bg-card/75 px-0.5 text-[10px] font-medium tabular-nums leading-none",
+          !future && "text-foreground/80",
+        )}
+        style={future ? { color: "hsl(var(--cal-future-ink))" } : undefined}
+      >
+        {day.slice(8)}
+      </span>
+    </button>
   );
 }
 
@@ -668,82 +828,147 @@ function MonthExtras({
 }
 
 function RhythmPanel({ data }: { data: RhythmReportView }) {
-  const hasStart = data.startHours.some((s) => s.hour != null);
+  const hasBands = data.startHours.some((s) => s.bands.length > 0);
   const runMinutes = data.distractionRunSlots * 15;
+  const startCount = data.startHours.length;
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <PanelCard
-        title="开工时刻"
-        caption="每个工作日第一个 credited 主线 > 0 的槽开始钟点。尚无主线的日子不画点。"
-      >
-        {hasStart ? (
-          <div className="flex items-end gap-2">
-            {data.startHours.map((s) => (
-              <div key={s.day} className="flex min-w-0 flex-1 flex-col items-center gap-1.5">
-                <div className="relative h-36 w-full rounded-md bg-muted/40">
-                  {s.hour != null && (
-                    <div
-                      className="absolute left-1/2 size-3 -translate-x-1/2 translate-y-1/2 rounded-full"
-                      style={{
-                        bottom: `${(s.hour / 24) * 100}%`,
-                        background: categoryColor("mainline"),
-                      }}
-                      title={`${s.day} ${s.hour} 点`}
-                    />
-                  )}
-                </div>
-                <span className="truncate text-[11px] text-muted-foreground">
-                  {s.day.slice(5)}
-                </span>
-                <span className="text-xs font-medium tabular-nums">
-                  {s.hour == null ? "—" : `${s.hour}点`}
-                </span>
+    <div className="flex flex-col gap-4">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(13rem,0.85fr)]">
+        <PanelCard
+          title="开工时刻"
+          caption="每列是当天 0–24 点的观测；颜色按槽的判定类别。没有槽的空白是底色。"
+        >
+          {hasBands ? (
+            <div className="flex gap-1.5">
+              <div className="relative h-56 w-10 shrink-0 text-[11px] tabular-nums text-dim2">
+                {START_HOUR_Y_TICKS.map((hour) => (
+                  <span
+                    key={hour}
+                    className={cn(
+                      "absolute right-0",
+                      hour <= 0 && "top-0",
+                      hour >= 24 && "bottom-0",
+                      hour > 0 && hour < 24 && "-translate-y-1/2",
+                    )}
+                    style={
+                      hour > 0 && hour < 24
+                        ? { top: `${startHourYPercent(hour)}%` }
+                        : undefined
+                    }
+                  >
+                    {hour}点
+                  </span>
+                ))}
               </div>
-            ))}
-          </div>
-        ) : (
-          <EmptyLine>尚无主线开工记录</EmptyLine>
-        )}
-      </PanelCard>
+              <div className="min-w-0 flex-1">
+                <div className="relative h-56">
+                  {START_HOUR_Y_TICKS.map((hour) => (
+                    <div
+                      key={hour}
+                      className="absolute inset-x-0 border-t border-dashed border-hairline"
+                      style={{ top: `${startHourYPercent(hour)}%` }}
+                    />
+                  ))}
+                  <div className="absolute inset-0 flex items-stretch gap-px">
+                    {data.startHours.map((s) => (
+                      <div
+                        key={s.day}
+                        className="relative min-w-0 flex-1 overflow-hidden rounded-md bg-muted/40"
+                      >
+                        {s.bands.map((b) => {
+                          const box = startHourBandBox(b.startHour, b.endHour);
+                          const cat = categoryOf(b.category);
+                          return (
+                            <div
+                              key={`${s.day}-${b.startHour}-${b.endHour}-${b.category}`}
+                              className="absolute inset-x-0"
+                              style={{
+                                top: `${box.top}%`,
+                                height: `${box.height}%`,
+                                background: categoryColor(cat),
+                              }}
+                              title={`${s.day} ${formatHourMark(b.startHour)}–${formatHourMark(b.endHour)} ${CATEGORY_LABELS[cat]}`}
+                            />
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="relative mt-1.5 h-4">
+                  {data.startHours.map((s, i) => {
+                    const label = startHourXLabel(s.day, i, startCount);
+                    if (!label) return null;
+                    const edge =
+                      i === 0 ? "start" : i === startCount - 1 ? "end" : "center";
+                    return (
+                      <span
+                        key={s.day}
+                        className={cn(
+                          "absolute top-0 whitespace-nowrap text-[11px] tabular-nums text-muted-foreground",
+                          edge === "start" && "left-0",
+                          edge === "end" && "right-0",
+                          edge === "center" && "-translate-x-1/2",
+                        )}
+                        style={
+                          edge === "center"
+                            ? { left: `${((i + 0.5) / startCount) * 100}%` }
+                            : undefined
+                        }
+                      >
+                        {label}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <EmptyLine>尚无观测记录</EmptyLine>
+          )}
+        </PanelCard>
 
-      <PanelCard
-        title="达标率"
-        caption="范围内工作日 credited ≥6h / ≥8h 的比例。周末照常记录，但不进分母、未达标不惩罚。"
-      >
-        <div className="grid grid-cols-2 gap-4">
-          <MiniStat label="≥6h" value={pct(data.rate6h)} />
-          <MiniStat label="≥8h" value={pct(data.rate8h)} />
-        </div>
-        <p className="mt-4 text-[13px] text-muted-foreground">周末未达标不断连</p>
-      </PanelCard>
-
-      <PanelCard
-        title="娱乐连段"
-        caption="连续 ≥3 个槽 dominant 为娱乐的次数与总分钟（槽 × 15）。用来看是不是一滑就半小时。"
-      >
-        {data.distractionRunCount === 0 ? (
-          <EmptyLine>没有连续娱乐段</EmptyLine>
-        ) : (
+        <PanelCard
+          title="达标率"
+          caption="范围内工作日 credited ≥6h / ≥8h 的比例。周末照常记录，但不进分母、未达标不惩罚。"
+        >
           <div className="grid grid-cols-2 gap-4">
-            <MiniStat label="次数" value={data.distractionRunCount} />
-            <MiniStat label="总分钟" value={runMinutes} />
+            <MiniStat label="≥6h" value={pct(data.rate6h)} />
+            <MiniStat label="≥8h" value={pct(data.rate8h)} />
           </div>
-        )}
-      </PanelCard>
+          <p className="mt-4 text-[13px] text-muted-foreground">周末未达标不断连</p>
+        </PanelCard>
+      </div>
 
-      <PanelCard title="深时段" caption="范围内主线占观测比最高的三个钟点（热力同一口径）。">
-        {data.peakHours.length === 0 ? (
-          <EmptyLine>没有足够的小时观测</EmptyLine>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {data.peakHours.map((h) => (
-              <Badge key={h} tone="primary" className="text-xs">
-                {h} 点
-              </Badge>
-            ))}
-          </div>
-        )}
-      </PanelCard>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <PanelCard
+          title="娱乐连段"
+          caption="连续 ≥3 个槽 dominant 为娱乐的次数与总分钟（槽 × 15）。用来看是不是一滑就半小时。"
+        >
+          {data.distractionRunCount === 0 ? (
+            <EmptyLine>没有连续娱乐段</EmptyLine>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <MiniStat label="次数" value={data.distractionRunCount} />
+              <MiniStat label="总分钟" value={runMinutes} />
+            </div>
+          )}
+        </PanelCard>
+
+        <PanelCard title="心流时段" caption="范围内主线占观测比最高的三个钟点（热力同一口径）。">
+          {data.peakHours.length === 0 ? (
+            <EmptyLine>没有足够的小时观测</EmptyLine>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {data.peakHours.map((h) => (
+                <Badge key={h} tone="primary" className="text-xs">
+                  {h} 点
+                </Badge>
+              ))}
+            </div>
+          )}
+        </PanelCard>
+      </div>
     </div>
   );
 }

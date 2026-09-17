@@ -55,7 +55,10 @@ pub use quest::{
     MAX_QUESTS, MIN_EVIDENCE_CHARS,
 };
 pub use r#const::*;
-pub use reports::{distraction_runs, first_core_hour, hit_rate, month_heat_cell, wow_delta};
+pub use reports::{
+    distraction_runs, first_core_hour, hit_rate, merge_observation_bands, month_day_hours,
+    month_heat_cell, wow_delta, HourContribution, ObservationBand,
+};
 pub use shop::{
     can_start_entertainment, entertainment_remaining_secs, has_entertainment_timer,
     tray_entertainment_minutes, validate_redeem, validate_wish, xp_shop_unlocked, RedeemError,
