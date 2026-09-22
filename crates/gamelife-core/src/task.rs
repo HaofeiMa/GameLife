@@ -79,6 +79,16 @@ pub struct Task {
     pub remind_offsets: Vec<i64>,
     #[serde(default)]
     pub notes: String,
+    #[serde(default)]
+    pub ticktick_task_id: Option<String>,
+    #[serde(default)]
+    pub ticktick_project_id: Option<String>,
+    #[serde(default)]
+    pub ticktick_etag: String,
+    #[serde(default)]
+    pub ticktick_dirty: i64,
+    #[serde(default)]
+    pub ticktick_all_day: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,6 +269,11 @@ pub fn spawn_after_complete(
         repeat: done.repeat,
         remind_offsets: done.remind_offsets.clone(),
         notes: done.notes.clone(),
+        ticktick_task_id: None,
+        ticktick_project_id: None,
+        ticktick_etag: String::new(),
+        ticktick_dirty: 0,
+        ticktick_all_day: false,
     })
 }
 
@@ -565,6 +580,11 @@ mod tests {
             repeat: RepeatRule::None,
             remind_offsets: vec![],
             notes: String::new(),
+            ticktick_task_id: None,
+            ticktick_project_id: None,
+            ticktick_etag: String::new(),
+            ticktick_dirty: 0,
+            ticktick_all_day: false,
         }
     }
 
@@ -583,6 +603,11 @@ mod tests {
             repeat: RepeatRule::None,
             remind_offsets: vec![],
             notes: String::new(),
+            ticktick_task_id: None,
+            ticktick_project_id: None,
+            ticktick_etag: String::new(),
+            ticktick_dirty: 0,
+            ticktick_all_day: false,
         };
         let day0 = 1_778_083_200;
         assert!(in_judgment_set(&t, &lists[2], day0, day0 + 86400));
@@ -959,6 +984,11 @@ mod tests {
             repeat: RepeatRule::None,
             remind_offsets: vec![],
             notes: String::new(),
+            ticktick_task_id: None,
+            ticktick_project_id: None,
+            ticktick_etag: String::new(),
+            ticktick_dirty: 0,
+            ticktick_all_day: false,
         };
         let snaps = snapshots_open(&[open], &lists);
         assert_eq!(snaps.len(), 1);

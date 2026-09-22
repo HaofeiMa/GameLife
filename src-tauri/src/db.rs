@@ -108,7 +108,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   sort INTEGER NOT NULL DEFAULT 0,
   repeat TEXT NOT NULL DEFAULT 'none',
   remind_json TEXT NOT NULL DEFAULT '[]',
-  notes TEXT NOT NULL DEFAULT ''
+  notes TEXT NOT NULL DEFAULT '',
+  ticktick_task_id TEXT,
+  ticktick_project_id TEXT,
+  ticktick_etag TEXT NOT NULL DEFAULT '',
+  ticktick_dirty INTEGER NOT NULL DEFAULT 0,
+  ticktick_all_day INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS ticktick_cache (
   id TEXT PRIMARY KEY,
@@ -149,7 +154,15 @@ CREATE TABLE IF NOT EXISTS host_day_stats (
 );
 ";
 
-const TARGET_USER_VERSION: i32 = 5;
+/// Indexes that need columns present first. Run after version migrations so an
+/// older `tasks` table (CREATE TABLE IF NOT EXISTS skipped) gets its columns
+/// via ALTER before this runs.
+const SCHEMA_INDEXES: &str = r"
+CREATE UNIQUE INDEX IF NOT EXISTS tasks_ticktick_task_id
+  ON tasks(ticktick_task_id) WHERE ticktick_task_id IS NOT NULL;
+";
+
+const TARGET_USER_VERSION: i32 = 6;
 
 const WAVE1_COLUMNS: &[(&str, &str, &str)] = &[
     ("samples", "document_path", "TEXT"),
@@ -254,10 +267,23 @@ pub fn migrate(conn: &Connection) -> Result<(), DbOpError> {
     if version < 5 {
         add_column_if_missing(conn, "tasks", "notes", "TEXT NOT NULL DEFAULT ''")?;
     }
+    if version < 6 {
+        add_column_if_missing(conn, "tasks", "ticktick_task_id", "TEXT")?;
+        add_column_if_missing(conn, "tasks", "ticktick_project_id", "TEXT")?;
+        add_column_if_missing(conn, "tasks", "ticktick_etag", "TEXT NOT NULL DEFAULT ''")?;
+        add_column_if_missing(conn, "tasks", "ticktick_dirty", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(conn, "tasks", "ticktick_all_day", "INTEGER NOT NULL DEFAULT 0")?;
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS tasks_ticktick_task_id
+             ON tasks(ticktick_task_id) WHERE ticktick_task_id IS NOT NULL",
+        )
+        .map_err(map_rusqlite)?;
+    }
     if version < TARGET_USER_VERSION {
         conn.pragma_update(None, "user_version", TARGET_USER_VERSION)
             .map_err(map_rusqlite)?;
     }
+    conn.execute_batch(SCHEMA_INDEXES).map_err(map_rusqlite)?;
     add_column_if_missing(conn, "wishes", "archived", "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(
         conn,
@@ -396,7 +422,8 @@ pub fn load_task_lists(conn: &Connection) -> Result<Vec<TaskList>, DbOpError> {
 pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, list_id, title, done, start, end, range, sort, repeat, remind_json, notes
+            "SELECT id, list_id, title, done, start, end, range, sort, repeat, remind_json, notes,
+                    ticktick_task_id, ticktick_project_id, ticktick_etag, ticktick_dirty, ticktick_all_day
              FROM tasks ORDER BY list_id, sort, id",
         )
         .map_err(map_rusqlite)?;
@@ -421,6 +448,11 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
                 repeat: parse_repeat(&repeat),
                 remind_offsets: parse_remind_json(&remind_raw),
                 notes: r.get(10)?,
+                ticktick_task_id: r.get(11)?,
+                ticktick_project_id: r.get(12)?,
+                ticktick_etag: r.get(13)?,
+                ticktick_dirty: r.get(14)?,
+                ticktick_all_day: r.get::<_, i64>(15)? != 0,
             })
         })
         .map_err(map_rusqlite)?;
@@ -1279,7 +1311,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
     }
 
     #[test]
@@ -1298,7 +1330,7 @@ mod tests {
         )
         .unwrap();
         crate::db::migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
         let names = column_names(&conn, "tasks");
         assert!(names.iter().any(|c| c == "sort"));
         assert!(names.iter().any(|c| c == "repeat"));
@@ -1330,12 +1362,30 @@ mod tests {
         )
         .unwrap();
         crate::db::migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
         let names = column_names(&conn, "tasks");
         assert!(names.iter().any(|c| c == "notes"));
         let loaded = load_tasks(&conn).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].notes, "");
+    }
+
+    #[test]
+    fn migrate_user_version_6_roundtrips_ticktick_link() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 6);
+        // migrate already seeds preset lists; insert only the linked task.
+        conn.execute(
+            "INSERT INTO tasks (id, list_id, title, done, ticktick_task_id, ticktick_project_id, ticktick_etag, ticktick_dirty, ticktick_all_day)
+         VALUES ('t', 'list-mainline', '写稿', 0, 'tt1', 'p1', 'e', 2, 1)",
+            [],
+        )
+        .unwrap();
+        let tasks = load_tasks(&conn).unwrap();
+        assert_eq!(tasks[0].ticktick_task_id.as_deref(), Some("tt1"));
+        assert_eq!(tasks[0].ticktick_dirty, 2);
+        assert!(tasks[0].ticktick_all_day);
     }
 
     #[test]
@@ -1346,7 +1396,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM task_lists", [], |r| r.get(0))
             .unwrap();
@@ -1366,7 +1416,7 @@ mod tests {
     fn migrate_new_db_sets_user_version_5() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
         let samples = column_names(&conn, "samples");
         assert!(samples.iter().any(|c| c == "document_path"));
         assert!(samples.iter().any(|c| c == "bundle_id"));
@@ -1455,7 +1505,7 @@ mod tests {
         )
         .unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
         let path: String = conn
             .query_row("SELECT path FROM samples WHERE ts=1", [], |r| r.get(0))
             .unwrap();
@@ -1467,7 +1517,7 @@ mod tests {
             .unwrap();
         assert_eq!(doc, None);
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
     }
 
     #[test]
@@ -1477,7 +1527,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
         conn.execute(
             "INSERT INTO ticktick_cache (id, project_id, title, role, start, end, fetched_at)
              VALUES ('tt-1','p','t','mainline',1,2,3)",
@@ -1566,8 +1616,8 @@ mod tests {
 
         migrate(&conn).unwrap();
 
-        // device_id tagging is additive; notes bump the schema to 5.
-        assert_eq!(user_version(&conn), 5);
+        // device_id tagging is additive; ticktick link columns bump the schema to 6.
+        assert_eq!(user_version(&conn), 6);
 
         let id: String = conn
             .query_row(

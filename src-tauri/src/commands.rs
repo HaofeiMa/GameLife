@@ -1962,7 +1962,7 @@ fn task_to_view(task: Task) -> TaskView {
     }
 }
 
-fn view_to_task(view: &TaskView) -> Task {
+fn view_to_task(view: &TaskView, existing: Option<&Task>) -> Task {
     Task {
         id: view.id.clone(),
         list_id: view.list_id.clone(),
@@ -1979,6 +1979,13 @@ fn view_to_task(view: &TaskView) -> Task {
         repeat: crate::db::parse_repeat(&view.repeat),
         remind_offsets: view.remind_offsets.clone(),
         notes: view.notes.clone(),
+        ticktick_task_id: existing.and_then(|t| t.ticktick_task_id.clone()),
+        ticktick_project_id: existing.and_then(|t| t.ticktick_project_id.clone()),
+        ticktick_etag: existing
+            .map(|t| t.ticktick_etag.clone())
+            .unwrap_or_default(),
+        ticktick_dirty: existing.map(|t| t.ticktick_dirty).unwrap_or(0),
+        ticktick_all_day: existing.map(|t| t.ticktick_all_day).unwrap_or(false),
     }
 }
 
@@ -1990,8 +1997,9 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
     };
     let remind_json = serde_json::to_string(&task.remind_offsets).unwrap_or_else(|_| "[]".into());
     conn.execute(
-        "INSERT INTO tasks (id, list_id, title, done, start, end, range, sort, repeat, remind_json, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "INSERT INTO tasks (id, list_id, title, done, start, end, range, sort, repeat, remind_json, notes,
+                            ticktick_task_id, ticktick_project_id, ticktick_etag, ticktick_dirty, ticktick_all_day)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(id) DO UPDATE SET
            list_id=excluded.list_id,
            title=excluded.title,
@@ -2002,7 +2010,12 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
            sort=excluded.sort,
            repeat=excluded.repeat,
            remind_json=excluded.remind_json,
-           notes=excluded.notes",
+           notes=excluded.notes,
+           ticktick_task_id=excluded.ticktick_task_id,
+           ticktick_project_id=excluded.ticktick_project_id,
+           ticktick_etag=excluded.ticktick_etag,
+           ticktick_dirty=excluded.ticktick_dirty,
+           ticktick_all_day=excluded.ticktick_all_day",
         params![
             task.id,
             task.list_id,
@@ -2015,6 +2028,11 @@ fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
             crate::db::repeat_sql(task.repeat),
             remind_json,
             task.notes,
+            task.ticktick_task_id,
+            task.ticktick_project_id,
+            task.ticktick_etag,
+            task.ticktick_dirty,
+            task.ticktick_all_day as i64,
         ],
     )
     .map_err(crate::db_error::map_rusqlite)?;
@@ -2043,7 +2061,13 @@ fn upsert_task_in(conn: &Connection, task: TaskView) -> Result<(), DbOpError> {
     if title.is_empty() {
         return Err(DbOpError::Rejected("empty_title".into()));
     }
-    let mut stored = view_to_task(&task);
+    let existing = load_tasks(conn)?;
+    let prior = if task.id.trim().is_empty() {
+        None
+    } else {
+        existing.iter().find(|t| t.id == task.id)
+    };
+    let mut stored = view_to_task(&task, prior);
     stored.title = title.to_string();
     if !remind_offsets_ok(&stored.remind_offsets) {
         return Err(DbOpError::Rejected("bad_remind".into()));
@@ -2054,8 +2078,7 @@ fn upsert_task_in(conn: &Connection, task: TaskView) -> Result<(), DbOpError> {
     if stored.start.is_none() && stored.repeat != RepeatRule::None {
         return Err(DbOpError::Rejected("repeat_needs_schedule".into()));
     }
-    let existing = load_tasks(conn)?;
-    let is_new = stored.id.trim().is_empty() || !existing.iter().any(|t| t.id == stored.id);
+    let is_new = stored.id.trim().is_empty() || prior.is_none();
     if stored.id.trim().is_empty() {
         stored.id = new_task_id();
     }
@@ -2158,6 +2181,11 @@ fn duplicate_task_in(conn: &Connection, id: &str) -> Result<TaskView, DbOpError>
     copy.id = new_task_id();
     copy.done = false;
     copy.sort = next_list_sort(conn, &copy.list_id)?;
+    copy.ticktick_task_id = None;
+    copy.ticktick_project_id = None;
+    copy.ticktick_etag = String::new();
+    copy.ticktick_dirty = 0;
+    copy.ticktick_all_day = false;
     persist_task(conn, &copy)?;
     Ok(task_to_view(copy))
 }
@@ -2925,6 +2953,11 @@ mod tests {
                 repeat: RepeatRule::Daily,
                 remind_offsets: vec![],
                 notes: "指标".into(),
+                ticktick_task_id: None,
+                ticktick_project_id: None,
+                ticktick_etag: String::new(),
+                ticktick_dirty: 0,
+                ticktick_all_day: false,
             },
         )
         .unwrap();
@@ -3148,7 +3181,12 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
-            notes: String::new(),
+                notes: String::new(),
+                ticktick_task_id: None,
+                ticktick_project_id: None,
+                ticktick_etag: String::new(),
+                ticktick_dirty: 0,
+                ticktick_all_day: false,
             },
         )
         .unwrap();
@@ -3165,7 +3203,12 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
-            notes: String::new(),
+                notes: String::new(),
+                ticktick_task_id: None,
+                ticktick_project_id: None,
+                ticktick_etag: String::new(),
+                ticktick_dirty: 0,
+                ticktick_all_day: false,
             },
         )
         .unwrap();
@@ -3716,7 +3759,12 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
-            notes: String::new(),
+                notes: String::new(),
+                ticktick_task_id: None,
+                ticktick_project_id: None,
+                ticktick_etag: String::new(),
+                ticktick_dirty: 0,
+                ticktick_all_day: false,
             },
         )
         .unwrap();
@@ -3733,7 +3781,12 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
-            notes: String::new(),
+                notes: String::new(),
+                ticktick_task_id: None,
+                ticktick_project_id: None,
+                ticktick_etag: String::new(),
+                ticktick_dirty: 0,
+                ticktick_all_day: false,
             },
         )
         .unwrap();
@@ -3750,7 +3803,12 @@ mod tests {
                 sort: 0,
                 repeat: RepeatRule::None,
                 remind_offsets: vec![],
-            notes: String::new(),
+                notes: String::new(),
+                ticktick_task_id: None,
+                ticktick_project_id: None,
+                ticktick_etag: String::new(),
+                ticktick_dirty: 0,
+                ticktick_all_day: false,
             },
         )
         .unwrap();
