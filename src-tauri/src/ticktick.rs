@@ -1,7 +1,7 @@
 //! TickTick Open API mirror: push dirty rows, pull + reconcile.
 //! Real HTTP is behind `TickTickApi`; tests use `FakeApi`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -15,9 +15,9 @@ use gamelife_core::task::{
     PRESET_SIDE_ID,
 };
 use gamelife_core::ticktick_sync::{
-    parse_completed_ids, parse_open_tasks, parse_projects, parse_role, push_op, reconcile,
-    stamp_missing_roles, write_target, LocalMirror, ProjectFetch, PushKind, PushOp,
-    ReconcileAction, ReconcileInput, RemoteProject,
+    map_times, parse_completed_ids, parse_open_tasks, parse_projects, parse_role, push_op,
+    reconcile, stamp_missing_roles, write_target, LocalMirror, ProjectFetch, PushKind, PushOp,
+    ReconcileAction, ReconcileInput, RemoteProject, RemoteTask,
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,48 @@ fn task_body(op: &PushOp) -> Value {
     Value::Object(map)
 }
 
+/// Uncomplete / reopen body: id, projectId, title, times, status: 0.
+fn reopen_body(op: &PushOp) -> Value {
+    let mut body = task_body(op);
+    if let Some(obj) = body.as_object_mut() {
+        if let Some(id) = op.task_id.as_deref() {
+            obj.insert("id".into(), json!(id));
+        }
+        obj.insert("status".into(), json!(0));
+    }
+    body
+}
+
+fn chinese_push_failure(raw: &str) -> String {
+    if raw == "需要重新连接" {
+        return raw.to_string();
+    }
+    if raw == "transport" {
+        return "同步超时".into();
+    }
+    if let Some(code) = raw
+        .strip_prefix("http ")
+        .and_then(|s| s.parse::<u16>().ok())
+    {
+        return match code {
+            429 => "请求过于频繁".into(),
+            400..=499 => "写回被拒绝".into(),
+            _ => "写回失败".into(),
+        };
+    }
+    "写回失败".into()
+}
+
+fn role_for_preset_list(list_id: &str) -> Option<ListRole> {
+    match list_id {
+        PRESET_MAINLINE_ID => Some(ListRole::Mainline),
+        PRESET_SIDE_ID => Some(ListRole::Side),
+        PRESET_LONGTERM_ID => Some(ListRole::Longterm),
+        PRESET_CHORE_ID => Some(ListRole::Chore),
+        _ => None,
+    }
+}
+
 fn response_etag(body: &Value) -> String {
     body.get("etag")
         .and_then(|v| v.as_str())
@@ -142,11 +184,7 @@ fn execute_push_op(api: &mut dyn TickTickApi, op: &PushOp) -> PushResult {
         }
         PushKind::Reopen => {
             let id = op.task_id.as_deref().unwrap_or("");
-            let mut body = task_body(op);
-            if let Some(obj) = body.as_object_mut() {
-                obj.insert("status".into(), json!(0));
-            }
-            ("POST", format!("/task/{id}"), Some(body))
+            ("POST", format!("/task/{id}"), Some(reopen_body(op)))
         }
         PushKind::Complete => {
             let tid = op.task_id.as_deref().unwrap_or("");
@@ -207,6 +245,8 @@ fn execute_push_op(api: &mut dyn TickTickApi, op: &PushOp) -> PushResult {
                 etag: response_etag(&resp.body),
             },
         },
+        // Create 5xx: server may have stored the task — treat like timeout (dirty=2).
+        Ok(resp) if op.kind == PushKind::Create && resp.status >= 500 => PushResult::Ambiguous,
         Ok(resp) => PushResult::Failed(format!("http {}", resp.status)),
     }
 }
@@ -226,7 +266,11 @@ pub fn push_one(
 
 pub fn apply_push_result(task: &mut Task, result: &PushResult) {
     match result {
-        PushResult::Unchanged | PushResult::Failed(_) => {}
+        PushResult::Unchanged => {}
+        PushResult::Failed(_) => {
+            // Keep pending write-back; Settings shows the Chinese reason separately.
+            task.ticktick_dirty = 1;
+        }
         PushResult::Synced {
             task_id,
             project_id,
@@ -402,13 +446,17 @@ fn apply_mirror_to_task(task: &mut Task, m: &LocalMirror) {
 }
 
 fn apply_reconcile_actions(conn: &Connection, actions: &[ReconcileAction]) -> Result<(), String> {
-    let mut tasks = load_tasks(conn).map_err(|e| format!("{e:?}"))?;
+    // One SQLite transaction for all local writes — never hold it across HTTP.
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("{e:?}"))?;
+    let mut tasks = load_tasks(&tx).map_err(|e| format!("{e:?}"))?;
     for action in actions {
         match action {
             ReconcileAction::Insert(m) => {
-                let sort = next_list_sort(conn, &m.list_id).map_err(|e| format!("{e:?}"))?;
+                let sort = next_list_sort(&tx, &m.list_id).map_err(|e| format!("{e:?}"))?;
                 let task = mirror_to_new_task(m, sort);
-                persist_task(conn, &task).map_err(|e| format!("{e:?}"))?;
+                persist_task(&tx, &task).map_err(|e| format!("{e:?}"))?;
             }
             ReconcileAction::Update(m) => {
                 let Some(task) = tasks.iter_mut().find(|t| t.id == m.local_id) else {
@@ -420,7 +468,7 @@ fn apply_reconcile_actions(conn: &Connection, actions: &[ReconcileAction]) -> Re
                     continue;
                 }
                 apply_mirror_to_task(task, m);
-                persist_task(conn, task).map_err(|e| format!("{e:?}"))?;
+                persist_task(&tx, task).map_err(|e| format!("{e:?}"))?;
             }
             ReconcileAction::Delete { local_id } => {
                 let Some(task) = tasks.iter().find(|t| t.id == *local_id) else {
@@ -429,7 +477,7 @@ fn apply_reconcile_actions(conn: &Connection, actions: &[ReconcileAction]) -> Re
                 if task.ticktick_dirty != 0 {
                     continue;
                 }
-                delete_task_row(conn, local_id).map_err(|e| format!("{e:?}"))?;
+                delete_task_row(&tx, local_id).map_err(|e| format!("{e:?}"))?;
             }
             ReconcileAction::Link {
                 local_id,
@@ -448,10 +496,11 @@ fn apply_reconcile_actions(conn: &Connection, actions: &[ReconcileAction]) -> Re
                 task.ticktick_project_id = Some(ticktick_project_id.clone());
                 task.ticktick_etag = etag.clone();
                 task.ticktick_dirty = 0;
-                persist_task(conn, task).map_err(|e| format!("{e:?}"))?;
+                persist_task(&tx, task).map_err(|e| format!("{e:?}"))?;
             }
         }
     }
+    tx.commit().map_err(|e| format!("{e:?}"))?;
     Ok(())
 }
 
@@ -561,7 +610,7 @@ impl TickTickApi for LiveApi {
     }
 }
 
-fn push_and_persist(
+pub(crate) fn push_and_persist(
     conn: &Connection,
     api: &mut dyn TickTickApi,
     task: &mut Task,
@@ -570,6 +619,9 @@ fn push_and_persist(
     let projects = load_ticktick_projects(conn).map_err(|e| format!("{e:?}"))?;
     let result = push_one(api, task, &projects, &settings.ticktick_project_roles);
     apply_push_result(task, &result);
+    if let PushResult::Failed(msg) = &result {
+        set_last_result(conn, &chinese_push_failure(msg));
+    }
     persist_task(conn, task).map_err(|e| format!("{e:?}"))?;
     Ok(())
 }
@@ -640,14 +692,27 @@ pub(crate) fn run_pull_body(
 ) -> Result<(), String> {
     let settings = load_settings();
     let projects = load_ticktick_projects(conn).map_err(|e| format!("{e:?}"))?;
-    let roles = settings.ticktick_project_roles.clone();
+    run_pull_body_with(now, api, conn, &projects, &settings.ticktick_project_roles)
+}
 
+/// Testable pull body with explicit projects/roles (avoids real config.json).
+pub(crate) fn run_pull_body_with(
+    now: i64,
+    api: &mut dyn TickTickApi,
+    conn: &Connection,
+    projects: &[RemoteProject],
+    roles: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let mut push_fail_reason: Option<String> = None;
     let tasks = load_tasks(conn).map_err(|e| format!("{e:?}"))?;
     for mut task in tasks.into_iter().filter(|t| t.ticktick_dirty == 1) {
-        let result = push_one(api, &task, &projects, &roles);
+        let result = push_one(api, &task, projects, roles);
         if matches!(&result, PushResult::Failed(msg) if msg == "需要重新连接") {
             set_last_result(conn, "需要重新连接");
             return Ok(());
+        }
+        if let PushResult::Failed(msg) = &result {
+            push_fail_reason = Some(chinese_push_failure(msg));
         }
         apply_push_result(&mut task, &result);
         if let Err(e) = persist_task(conn, &task) {
@@ -669,8 +734,8 @@ pub(crate) fn run_pull_body(
     let round = pull_round(
         api,
         &local,
-        &projects,
-        &roles,
+        projects,
+        roles,
         first_sync,
         now,
         last_sync_at,
@@ -686,8 +751,21 @@ pub(crate) fn run_pull_body(
     if round.advance_sync_at {
         let _ = meta_set(conn, "ticktick_last_sync_at", &now.to_string());
     }
-    let result_msg = round.error.as_deref().unwrap_or("ok");
-    set_last_result(conn, result_msg);
+
+    let still_ambiguous = load_tasks(conn)
+        .map_err(|e| format!("{e:?}"))?
+        .iter()
+        .any(|t| t.ticktick_dirty == 2);
+
+    // Push failure reason must survive a successful pull in the same round.
+    let result_msg = if let Some(reason) = push_fail_reason {
+        reason
+    } else if still_ambiguous {
+        "有任务需要手动确认".into()
+    } else {
+        round.error.as_deref().unwrap_or("ok").to_string()
+    };
+    set_last_result(conn, &result_msg);
     Ok(())
 }
 
@@ -887,29 +965,107 @@ fn status_blocking() -> Result<TickTickStatus, String> {
     build_status(&conn)
 }
 
-/// Confirm dirty-2 rows with one Create each. Hourly sync never calls this.
-fn push_ambiguous_creates(conn: &Connection, api: &mut dyn TickTickApi) -> Result<(), String> {
-    let settings = load_settings();
-    let projects = load_ticktick_projects(conn).map_err(|e| format!("{e:?}"))?;
-    let roles = &settings.ticktick_project_roles;
+/// Confirm dirty-2 rows: search first; POST only when zero unused matches.
+/// Hourly sync never calls this — only 「立即同步」 after `run_pull`.
+pub(crate) fn push_ambiguous_creates(
+    conn: &Connection,
+    api: &mut dyn TickTickApi,
+    projects: &[RemoteProject],
+    roles: &BTreeMap<String, String>,
+    day_start: i64,
+    next_day_start: i64,
+) -> Result<(), String> {
     let tasks = load_tasks(conn).map_err(|e| format!("{e:?}"))?;
+    let mut claimed: BTreeSet<String> = tasks
+        .iter()
+        .filter_map(|t| t.ticktick_task_id.clone())
+        .collect();
+    let mut open_cache: BTreeMap<String, Vec<RemoteTask>> = BTreeMap::new();
     let mut need_manual = false;
+
     for mut task in tasks.into_iter().filter(|t| t.ticktick_dirty == 2) {
-        let mut for_push = task.clone();
-        for_push.ticktick_dirty = 1;
-        let result = push_one(api, &for_push, &projects, roles);
-        match &result {
-            PushResult::Synced { .. } => {
-                apply_push_result(&mut task, &result);
+        let Some(role) = role_for_preset_list(&task.list_id) else {
+            need_manual = true;
+            continue;
+        };
+        let Some(target) = write_target(projects, roles, role) else {
+            need_manual = true;
+            continue;
+        };
+
+        if !open_cache.contains_key(&target.id) {
+            let path = format!("/project/{}/data", target.id);
+            let open = match api.request("GET", &path, None) {
+                Ok(resp) if (200..300).contains(&resp.status) => {
+                    parse_open_tasks(&target.id, &resp.body)
+                }
+                _ => {
+                    need_manual = true;
+                    continue;
+                }
+            };
+            open_cache.insert(target.id.clone(), open);
+        }
+        let open = open_cache.get(&target.id).cloned().unwrap_or_default();
+
+        let candidates: Vec<&RemoteTask> = open
+            .iter()
+            .filter(|remote| {
+                if claimed.contains(&remote.id) {
+                    return false;
+                }
+                let (start, end, all_day) = map_times(
+                    remote.all_day,
+                    remote.start,
+                    remote.end,
+                    day_start,
+                    next_day_start,
+                );
+                remote.title == task.title
+                    && start == task.start
+                    && end == task.end
+                    && all_day == task.ticktick_all_day
+            })
+            .collect();
+
+        match candidates.len() {
+            1 => {
+                let remote = candidates[0];
+                claimed.insert(remote.id.clone());
+                task.ticktick_task_id = Some(remote.id.clone());
+                task.ticktick_project_id = Some(remote.project_id.clone());
+                task.ticktick_etag = remote.etag.clone();
+                task.ticktick_dirty = 0;
                 persist_task(conn, &task).map_err(|e| format!("{e:?}"))?;
             }
-            PushResult::Ambiguous => {
-                need_manual = true;
-            }
-            PushResult::Failed(_) | PushResult::Unchanged | PushResult::Cleared => {
-                if task.ticktick_task_id.is_none() {
-                    need_manual = true;
+            0 => {
+                let mut for_push = task.clone();
+                for_push.ticktick_dirty = 1;
+                let result = push_one(api, &for_push, projects, roles);
+                match &result {
+                    PushResult::Synced { task_id, .. } => {
+                        claimed.insert(task_id.clone());
+                        apply_push_result(&mut task, &result);
+                        persist_task(conn, &task).map_err(|e| format!("{e:?}"))?;
+                    }
+                    PushResult::Ambiguous => {
+                        need_manual = true;
+                    }
+                    PushResult::Failed(msg) => {
+                        apply_push_result(&mut task, &result);
+                        persist_task(conn, &task).map_err(|e| format!("{e:?}"))?;
+                        set_last_result(conn, &chinese_push_failure(msg));
+                    }
+                    PushResult::Unchanged | PushResult::Cleared => {
+                        need_manual = true;
+                    }
                 }
+            }
+            _ => {
+                for remote in &candidates {
+                    claimed.insert(remote.id.clone());
+                }
+                need_manual = true;
             }
         }
     }
@@ -955,7 +1111,18 @@ fn sync_now_blocking() -> Result<TickTickStatus, String> {
     run_pull(now)?;
     let conn = open_app_db()?;
     let mut api = LiveApi::from_settings()?;
-    push_ambiguous_creates(&conn, &mut api)?;
+    let projects = load_ticktick_projects(&conn).map_err(|e| format!("{e:?}"))?;
+    let day = day_str_for_ts(now);
+    let day_start = start_of_named_day(&day).unwrap_or(0);
+    let next_day_start = end_of_local_day(day_start);
+    push_ambiguous_creates(
+        &conn,
+        &mut api,
+        &projects,
+        &settings.ticktick_project_roles,
+        day_start,
+        next_day_start,
+    )?;
     build_status(&conn)
 }
 
@@ -1188,6 +1355,7 @@ mod tests {
 
     struct FakeApi {
         calls: Vec<(String, String)>,
+        bodies: Vec<Option<serde_json::Value>>,
         script: Vec<Result<TickTickResponse, TickTickError>>,
         timeout_match: Option<(String, String)>,
     }
@@ -1196,6 +1364,7 @@ mod tests {
         fn empty() -> Self {
             Self {
                 calls: Vec::new(),
+                bodies: Vec::new(),
                 script: Vec::new(),
                 timeout_match: None,
             }
@@ -1204,6 +1373,7 @@ mod tests {
         fn timeout_on(method: &str, path: &str) -> Self {
             Self {
                 calls: Vec::new(),
+                bodies: Vec::new(),
                 script: Vec::new(),
                 timeout_match: Some((method.into(), path.into())),
             }
@@ -1212,6 +1382,7 @@ mod tests {
         fn with_script(script: Vec<Result<TickTickResponse, TickTickError>>) -> Self {
             Self {
                 calls: Vec::new(),
+                bodies: Vec::new(),
                 script,
                 timeout_match: None,
             }
@@ -1223,9 +1394,10 @@ mod tests {
             &mut self,
             method: &str,
             path: &str,
-            _body: Option<serde_json::Value>,
+            body: Option<serde_json::Value>,
         ) -> Result<TickTickResponse, TickTickError> {
             self.calls.push((method.into(), path.into()));
+            self.bodies.push(body);
             if let Some((m, p)) = &self.timeout_match {
                 if m == method && p == path {
                     return Err(TickTickError::Transport);
@@ -1402,6 +1574,211 @@ mod tests {
             .unwrap();
         assert_eq!(row.ticktick_task_id.as_deref(), Some("tt1"));
         assert_eq!(row.ticktick_dirty, 0);
+    }
+
+    fn ambiguous_local_task() -> Task {
+        Task {
+            id: "ambig-local".into(),
+            list_id: PRESET_MAINLINE_ID.into(),
+            title: "写稿".into(),
+            done: false,
+            start: Some(10),
+            end: Some(20),
+            range: None,
+            sort: 0,
+            repeat: Default::default(),
+            remind_offsets: vec![],
+            notes: String::new(),
+            ticktick_task_id: None,
+            ticktick_project_id: None,
+            ticktick_etag: String::new(),
+            ticktick_dirty: 2,
+            ticktick_all_day: false,
+        }
+    }
+
+    fn mainline_roles() -> (Vec<RemoteProject>, BTreeMap<String, String>) {
+        let projects = vec![RemoteProject {
+            id: "p".into(),
+            name: "主线".into(),
+            sort_order: 1,
+        }];
+        let mut roles = BTreeMap::new();
+        roles.insert("p".into(), "mainline".into());
+        (projects, roles)
+    }
+
+    #[test]
+    fn push_ambiguous_multi_match_does_not_post() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        persist_task(&conn, &ambiguous_local_task()).unwrap();
+        let (projects, roles) = mainline_roles();
+        let open = json!({
+            "tasks": [
+                { "id": "a", "title": "写稿", "startDate": "1970-01-01T00:00:10+0000", "dueDate": "1970-01-01T00:00:20+0000", "isAllDay": false, "etag": "e1" },
+                { "id": "b", "title": "写稿", "startDate": "1970-01-01T00:00:10+0000", "dueDate": "1970-01-01T00:00:20+0000", "isAllDay": false, "etag": "e2" },
+            ]
+        });
+        let mut api = FakeApi::with_script(vec![Ok(TickTickResponse {
+            status: 200,
+            body: open,
+        })]);
+        push_ambiguous_creates(&conn, &mut api, &projects, &roles, 0, 86_400).unwrap();
+        assert!(
+            api.calls
+                .iter()
+                .all(|(m, p)| !(m == "POST" && p == "/task")),
+            "must not POST when more than one unused match: {:?}",
+            api.calls
+        );
+        let row = load_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "ambig-local")
+            .unwrap();
+        assert_eq!(row.ticktick_dirty, 2);
+        assert_eq!(
+            meta_get(&conn, "ticktick_last_result").unwrap().as_deref(),
+            Some("有任务需要手动确认")
+        );
+    }
+
+    #[test]
+    fn push_ambiguous_zero_match_posts_once() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        persist_task(&conn, &ambiguous_local_task()).unwrap();
+        let (projects, roles) = mainline_roles();
+        let mut api = FakeApi::with_script(vec![
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!({ "tasks": [] }),
+            }),
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!({ "id": "new-tt", "etag": "e" }),
+            }),
+        ]);
+        push_ambiguous_creates(&conn, &mut api, &projects, &roles, 0, 86_400).unwrap();
+        assert_eq!(
+            api.calls
+                .iter()
+                .filter(|(m, p)| m == "POST" && p == "/task")
+                .count(),
+            1
+        );
+        let row = load_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "ambig-local")
+            .unwrap();
+        assert_eq!(row.ticktick_dirty, 0);
+        assert_eq!(row.ticktick_task_id.as_deref(), Some("new-tt"));
+    }
+
+    #[test]
+    fn reopen_body_includes_id_project_title_and_status() {
+        let mut api = FakeApi::empty();
+        let op = PushOp {
+            kind: PushKind::Reopen,
+            local_id: "L".into(),
+            task_id: Some("tt1".into()),
+            project_id: "p1".into(),
+            to_project_id: None,
+            title: "写稿".into(),
+            start: Some(10),
+            end: Some(20),
+            all_day: false,
+        };
+        let _ = execute_push_op(&mut api, &op);
+        let body = api.bodies[0].as_ref().expect("reopen sends a body");
+        assert_eq!(body.get("id").and_then(|v| v.as_str()), Some("tt1"));
+        assert_eq!(body.get("projectId").and_then(|v| v.as_str()), Some("p1"));
+        assert_eq!(body.get("title").and_then(|v| v.as_str()), Some("写稿"));
+        assert_eq!(body.get("status").and_then(|v| v.as_i64()), Some(0));
+    }
+
+    #[test]
+    fn create_http_5xx_is_ambiguous_not_failed() {
+        let mut api = FakeApi::with_script(vec![Ok(TickTickResponse {
+            status: 503,
+            body: json!({}),
+        })]);
+        let task = linked_task_without_remote_id();
+        let (projects, roles) = mainline_roles();
+        let result = push_one(&mut api, &task, &projects, &roles);
+        assert!(matches!(result, PushResult::Ambiguous));
+        let mut t = task;
+        apply_push_result(&mut t, &result);
+        assert_eq!(t.ticktick_dirty, 2);
+    }
+
+    #[test]
+    fn create_http_4xx_stays_dirty_one() {
+        let mut api = FakeApi::with_script(vec![Ok(TickTickResponse {
+            status: 400,
+            body: json!({}),
+        })]);
+        let task = linked_task_without_remote_id();
+        let (projects, roles) = mainline_roles();
+        let result = push_one(&mut api, &task, &projects, &roles);
+        assert!(matches!(result, PushResult::Failed(_)));
+        let mut t = task;
+        apply_push_result(&mut t, &result);
+        assert_eq!(t.ticktick_dirty, 1);
+    }
+
+    #[test]
+    fn background_push_failure_keeps_dirty_and_chinese_reason() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        let mut task = linked_task_without_remote_id();
+        task.ticktick_task_id = Some("tt1".into());
+        task.ticktick_project_id = Some("p".into());
+        persist_task(&conn, &task).unwrap();
+        let result = PushResult::Failed("http 400".into());
+        apply_push_result(&mut task, &result);
+        set_last_result(&conn, &chinese_push_failure("http 400"));
+        persist_task(&conn, &task).unwrap();
+        assert_eq!(task.ticktick_dirty, 1);
+        assert_eq!(
+            meta_get(&conn, "ticktick_last_result").unwrap().as_deref(),
+            Some("写回被拒绝")
+        );
+    }
+
+    #[test]
+    fn pull_keeps_push_failure_reason_over_ok() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        let mut task = linked_task_without_remote_id();
+        task.ticktick_task_id = Some("tt1".into());
+        task.ticktick_project_id = Some("p".into());
+        persist_task(&conn, &task).unwrap();
+        let (projects, roles) = mainline_roles();
+        // Push (Reopen) fails 400, then first-sync pull GETs open list successfully.
+        let mut api = FakeApi::with_script(vec![
+            Ok(TickTickResponse {
+                status: 400,
+                body: json!({}),
+            }),
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!({ "tasks": [] }),
+            }),
+        ]);
+        run_pull_body_with(1_000, &mut api, &conn, &projects, &roles).unwrap();
+        let row = load_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "local-1")
+            .unwrap();
+        assert_eq!(row.ticktick_dirty, 1);
+        assert_eq!(
+            meta_get(&conn, "ticktick_last_result").unwrap().as_deref(),
+            Some("写回被拒绝")
+        );
     }
 
     #[test]
