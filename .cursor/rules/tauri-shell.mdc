@@ -7,13 +7,13 @@ alwaysApply: false
 # src-tauri
 
 - Gate: `cargo test --offline -p gamelife` must **run**. `--no-run` is not enough. Build with Homebrew cargo; rustup is only for `tools/platform-check`.
-- Secrets live in `secrets.json` via `keychain.rs` (mode 0600). Never write API keys or sync passwords into `config.json`. Leftover TickTick tokens in an old `secrets.json` are not read.
+- Secrets live in `secrets.json` via `keychain.rs` (mode 0600). Never write API keys or sync passwords into `config.json`. TickTick OAuth tokens live there too. With the Settings TickTick switch off, the TickTick module does not fetch or write back.
 - `capture_context()` runs once, inside `tick_capture_impl`, immediately before `capture_window` — not on the 15s sample loop.
 - Network commands are `async`: `test_vision_provider`, `sync_now_cmd`, `sync_test_connection`, `sync_list_devices`, `sync_restore`. Opening 设置 reads `sync_status`.
 - `resolve_slot` writes `slots` + `app_day_stats` / `host_day_stats` in one transaction. Ledger rows only in `Immediate` mode. A `final` slot must not lack its rollup.
 - Swallow only `DbOpError::AlreadyApplied` on ledger inserts. IO/FULL/CORRUPT must surface.
 - `macos/browser.rs` is the only remaining `osascript` (Chrome / Safari / Arc URL). Everything else is native API.
-- `user_version` is **5** (adds `tasks.notes`; judgment snapshots still omit notes). `device_id` is an additive column + insert trigger. Do not run `db::migrate` on another device's snapshot.
+- `user_version` is **6** (adds TickTick link columns; judgment snapshots still omit notes). `device_id` is an additive column + insert trigger. Do not run `db::migrate` on another device's snapshot.
 - Slot start pins all unfinished tasks (`snapshots_open`); `select_prompt_snapshots` caps the AI prompt at 20. Do not reject `upsert_task` at 20.
 - Completing a repeating task inserts the next occurrence; uncomplete does not delete that row. After task mutations, ping `task_notify::sync_now()`. Settings `task_notifications` defaults false; request OS permission only on false→true.
 - Tests must not call `std::env::set_var("HOME", …)`. Inject directories (as `SyncContext.scratch` already does).
