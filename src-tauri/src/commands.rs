@@ -2137,6 +2137,9 @@ fn upsert_task_in(conn: &Connection, task: TaskView) -> Result<(), DbOpError> {
         return Err(DbOpError::Rejected("linked_repeat".into()));
     }
     if let Some(before) = prior {
+        if before.list_id != stored.list_id {
+            ensure_linked_move_ok(conn, before, &stored.list_id)?;
+        }
         note_ticktick_edit(before, &mut stored);
     }
     let is_new = stored.id.trim().is_empty() || prior.is_none();
@@ -3048,6 +3051,41 @@ mod tests {
             .unwrap();
         assert_eq!(row.ticktick_dirty, 0);
         assert_eq!(row.notes, "只改备注");
+    }
+
+    #[test]
+    fn linked_upsert_without_write_target_keeps_list() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        // migrate already seeds preset lists; insert only the task row.
+        conn.execute_batch(
+            "INSERT INTO tasks (id, list_id, title, done, start, end, repeat, notes, ticktick_task_id, ticktick_project_id, ticktick_dirty)
+             VALUES ('t','list-mainline','写稿',0,10,20,'none','', 'tt','p',0);",
+        )
+        .unwrap();
+        let err = upsert_task_in(
+            &conn,
+            TaskView {
+                id: "t".into(),
+                list_id: "list-side".into(),
+                title: "写稿".into(),
+                done: false,
+                start: Some(10),
+                end: Some(20),
+                range: None,
+                sort: 0,
+                repeat: "none".into(),
+                remind_offsets: vec![],
+                notes: "".into(),
+            },
+        );
+        assert!(matches!(err, Err(DbOpError::Rejected(msg)) if msg == "ticktick_no_list"));
+        let row = load_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "t")
+            .unwrap();
+        assert_eq!(row.list_id, "list-mainline");
     }
 
     fn sample_view(id: &str, title: &str) -> TaskView {
