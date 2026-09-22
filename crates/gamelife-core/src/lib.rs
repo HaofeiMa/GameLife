@@ -16,6 +16,7 @@ pub mod reports;
 pub mod shop;
 pub mod streak;
 pub mod task;
+pub mod ticktick_sync;
 pub mod task_ai;
 pub mod task_parse;
 pub mod time;
