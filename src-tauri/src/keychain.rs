@@ -8,6 +8,9 @@ pub const KEYCHAIN_ACCOUNT: &str = "GameLife";
 pub const KEYCHAIN_SERVICE: &str = "openai";
 pub const KEYCHAIN_SERVICE_OPENCODE_GO: &str = "opencode-go";
 pub const KEYCHAIN_SERVICE_CUSTOM: &str = "custom";
+pub const TICKTICK_CLIENT_SECRET: &str = "ticktick_client_secret";
+pub const TICKTICK_ACCESS_TOKEN: &str = "ticktick_access_token";
+pub const TICKTICK_REFRESH_TOKEN: &str = "ticktick_refresh_token";
 
 static SECRETS_LOCK: Mutex<()> = Mutex::new(());
 
@@ -111,6 +114,18 @@ pub fn delete_openai_api_key() -> Result<(), String> {
     with_store(|path| delete_in(path, KEYCHAIN_SERVICE))
 }
 
+pub fn get_ticktick_secret(slot: &str) -> Result<String, String> {
+    with_store(|path| get_in(path, slot))
+}
+
+pub fn set_ticktick_secret(slot: &str, value: &str) -> Result<(), String> {
+    with_store(|path| set_in(path, slot, value))
+}
+
+pub fn delete_ticktick_secret(slot: &str) -> Result<(), String> {
+    with_store(|path| delete_in(path, slot))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +162,17 @@ mod tests {
         let path = dir.path().join("secrets.json");
         set_in(&path, "openai", "  ").unwrap();
         assert!(get_in(&path, "openai").is_err());
+    }
+
+    #[test]
+    fn ticktick_slots_roundtrip_in_temp_file() {
+        let path = std::env::temp_dir().join(format!("gamelife-tt-secrets-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        set_in(&path, TICKTICK_ACCESS_TOKEN, "tok").unwrap();
+        assert_eq!(get_in(&path, TICKTICK_ACCESS_TOKEN).unwrap(), "tok");
+        delete_in(&path, TICKTICK_ACCESS_TOKEN).unwrap();
+        assert!(get_in(&path, TICKTICK_ACCESS_TOKEN).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(unix)]

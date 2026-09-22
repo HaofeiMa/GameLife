@@ -129,11 +129,13 @@ pub struct AppSettings {
     pub admin_apps: Vec<String>,
     #[serde(default)]
     pub category_guides: CategoryGuides,
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
+    pub ticktick_enabled: bool,
+    #[serde(default)]
     pub ticktick_client_id: String,
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub ticktick_project_roles: std::collections::BTreeMap<String, String>,
-    #[serde(default, skip_serializing)]
+    #[serde(default, skip_serializing, skip_deserializing)]
     pub ticktick_column_roles: std::collections::BTreeMap<String, String>,
     /// UI appearance: system | light | dark. Normalised on the frontend by
     /// `normalizeThemePreference` in src/lib/theme.ts.
@@ -329,6 +331,7 @@ pub fn default_settings() -> AppSettings {
         task_notifications: false,
         admin_apps: vec![],
         category_guides: CategoryGuides::default(),
+        ticktick_enabled: false,
         ticktick_client_id: String::new(),
         ticktick_project_roles: std::collections::BTreeMap::new(),
         ticktick_column_roles: std::collections::BTreeMap::new(),
@@ -502,6 +505,39 @@ mod tests {
         assert!(!parsed.task_notifications);
         assert!(parsed.admin_apps.is_empty());
         assert!(parsed.ticktick_client_id.is_empty());
+        assert!(!parsed.ticktick_enabled);
+    }
+
+    #[test]
+    fn ticktick_switch_and_roles_roundtrip_and_column_roles_are_dropped() {
+        let raw = r#"{
+            "screenshotRetention":"none","sampleKeepDays":7,"loginAtStartup":true,
+            "trustedApps":[],"distractionRules":[],"sideProjectRules":[],
+            "readingApps":[],"neverCaptureApps":[],
+            "ticktickEnabled": true,
+            "ticktickClientId": "cid",
+            "ticktickProjectRoles": {"p":"mainline"},
+            "ticktickColumnRoles": {"c":"side"}
+        }"#;
+        let parsed: AppSettings = serde_json::from_str(raw).unwrap();
+        assert!(parsed.ticktick_enabled);
+        assert_eq!(parsed.ticktick_client_id, "cid");
+        assert_eq!(
+            parsed.ticktick_project_roles.get("p").map(String::as_str),
+            Some("mainline")
+        );
+        let out = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(
+            out.get("ticktickEnabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(out.get("ticktickColumnRoles").is_none());
+        let a = default_settings();
+        let mut b = default_settings();
+        b.ticktick_enabled = true;
+        b.ticktick_client_id = "cid".into();
+        b.ticktick_project_roles.insert("p".into(), "mainline".into());
+        assert_eq!(policy_snapshot_json(&a), policy_snapshot_json(&b));
     }
 
     #[test]
