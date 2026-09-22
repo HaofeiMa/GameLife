@@ -18,6 +18,7 @@ pub mod settle;
 pub mod sync;
 pub mod task_notify;
 pub mod text_ai;
+pub mod ticktick;
 pub mod vision;
 #[cfg(windows)]
 pub mod windows;

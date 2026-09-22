@@ -262,7 +262,7 @@ pub struct TaskListView {
     pub role: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskView {
     pub id: String,
@@ -287,6 +287,13 @@ pub struct TaskView {
 pub struct TaskBoardView {
     pub lists: Vec<TaskListView>,
     pub tasks: Vec<TaskView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskWriteResult {
+    pub task: Option<TaskView>,
+    pub warning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2109,7 +2116,13 @@ fn next_list_sort(conn: &Connection, list_id: &str) -> Result<i64, DbOpError> {
     Ok(max.unwrap_or(-1) + 1)
 }
 
-fn upsert_task_in(conn: &Connection, task: TaskView) -> Result<(), DbOpError> {
+#[derive(Debug)]
+struct UpsertOutcome {
+    result: TaskWriteResult,
+    push_id: Option<String>,
+}
+
+fn upsert_task_in(conn: &Connection, task: TaskView) -> Result<UpsertOutcome, DbOpError> {
     let title = task.title.trim();
     if title.is_empty() {
         return Err(DbOpError::Rejected("empty_title".into()));
@@ -2151,8 +2164,35 @@ fn upsert_task_in(conn: &Connection, task: TaskView) -> Result<(), DbOpError> {
     if is_new && stored.sort == 0 {
         stored.sort = next_list_sort(conn, &stored.list_id)?;
     }
+    let mut warning = None;
+    if is_new && stored.ticktick_task_id.is_none() {
+        let settings = load_settings();
+        let projects = load_ticktick_projects(conn)?;
+        if settings.ticktick_enabled {
+            if crate::ticktick::should_mark_new_for_push(
+                &stored.list_id,
+                &projects,
+                &settings.ticktick_project_roles,
+            ) {
+                stored.ticktick_dirty = 1;
+            } else if PRESET_LIST_IDS.contains(&stored.list_id.as_str()) {
+                warning = crate::ticktick::no_write_target_warning(&stored.list_id);
+            }
+        }
+    }
     persist_task(conn, &stored)?;
-    Ok(())
+    let push_id = if stored.ticktick_dirty == 1 {
+        Some(stored.id.clone())
+    } else {
+        None
+    };
+    Ok(UpsertOutcome {
+        result: TaskWriteResult {
+            task: None,
+            warning,
+        },
+        push_id,
+    })
 }
 
 #[tauri::command]
@@ -2166,26 +2206,43 @@ pub fn list_task_board() -> Result<TaskBoardView, String> {
 }
 
 #[tauri::command]
-pub fn upsert_task(task: TaskView) -> Result<(), String> {
+pub fn upsert_task(task: TaskView) -> Result<TaskWriteResult, String> {
     let out = with_db_err(|conn| upsert_task_in(conn, task));
-    if out.is_ok() {
-        ping_task_notifications();
+    match out {
+        Ok(outcome) => {
+            ping_task_notifications();
+            if let Some(id) = outcome.push_id {
+                crate::ticktick::spawn_push_one(id);
+            }
+            Ok(outcome.result)
+        }
+        Err(e) => Err(e),
     }
-    out
 }
 
 #[tauri::command]
 pub fn toggle_task_done(id: String, done: bool) -> Result<(), String> {
     let out = with_db_err(|conn| toggle_task_done_in(conn, &id, done, now_secs()));
-    if out.is_ok() {
-        ping_task_notifications();
+    match &out {
+        Ok(push_id) => {
+            ping_task_notifications();
+            if let Some(id) = push_id {
+                crate::ticktick::spawn_push_one(id.clone());
+            }
+        }
+        Err(_) => {}
     }
-    out
+    out.map(|_| ())
 }
 
 /// Completing a repeating task inserts the next occurrence. Uncomplete only
 /// flips this row — it does not delete a spawned successor.
-fn toggle_task_done_in(conn: &Connection, id: &str, done: bool, now: i64) -> Result<(), DbOpError> {
+fn toggle_task_done_in(
+    conn: &Connection,
+    id: &str,
+    done: bool,
+    now: i64,
+) -> Result<Option<String>, DbOpError> {
     let mut tasks = load_tasks(conn)?;
     let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
         return Err(DbOpError::Fatal("task missing".into()));
@@ -2200,20 +2257,45 @@ fn toggle_task_done_in(conn: &Connection, id: &str, done: bool, now: i64) -> Res
         let day = day_str_for_ts(now);
         let today_start = start_of_named_day(&day).unwrap_or(0);
         let sort = next_list_sort(conn, &stored.list_id)?;
-        if let Some(next) = spawn_after_complete(&stored, new_task_id(), today_start, sort) {
+        if let Some(mut next) = spawn_after_complete(&stored, new_task_id(), today_start, sort) {
+            let settings = load_settings();
+            let projects = load_ticktick_projects(conn)?;
+            if settings.ticktick_enabled
+                && crate::ticktick::should_mark_new_for_push(
+                    &next.list_id,
+                    &projects,
+                    &settings.ticktick_project_roles,
+                )
+            {
+                next.ticktick_dirty = 1;
+            }
             persist_task(conn, &next)?;
+            if next.ticktick_dirty == 1 {
+                crate::ticktick::spawn_push_one(next.id.clone());
+            }
         }
     }
-    Ok(())
+    let push_id = if stored.ticktick_dirty == 1 {
+        Some(stored.id.clone())
+    } else {
+        None
+    };
+    Ok(push_id)
 }
 
 #[tauri::command]
 pub fn reorder_task(id: String, list_id: String, sort: i64) -> Result<(), String> {
     let out = with_db_err(|conn| reorder_task_in(conn, &id, list_id, sort));
-    if out.is_ok() {
-        ping_task_notifications();
+    match &out {
+        Ok(push_id) => {
+            ping_task_notifications();
+            if let Some(id) = push_id {
+                crate::ticktick::spawn_push_one(id.clone());
+            }
+        }
+        Err(_) => {}
     }
-    out
+    out.map(|_| ())
 }
 
 fn reorder_task_in(
@@ -2221,7 +2303,7 @@ fn reorder_task_in(
     id: &str,
     list_id: String,
     sort: i64,
-) -> Result<(), DbOpError> {
+) -> Result<Option<String>, DbOpError> {
     let lists = load_task_lists(conn)?;
     if !lists.iter().any(|l| l.id == list_id) {
         return Err(DbOpError::Rejected("list_missing".into()));
@@ -2241,19 +2323,33 @@ fn reorder_task_in(
         task.sort = sort;
     }
     persist_task(conn, task)?;
-    Ok(())
+    let push_id = if task.ticktick_dirty == 1 {
+        Some(task.id.clone())
+    } else {
+        None
+    };
+    Ok(push_id)
 }
 
 #[tauri::command]
-pub fn duplicate_task(id: String) -> Result<TaskView, String> {
+pub fn duplicate_task(id: String) -> Result<TaskWriteResult, String> {
     let out = with_db_err(|conn| duplicate_task_in(conn, &id));
-    if out.is_ok() {
-        ping_task_notifications();
+    match out {
+        Ok((result, push_id)) => {
+            ping_task_notifications();
+            if let Some(id) = push_id {
+                crate::ticktick::spawn_push_one(id);
+            }
+            Ok(result)
+        }
+        Err(e) => Err(e),
     }
-    out
 }
 
-fn duplicate_task_in(conn: &Connection, id: &str) -> Result<TaskView, DbOpError> {
+fn duplicate_task_in(
+    conn: &Connection,
+    id: &str,
+) -> Result<(TaskWriteResult, Option<String>), DbOpError> {
     let tasks = load_tasks(conn)?;
     let Some(src) = tasks.iter().find(|t| t.id == id) else {
         return Err(DbOpError::Fatal("task missing".into()));
@@ -2267,8 +2363,33 @@ fn duplicate_task_in(conn: &Connection, id: &str) -> Result<TaskView, DbOpError>
     copy.ticktick_etag = String::new();
     copy.ticktick_dirty = 0;
     copy.ticktick_all_day = false;
+    let mut warning = None;
+    let settings = load_settings();
+    let projects = load_ticktick_projects(conn)?;
+    if settings.ticktick_enabled {
+        if crate::ticktick::should_mark_new_for_push(
+            &copy.list_id,
+            &projects,
+            &settings.ticktick_project_roles,
+        ) {
+            copy.ticktick_dirty = 1;
+        } else if PRESET_LIST_IDS.contains(&copy.list_id.as_str()) {
+            warning = crate::ticktick::no_write_target_warning(&copy.list_id);
+        }
+    }
     persist_task(conn, &copy)?;
-    Ok(task_to_view(copy))
+    let push_id = if copy.ticktick_dirty == 1 {
+        Some(copy.id.clone())
+    } else {
+        None
+    };
+    Ok((
+        TaskWriteResult {
+            task: Some(task_to_view(copy)),
+            warning,
+        },
+        push_id,
+    ))
 }
 
 #[tauri::command(rename = "parse_task_line")]
@@ -2392,26 +2513,51 @@ pub fn delete_list(id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn delete_task(id: String) -> Result<(), String> {
     let out = with_db_err(|conn| {
+        let tasks = load_tasks(conn)?;
+        let remote = tasks.iter().find(|t| t.id == id).and_then(|task| {
+            match (
+                task.ticktick_task_id.clone(),
+                task.ticktick_project_id.clone(),
+            ) {
+                (Some(tid), Some(pid)) => Some((pid, tid)),
+                _ => None,
+            }
+        });
         let n = conn
             .execute("DELETE FROM tasks WHERE id = ?1", params![id])
             .map_err(crate::db_error::map_rusqlite)?;
         if n == 0 {
             return Err(DbOpError::Fatal("task missing".into()));
         }
-        Ok(())
+        Ok(remote)
     });
-    if out.is_ok() {
-        ping_task_notifications();
+    match out {
+        Ok(remote) => {
+            ping_task_notifications();
+            if let Some((project_id, task_id)) = remote {
+                crate::ticktick::spawn_push_deleted(project_id, task_id);
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
     }
-    out
 }
 
 #[tauri::command]
 pub fn move_task(id: String, list_id: String) -> Result<(), String> {
-    with_db_err(|conn| move_task_in(conn, &id, list_id))
+    let out = with_db_err(|conn| move_task_in(conn, &id, list_id));
+    match &out {
+        Ok(push_id) => {
+            if let Some(id) = push_id {
+                crate::ticktick::spawn_push_one(id.clone());
+            }
+        }
+        Err(_) => {}
+    }
+    out.map(|_| ())
 }
 
-fn move_task_in(conn: &Connection, id: &str, list_id: String) -> Result<(), DbOpError> {
+fn move_task_in(conn: &Connection, id: &str, list_id: String) -> Result<Option<String>, DbOpError> {
     let lists = load_task_lists(conn)?;
     if !lists.iter().any(|l| l.id == list_id) {
         return Err(DbOpError::Rejected("list_missing".into()));
@@ -2425,16 +2571,27 @@ fn move_task_in(conn: &Connection, id: &str, list_id: String) -> Result<(), DbOp
     task.list_id = list_id;
     note_ticktick_edit(&before, task);
     persist_task(conn, task)?;
-    Ok(())
+    let push_id = if task.ticktick_dirty == 1 {
+        Some(task.id.clone())
+    } else {
+        None
+    };
+    Ok(push_id)
 }
 
 #[tauri::command]
 pub fn reschedule_task(id: String, start: Option<i64>, end: Option<i64>) -> Result<(), String> {
     let out = with_db_err(|conn| reschedule_task_in(conn, &id, start, end));
-    if out.is_ok() {
-        ping_task_notifications();
+    match &out {
+        Ok(push_id) => {
+            ping_task_notifications();
+            if let Some(id) = push_id {
+                crate::ticktick::spawn_push_one(id.clone());
+            }
+        }
+        Err(_) => {}
     }
-    out
+    out.map(|_| ())
 }
 
 fn reschedule_task_in(
@@ -2442,7 +2599,7 @@ fn reschedule_task_in(
     id: &str,
     start: Option<i64>,
     end: Option<i64>,
-) -> Result<(), DbOpError> {
+) -> Result<Option<String>, DbOpError> {
     let mut tasks = load_tasks(conn)?;
     let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
         return Err(DbOpError::Fatal("task missing".into()));
@@ -2467,7 +2624,12 @@ fn reschedule_task_in(
     note_ticktick_edit(&before, task);
     let stored = task.clone();
     persist_task(conn, &stored)?;
-    Ok(())
+    let push_id = if stored.ticktick_dirty == 1 {
+        Some(stored.id.clone())
+    } else {
+        None
+    };
+    Ok(push_id)
 }
 
 #[tauri::command]
@@ -3201,7 +3363,8 @@ mod tests {
         let mut src = sample_view("src", "x");
         src.notes = "地点：A301".into();
         upsert_task_in(&conn, src).unwrap();
-        let copy = duplicate_task_in(&conn, "src").unwrap();
+        let (copy_result, _) = duplicate_task_in(&conn, "src").unwrap();
+        let copy = copy_result.task.unwrap();
         assert_ne!(copy.id, "src");
         assert_eq!(copy.notes, "地点：A301");
         assert!(!copy.done);
