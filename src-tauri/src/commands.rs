@@ -8,6 +8,7 @@ use tauri::State;
 
 use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
+use gamelife_core::ticktick_sync::{parse_projects, write_target};
 use gamelife_core::{
     align_range, can_delete_list, clear_schedule, distraction_runs, first_core_hour,
     format_estimated_minutes, hit_rate, is_lock_screen_app, is_weekday, matched_quest_index,
@@ -15,7 +16,7 @@ use gamelife_core::{
     parse_task_line, remind_offsets_ok, notes_ok, spawn_after_complete, streak_at_risk, sum_activity,
     validate_lists, wow_delta, xp_shop_unlocked, HourContribution, ParseContext, Policy, QuestDraft,
     RepeatRule, Task, TaskList, TaskListError, TaskRange, CHEST_SECS, GOLD_DAY_SECS,
-    PRESET_MAINLINE_ID, SLOT_SECS,
+    PRESET_LIST_IDS, PRESET_MAINLINE_ID, SLOT_SECS,
 };
 
 use crate::config::{
@@ -23,8 +24,8 @@ use crate::config::{
 };
 use crate::db::{
     archive_wish as db_archive_wish, insert_wish as db_insert_wish, list_role_sql,
-    load_active_session, load_task_lists, load_tasks, migrate, open, redeem as db_redeem,
-    update_wish as db_update_wish,
+    load_active_session, load_task_lists, load_tasks, meta_get, migrate, open,
+    redeem as db_redeem, update_wish as db_update_wish,
 };
 use crate::db_error::DbOpError;
 use crate::keychain::{
@@ -1989,6 +1990,56 @@ fn view_to_task(view: &TaskView, existing: Option<&Task>) -> Task {
     }
 }
 
+/// Mark a linked local edit dirty for a later TickTick write-back.
+/// Unlinked tasks stay clean (Task 6 may push new rows when the switch is on).
+fn note_ticktick_edit(before: &Task, after: &mut Task) {
+    if before.ticktick_task_id.is_none() {
+        return;
+    }
+    let sync_changed = before.title != after.title
+        || before.start != after.start
+        || before.end != after.end
+        || before.done != after.done
+        || before.list_id != after.list_id;
+    if !sync_changed {
+        return;
+    }
+    after.ticktick_dirty = 1;
+    if before.start != after.start || before.end != after.end {
+        after.ticktick_all_day = false;
+    }
+}
+
+fn load_ticktick_projects(conn: &Connection) -> Result<Vec<gamelife_core::ticktick_sync::RemoteProject>, DbOpError> {
+    let Some(raw) = meta_get(conn, "ticktick_projects_json")? else {
+        return Ok(Vec::new());
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    Ok(parse_projects(&value))
+}
+
+/// Linked tasks may only move onto a preset list that has a write target.
+/// Missing project cache counts as no write target. Unlinked tasks always pass.
+fn ensure_linked_move_ok(conn: &Connection, task: &Task, new_list_id: &str) -> Result<(), DbOpError> {
+    if task.ticktick_task_id.is_none() {
+        return Ok(());
+    }
+    if !PRESET_LIST_IDS.contains(&new_list_id) {
+        return Err(DbOpError::Rejected("ticktick_no_list".into()));
+    }
+    let lists = load_task_lists(conn)?;
+    let Some(list) = lists.iter().find(|l| l.id == new_list_id) else {
+        return Err(DbOpError::Rejected("list_missing".into()));
+    };
+    let projects = load_ticktick_projects(conn)?;
+    let settings = load_settings();
+    if write_target(&projects, &settings.ticktick_project_roles, list.role).is_none() {
+        return Err(DbOpError::Rejected("ticktick_no_list".into()));
+    }
+    Ok(())
+}
+
 fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
     let range = match task.range {
         Some(TaskRange::Week) => Some("week"),
@@ -2078,6 +2129,16 @@ fn upsert_task_in(conn: &Connection, task: TaskView) -> Result<(), DbOpError> {
     if stored.start.is_none() && stored.repeat != RepeatRule::None {
         return Err(DbOpError::Rejected("repeat_needs_schedule".into()));
     }
+    if prior
+        .map(|t| t.ticktick_task_id.is_some())
+        .unwrap_or(false)
+        && stored.repeat != RepeatRule::None
+    {
+        return Err(DbOpError::Rejected("linked_repeat".into()));
+    }
+    if let Some(before) = prior {
+        note_ticktick_edit(before, &mut stored);
+    }
     let is_new = stored.id.trim().is_empty() || prior.is_none();
     if stored.id.trim().is_empty() {
         stored.id = new_task_id();
@@ -2125,10 +2186,12 @@ fn toggle_task_done_in(conn: &Connection, id: &str, done: bool, now: i64) -> Res
         return Err(DbOpError::Fatal("task missing".into()));
     };
     let was_done = task.done;
+    let before = task.clone();
     task.done = done;
+    note_ticktick_edit(&before, task);
     let stored = task.clone();
     persist_task(conn, &stored)?;
-    if done && !was_done {
+    if done && !was_done && stored.ticktick_task_id.is_none() {
         let day = day_str_for_ts(now);
         let today_start = start_of_named_day(&day).unwrap_or(0);
         let sort = next_list_sort(conn, &stored.list_id)?;
@@ -2141,26 +2204,39 @@ fn toggle_task_done_in(conn: &Connection, id: &str, done: bool, now: i64) -> Res
 
 #[tauri::command]
 pub fn reorder_task(id: String, list_id: String, sort: i64) -> Result<(), String> {
-    let out = with_db_err(|conn| {
-        let lists = load_task_lists(conn)?;
-        if !lists.iter().any(|l| l.id == list_id) {
-            return Err(DbOpError::Rejected("list_missing".into()));
-        }
-        let n = conn
-            .execute(
-                "UPDATE tasks SET list_id = ?1, sort = ?2 WHERE id = ?3",
-                params![list_id, sort, id],
-            )
-            .map_err(crate::db_error::map_rusqlite)?;
-        if n == 0 {
-            return Err(DbOpError::Fatal("task missing".into()));
-        }
-        Ok(())
-    });
+    let out = with_db_err(|conn| reorder_task_in(conn, &id, list_id, sort));
     if out.is_ok() {
         ping_task_notifications();
     }
     out
+}
+
+fn reorder_task_in(
+    conn: &Connection,
+    id: &str,
+    list_id: String,
+    sort: i64,
+) -> Result<(), DbOpError> {
+    let lists = load_task_lists(conn)?;
+    if !lists.iter().any(|l| l.id == list_id) {
+        return Err(DbOpError::Rejected("list_missing".into()));
+    }
+    let mut tasks = load_tasks(conn)?;
+    let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
+        return Err(DbOpError::Fatal("task missing".into()));
+    };
+    let list_changed = task.list_id != list_id;
+    if list_changed {
+        ensure_linked_move_ok(conn, task, &list_id)?;
+        let before = task.clone();
+        task.list_id = list_id;
+        task.sort = sort;
+        note_ticktick_edit(&before, task);
+    } else {
+        task.sort = sort;
+    }
+    persist_task(conn, task)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2327,22 +2403,24 @@ pub fn delete_task(id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn move_task(id: String, list_id: String) -> Result<(), String> {
-    with_db_err(|conn| {
-        let lists = load_task_lists(conn)?;
-        if !lists.iter().any(|l| l.id == list_id) {
-            return Err(DbOpError::Rejected("list_missing".into()));
-        }
-        let n = conn
-            .execute(
-                "UPDATE tasks SET list_id = ?1 WHERE id = ?2",
-                params![list_id, id],
-            )
-            .map_err(crate::db_error::map_rusqlite)?;
-        if n == 0 {
-            return Err(DbOpError::Fatal("task missing".into()));
-        }
-        Ok(())
-    })
+    with_db_err(|conn| move_task_in(conn, &id, list_id))
+}
+
+fn move_task_in(conn: &Connection, id: &str, list_id: String) -> Result<(), DbOpError> {
+    let lists = load_task_lists(conn)?;
+    if !lists.iter().any(|l| l.id == list_id) {
+        return Err(DbOpError::Rejected("list_missing".into()));
+    }
+    let mut tasks = load_tasks(conn)?;
+    let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
+        return Err(DbOpError::Fatal("task missing".into()));
+    };
+    ensure_linked_move_ok(conn, task, &list_id)?;
+    let before = task.clone();
+    task.list_id = list_id;
+    note_ticktick_edit(&before, task);
+    persist_task(conn, task)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2364,6 +2442,7 @@ fn reschedule_task_in(
     let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
         return Err(DbOpError::Fatal("task missing".into()));
     };
+    let before = task.clone();
     match (start, end) {
         (None, None) => {
             let list_id = task.list_id.clone();
@@ -2380,6 +2459,7 @@ fn reschedule_task_in(
     if task.start.is_none() && task.repeat != RepeatRule::None {
         return Err(DbOpError::Rejected("repeat_needs_schedule".into()));
     }
+    note_ticktick_edit(&before, task);
     let stored = task.clone();
     persist_task(conn, &stored)?;
     Ok(())
@@ -2915,6 +2995,59 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn linked_repeat_is_rejected_and_notes_do_not_dirty() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        // migrate already seeds preset lists; insert only the task row.
+        conn.execute_batch(
+            "INSERT INTO tasks (id, list_id, title, done, start, end, repeat, notes, ticktick_task_id, ticktick_project_id, ticktick_dirty)
+             VALUES ('t','list-mainline','写稿',0,10,20,'none','', 'tt','p',0);",
+        )
+        .unwrap();
+        let err = upsert_task_in(
+            &conn,
+            TaskView {
+                id: "t".into(),
+                list_id: "list-mainline".into(),
+                title: "写稿".into(),
+                done: false,
+                start: Some(10),
+                end: Some(20),
+                range: None,
+                sort: 0,
+                repeat: "daily".into(),
+                remind_offsets: vec![],
+                notes: "".into(),
+            },
+        );
+        assert!(matches!(err, Err(DbOpError::Rejected(msg)) if msg == "linked_repeat"));
+        upsert_task_in(
+            &conn,
+            TaskView {
+                id: "t".into(),
+                list_id: "list-mainline".into(),
+                title: "写稿".into(),
+                done: false,
+                start: Some(10),
+                end: Some(20),
+                range: None,
+                sort: 0,
+                repeat: "none".into(),
+                remind_offsets: vec![],
+                notes: "只改备注".into(),
+            },
+        )
+        .unwrap();
+        let row = load_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "t")
+            .unwrap();
+        assert_eq!(row.ticktick_dirty, 0);
+        assert_eq!(row.notes, "只改备注");
     }
 
     fn sample_view(id: &str, title: &str) -> TaskView {
