@@ -8,7 +8,7 @@ use tauri::State;
 
 use gamelife_core::shop::{tray_entertainment_minutes, Wish, WishKind};
 use gamelife_core::types::ActivitySeconds;
-use gamelife_core::ticktick_sync::{parse_projects, write_target};
+use gamelife_core::ticktick_sync::write_target;
 use gamelife_core::{
     align_range, can_delete_list, clear_schedule, distraction_runs, first_core_hour,
     format_estimated_minutes, hit_rate, is_lock_screen_app, is_weekday, matched_quest_index,
@@ -24,8 +24,9 @@ use crate::config::{
 };
 use crate::db::{
     archive_wish as db_archive_wish, insert_wish as db_insert_wish, list_role_sql,
-    load_active_session, load_task_lists, load_tasks, meta_get, migrate, open,
-    redeem as db_redeem, update_wish as db_update_wish,
+    load_active_session, load_task_lists, load_tasks, load_ticktick_projects, migrate,
+    new_task_id, next_list_sort, open, persist_task, redeem as db_redeem,
+    update_wish as db_update_wish,
 };
 use crate::db_error::DbOpError;
 use crate::keychain::{
@@ -2017,15 +2018,6 @@ fn note_ticktick_edit(before: &Task, after: &mut Task) {
     }
 }
 
-fn load_ticktick_projects(conn: &Connection) -> Result<Vec<gamelife_core::ticktick_sync::RemoteProject>, DbOpError> {
-    let Some(raw) = meta_get(conn, "ticktick_projects_json")? else {
-        return Ok(Vec::new());
-    };
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
-    Ok(parse_projects(&value))
-}
-
 /// Linked tasks moving onto a non-preset list are allowed (local move + dirty;
 /// later push DELETEs). Moving onto a preset without a write target is rejected
 /// with `ticktick_no_list`. Missing project cache counts as no write target.
@@ -2047,73 +2039,6 @@ fn ensure_linked_move_ok(conn: &Connection, task: &Task, new_list_id: &str) -> R
         return Err(DbOpError::Rejected("ticktick_no_list".into()));
     }
     Ok(())
-}
-
-fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
-    let range = match task.range {
-        Some(TaskRange::Week) => Some("week"),
-        Some(TaskRange::Month) => Some("month"),
-        None => None,
-    };
-    let remind_json = serde_json::to_string(&task.remind_offsets).unwrap_or_else(|_| "[]".into());
-    conn.execute(
-        "INSERT INTO tasks (id, list_id, title, done, start, end, range, sort, repeat, remind_json, notes,
-                            ticktick_task_id, ticktick_project_id, ticktick_etag, ticktick_dirty, ticktick_all_day)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-         ON CONFLICT(id) DO UPDATE SET
-           list_id=excluded.list_id,
-           title=excluded.title,
-           done=excluded.done,
-           start=excluded.start,
-           end=excluded.end,
-           range=excluded.range,
-           sort=excluded.sort,
-           repeat=excluded.repeat,
-           remind_json=excluded.remind_json,
-           notes=excluded.notes,
-           ticktick_task_id=excluded.ticktick_task_id,
-           ticktick_project_id=excluded.ticktick_project_id,
-           ticktick_etag=excluded.ticktick_etag,
-           ticktick_dirty=excluded.ticktick_dirty,
-           ticktick_all_day=excluded.ticktick_all_day",
-        params![
-            task.id,
-            task.list_id,
-            task.title.trim(),
-            task.done as i64,
-            task.start,
-            task.end,
-            range,
-            task.sort,
-            crate::db::repeat_sql(task.repeat),
-            remind_json,
-            task.notes,
-            task.ticktick_task_id,
-            task.ticktick_project_id,
-            task.ticktick_etag,
-            task.ticktick_dirty,
-            task.ticktick_all_day as i64,
-        ],
-    )
-    .map_err(crate::db_error::map_rusqlite)?;
-    Ok(())
-}
-
-fn new_task_id() -> String {
-    let mut buf = [0u8; 16];
-    getrandom::getrandom(&mut buf).expect("rng");
-    buf.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn next_list_sort(conn: &Connection, list_id: &str) -> Result<i64, DbOpError> {
-    let max: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(sort) FROM tasks WHERE list_id = ?1",
-            params![list_id],
-            |r| r.get(0),
-        )
-        .map_err(crate::db_error::map_rusqlite)?;
-    Ok(max.unwrap_or(-1) + 1)
 }
 
 #[derive(Debug)]
@@ -2223,26 +2148,27 @@ pub fn upsert_task(task: TaskView) -> Result<TaskWriteResult, String> {
 #[tauri::command]
 pub fn toggle_task_done(id: String, done: bool) -> Result<(), String> {
     let out = with_db_err(|conn| toggle_task_done_in(conn, &id, done, now_secs()));
-    match &out {
-        Ok(push_id) => {
+    match out {
+        Ok(push_ids) => {
             ping_task_notifications();
-            if let Some(id) = push_id {
-                crate::ticktick::spawn_push_one(id.clone());
+            for id in push_ids {
+                crate::ticktick::spawn_push_one(id);
             }
+            Ok(())
         }
-        Err(_) => {}
+        Err(e) => Err(e),
     }
-    out.map(|_| ())
 }
 
 /// Completing a repeating task inserts the next occurrence. Uncomplete only
 /// flips this row — it does not delete a spawned successor.
+/// Returns task ids that need a background TickTick push (after the DB connection closes).
 fn toggle_task_done_in(
     conn: &Connection,
     id: &str,
     done: bool,
     now: i64,
-) -> Result<Option<String>, DbOpError> {
+) -> Result<Vec<String>, DbOpError> {
     let mut tasks = load_tasks(conn)?;
     let Some(task) = tasks.iter_mut().find(|t| t.id == id) else {
         return Err(DbOpError::Fatal("task missing".into()));
@@ -2253,6 +2179,10 @@ fn toggle_task_done_in(
     note_ticktick_edit(&before, task);
     let stored = task.clone();
     persist_task(conn, &stored)?;
+    let mut push_ids = Vec::new();
+    if stored.ticktick_dirty == 1 {
+        push_ids.push(stored.id.clone());
+    }
     if done && !was_done && stored.ticktick_task_id.is_none() {
         let day = day_str_for_ts(now);
         let today_start = start_of_named_day(&day).unwrap_or(0);
@@ -2271,16 +2201,11 @@ fn toggle_task_done_in(
             }
             persist_task(conn, &next)?;
             if next.ticktick_dirty == 1 {
-                crate::ticktick::spawn_push_one(next.id.clone());
+                push_ids.push(next.id.clone());
             }
         }
     }
-    let push_id = if stored.ticktick_dirty == 1 {
-        Some(stored.id.clone())
-    } else {
-        None
-    };
-    Ok(push_id)
+    Ok(push_ids)
 }
 
 #[tauri::command]
@@ -3331,6 +3256,29 @@ mod tests {
         let after = load_tasks(&conn).unwrap();
         assert_eq!(after.len(), 2);
         assert!(!after.iter().find(|t| t.id == "a").unwrap().done);
+    }
+
+    #[test]
+    fn toggle_dirty_linked_returns_push_ids_without_holding_spawn() {
+        // spawn_push_one must run after with_db_err releases the connection;
+        // toggle_task_done_in only reports which ids need pushing.
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tasks (id, list_id, title, done, start, end, repeat, notes,
+                                ticktick_task_id, ticktick_project_id, ticktick_dirty)
+             VALUES ('t','list-mainline','写稿',0,10,20,'none','', 'tt','p',1);",
+        )
+        .unwrap();
+        let ids = toggle_task_done_in(&conn, "t", true, 1_000).unwrap();
+        assert_eq!(ids, vec!["t".to_string()]);
+        let row = load_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "t")
+            .unwrap();
+        assert!(row.done);
+        assert_eq!(row.ticktick_dirty, 1);
     }
 
     #[test]

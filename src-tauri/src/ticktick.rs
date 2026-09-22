@@ -8,15 +8,17 @@ use gamelife_core::task::{
     PRESET_SIDE_ID,
 };
 use gamelife_core::ticktick_sync::{
-    parse_completed_ids, parse_open_tasks, parse_projects, parse_role, push_op, reconcile,
-    write_target, LocalMirror, ProjectFetch, PushKind, PushOp, ReconcileAction, ReconcileInput,
-    RemoteProject,
+    parse_completed_ids, parse_open_tasks, parse_role, push_op, reconcile, write_target,
+    LocalMirror, ProjectFetch, PushKind, PushOp, ReconcileAction, ReconcileInput, RemoteProject,
 };
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 
 use crate::config::load_settings;
-use crate::db::{app_db_path, load_tasks, meta_get, meta_set, migrate, open, repeat_sql};
+use crate::db::{
+    app_db_path, load_tasks, load_ticktick_projects, meta_get, meta_set, migrate, new_task_id,
+    next_list_sort, open, persist_task,
+};
 use crate::db_error::DbOpError;
 use crate::keychain::{
     get_ticktick_secret, set_ticktick_secret, TICKTICK_ACCESS_TOKEN, TICKTICK_CLIENT_SECRET,
@@ -336,74 +338,10 @@ pub fn pull_round(
     }
 }
 
-fn new_task_id() -> String {
-    let mut buf = [0u8; 16];
-    getrandom::getrandom(&mut buf).expect("rng");
-    buf.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
-    let range = match task.range {
-        Some(gamelife_core::TaskRange::Week) => Some("week"),
-        Some(gamelife_core::TaskRange::Month) => Some("month"),
-        None => None,
-    };
-    let remind_json = serde_json::to_string(&task.remind_offsets).unwrap_or_else(|_| "[]".into());
-    conn.execute(
-        "INSERT INTO tasks (id, list_id, title, done, start, end, range, sort, repeat, remind_json, notes,
-                            ticktick_task_id, ticktick_project_id, ticktick_etag, ticktick_dirty, ticktick_all_day)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-         ON CONFLICT(id) DO UPDATE SET
-           list_id=excluded.list_id,
-           title=excluded.title,
-           done=excluded.done,
-           start=excluded.start,
-           end=excluded.end,
-           range=excluded.range,
-           sort=excluded.sort,
-           repeat=excluded.repeat,
-           remind_json=excluded.remind_json,
-           notes=excluded.notes,
-           ticktick_task_id=excluded.ticktick_task_id,
-           ticktick_project_id=excluded.ticktick_project_id,
-           ticktick_etag=excluded.ticktick_etag,
-           ticktick_dirty=excluded.ticktick_dirty,
-           ticktick_all_day=excluded.ticktick_all_day",
-        params![
-            task.id,
-            task.list_id,
-            task.title.trim(),
-            task.done as i64,
-            task.start,
-            task.end,
-            range,
-            task.sort,
-            repeat_sql(task.repeat),
-            remind_json,
-            task.notes,
-            task.ticktick_task_id,
-            task.ticktick_project_id,
-            task.ticktick_etag,
-            task.ticktick_dirty,
-            task.ticktick_all_day as i64,
-        ],
-    )
-    .map_err(crate::db_error::map_rusqlite)?;
-    Ok(())
-}
-
 fn delete_task_row(conn: &Connection, id: &str) -> Result<(), DbOpError> {
-    conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])
+    conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])
         .map_err(crate::db_error::map_rusqlite)?;
     Ok(())
-}
-
-fn load_ticktick_projects(conn: &Connection) -> Result<Vec<RemoteProject>, DbOpError> {
-    let Some(raw) = meta_get(conn, "ticktick_projects_json")? else {
-        return Ok(Vec::new());
-    };
-    let value: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-    Ok(parse_projects(&value))
 }
 
 fn open_app_db() -> Result<Connection, String> {
@@ -414,17 +352,6 @@ fn open_app_db() -> Result<Connection, String> {
     let conn = open(&path).map_err(|e| format!("{e:?}"))?;
     migrate(&conn).map_err(|e| format!("{e:?}"))?;
     Ok(conn)
-}
-
-fn next_list_sort(conn: &Connection, list_id: &str) -> Result<i64, DbOpError> {
-    let max: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(sort) FROM tasks WHERE list_id = ?1",
-            params![list_id],
-            |r| r.get(0),
-        )
-        .map_err(crate::db_error::map_rusqlite)?;
-    Ok(max.unwrap_or(-1) + 1)
 }
 
 fn mirror_to_new_task(m: &LocalMirror, sort: i64) -> Task {
@@ -474,7 +401,9 @@ fn apply_reconcile_actions(conn: &Connection, actions: &[ReconcileAction]) -> Re
                 let Some(task) = tasks.iter_mut().find(|t| t.id == m.local_id) else {
                     continue;
                 };
-                if task.ticktick_dirty == 1 {
+                // Second guard: only clean rows accept Update/Delete.
+                // dirty==1 is in-flight push; dirty==2 is ambiguous create — Link only.
+                if task.ticktick_dirty != 0 {
                     continue;
                 }
                 apply_mirror_to_task(task, m);
@@ -484,7 +413,7 @@ fn apply_reconcile_actions(conn: &Connection, actions: &[ReconcileAction]) -> Re
                 let Some(task) = tasks.iter().find(|t| t.id == *local_id) else {
                     continue;
                 };
-                if task.ticktick_dirty == 1 {
+                if task.ticktick_dirty != 0 {
                     continue;
                 }
                 delete_task_row(conn, local_id).map_err(|e| format!("{e:?}"))?;
@@ -501,6 +430,7 @@ fn apply_reconcile_actions(conn: &Connection, actions: &[ReconcileAction]) -> Re
                 if task.ticktick_dirty == 1 {
                     continue;
                 }
+                // dirty == 0 or 2 may Link
                 task.ticktick_task_id = Some(ticktick_task_id.clone());
                 task.ticktick_project_id = Some(ticktick_project_id.clone());
                 task.ticktick_etag = etag.clone();
@@ -689,6 +619,80 @@ fn set_last_result(conn: &Connection, msg: &str) {
     let _ = meta_set(conn, "ticktick_last_result", msg);
 }
 
+/// Pull body after the switch/token gate. Used by `run_pull` and tests.
+pub(crate) fn run_pull_body(
+    now: i64,
+    api: &mut dyn TickTickApi,
+    conn: &Connection,
+) -> Result<(), String> {
+    let settings = load_settings();
+    let projects = load_ticktick_projects(conn).map_err(|e| format!("{e:?}"))?;
+    let roles = settings.ticktick_project_roles.clone();
+
+    let tasks = load_tasks(conn).map_err(|e| format!("{e:?}"))?;
+    for mut task in tasks.into_iter().filter(|t| t.ticktick_dirty == 1) {
+        let result = push_one(api, &task, &projects, &roles);
+        if matches!(&result, PushResult::Failed(msg) if msg == "需要重新连接") {
+            set_last_result(conn, "需要重新连接");
+            return Ok(());
+        }
+        apply_push_result(&mut task, &result);
+        if let Err(e) = persist_task(conn, &task) {
+            set_last_result(conn, &format!("{e:?}"));
+            return Ok(());
+        }
+    }
+
+    let last_sync_at = meta_get(conn, "ticktick_last_sync_at")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<i64>().ok());
+    let first_sync = last_sync_at.is_none();
+    let day = day_str_for_ts(now);
+    let day_start = start_of_named_day(&day).unwrap_or(0);
+    let next_day_start = end_of_local_day(day_start);
+
+    let local = load_tasks(conn).map_err(|e| format!("{e:?}"))?;
+    let round = pull_round(
+        api,
+        &local,
+        &projects,
+        &roles,
+        first_sync,
+        now,
+        last_sync_at,
+        day_start,
+        next_day_start,
+    );
+
+    if let Err(e) = apply_reconcile_actions(conn, &round.actions) {
+        set_last_result(conn, &e);
+        return Ok(());
+    }
+
+    if round.advance_sync_at {
+        let _ = meta_set(conn, "ticktick_last_sync_at", &now.to_string());
+    }
+    let result_msg = round.error.as_deref().unwrap_or("ok");
+    set_last_result(conn, result_msg);
+    Ok(())
+}
+
+/// Testable gate: when `enabled` or `has_token` is false, return Ok without calling `api`.
+#[cfg(test)]
+pub(crate) fn run_pull_gated(
+    now: i64,
+    enabled: bool,
+    has_token: bool,
+    api: &mut dyn TickTickApi,
+    conn: &Connection,
+) -> Result<(), String> {
+    if !enabled || !has_token {
+        return Ok(());
+    }
+    run_pull_body(now, api, conn)
+}
+
 /// Pull cycle used by Task 7 commands and the sampler. No HTTP when off / no token.
 pub fn run_pull(now: i64) -> Result<(), String> {
     let settings = load_settings();
@@ -707,57 +711,7 @@ pub fn run_pull(now: i64) -> Result<(), String> {
             return Ok(());
         }
     };
-
-    let projects = load_ticktick_projects(&conn).map_err(|e| format!("{e:?}"))?;
-    let roles = settings.ticktick_project_roles.clone();
-
-    let tasks = load_tasks(&conn).map_err(|e| format!("{e:?}"))?;
-    for mut task in tasks.into_iter().filter(|t| t.ticktick_dirty == 1) {
-        let result = push_one(&mut api, &task, &projects, &roles);
-        if matches!(&result, PushResult::Failed(msg) if msg == "需要重新连接") {
-            set_last_result(&conn, "需要重新连接");
-            return Ok(());
-        }
-        apply_push_result(&mut task, &result);
-        if let Err(e) = persist_task(&conn, &task) {
-            set_last_result(&conn, &format!("{e:?}"));
-            return Ok(());
-        }
-    }
-
-    let last_sync_at = meta_get(&conn, "ticktick_last_sync_at")
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse::<i64>().ok());
-    let first_sync = last_sync_at.is_none();
-    let day = day_str_for_ts(now);
-    let day_start = start_of_named_day(&day).unwrap_or(0);
-    let next_day_start = end_of_local_day(day_start);
-
-    let local = load_tasks(&conn).map_err(|e| format!("{e:?}"))?;
-    let round = pull_round(
-        &mut api,
-        &local,
-        &projects,
-        &roles,
-        first_sync,
-        now,
-        last_sync_at,
-        day_start,
-        next_day_start,
-    );
-
-    if let Err(e) = apply_reconcile_actions(&conn, &round.actions) {
-        set_last_result(&conn, &e);
-        return Ok(());
-    }
-
-    if round.advance_sync_at {
-        let _ = meta_set(&conn, "ticktick_last_sync_at", &now.to_string());
-    }
-    let result_msg = round.error.as_deref().unwrap_or("ok");
-    set_last_result(&conn, result_msg);
-    Ok(())
+    run_pull_body(now, &mut api, &conn)
 }
 
 /// Warning copy when a preset list has no TickTick write target.
@@ -898,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_run_shape_is_pull_round_without_calls_when_switch_off() {
+    fn pull_round_with_empty_projects_does_not_advance() {
         let mut api = FakeApi::empty();
         let round = pull_round(
             &mut api,
@@ -913,6 +867,108 @@ mod tests {
         );
         assert!(api.calls.is_empty());
         assert!(!round.advance_sync_at);
+    }
+
+    #[test]
+    fn run_pull_switch_off_makes_no_http_calls() {
+        let mut api = FakeApi::empty();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        run_pull_gated(1_000, false, true, &mut api, &conn).unwrap();
+        assert!(api.calls.is_empty());
+    }
+
+    #[test]
+    fn apply_reconcile_skips_update_and_delete_when_dirty_ambiguous() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        let task = Task {
+            id: "ambig".into(),
+            list_id: PRESET_MAINLINE_ID.into(),
+            title: "原标题".into(),
+            done: false,
+            start: Some(10),
+            end: Some(20),
+            range: None,
+            sort: 0,
+            repeat: Default::default(),
+            remind_offsets: vec![],
+            notes: String::new(),
+            ticktick_task_id: None,
+            ticktick_project_id: None,
+            ticktick_etag: String::new(),
+            ticktick_dirty: 2,
+            ticktick_all_day: false,
+        };
+        persist_task(&conn, &task).unwrap();
+        let actions = vec![
+            ReconcileAction::Update(LocalMirror {
+                local_id: "ambig".into(),
+                list_id: PRESET_MAINLINE_ID.into(),
+                title: "远端标题".into(),
+                done: false,
+                start: Some(10),
+                end: Some(20),
+                ticktick_task_id: Some("tt".into()),
+                ticktick_project_id: Some("p".into()),
+                ticktick_etag: "e".into(),
+                ticktick_dirty: 0,
+                ticktick_all_day: false,
+            }),
+            ReconcileAction::Delete {
+                local_id: "ambig".into(),
+            },
+        ];
+        apply_reconcile_actions(&conn, &actions).unwrap();
+        let row = load_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "ambig")
+            .unwrap();
+        assert_eq!(row.title, "原标题");
+        assert_eq!(row.ticktick_dirty, 2);
+    }
+
+    #[test]
+    fn apply_reconcile_accepts_link_when_dirty_ambiguous() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        let task = Task {
+            id: "ambig".into(),
+            list_id: PRESET_MAINLINE_ID.into(),
+            title: "写稿".into(),
+            done: false,
+            start: Some(10),
+            end: Some(20),
+            range: None,
+            sort: 0,
+            repeat: Default::default(),
+            remind_offsets: vec![],
+            notes: String::new(),
+            ticktick_task_id: None,
+            ticktick_project_id: None,
+            ticktick_etag: String::new(),
+            ticktick_dirty: 2,
+            ticktick_all_day: false,
+        };
+        persist_task(&conn, &task).unwrap();
+        apply_reconcile_actions(
+            &conn,
+            &[ReconcileAction::Link {
+                local_id: "ambig".into(),
+                ticktick_task_id: "tt1".into(),
+                ticktick_project_id: "p1".into(),
+                etag: "e1".into(),
+            }],
+        )
+        .unwrap();
+        let row = load_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "ambig")
+            .unwrap();
+        assert_eq!(row.ticktick_task_id.as_deref(), Some("tt1"));
+        assert_eq!(row.ticktick_dirty, 0);
     }
 
     #[test]

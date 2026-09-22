@@ -459,6 +459,84 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, DbOpError> {
     rows.collect::<Result<Vec<_>, _>>().map_err(map_rusqlite)
 }
 
+pub fn persist_task(conn: &Connection, task: &Task) -> Result<(), DbOpError> {
+    let range = match task.range {
+        Some(TaskRange::Week) => Some("week"),
+        Some(TaskRange::Month) => Some("month"),
+        None => None,
+    };
+    let remind_json = serde_json::to_string(&task.remind_offsets).unwrap_or_else(|_| "[]".into());
+    conn.execute(
+        "INSERT INTO tasks (id, list_id, title, done, start, end, range, sort, repeat, remind_json, notes,
+                            ticktick_task_id, ticktick_project_id, ticktick_etag, ticktick_dirty, ticktick_all_day)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+         ON CONFLICT(id) DO UPDATE SET
+           list_id=excluded.list_id,
+           title=excluded.title,
+           done=excluded.done,
+           start=excluded.start,
+           end=excluded.end,
+           range=excluded.range,
+           sort=excluded.sort,
+           repeat=excluded.repeat,
+           remind_json=excluded.remind_json,
+           notes=excluded.notes,
+           ticktick_task_id=excluded.ticktick_task_id,
+           ticktick_project_id=excluded.ticktick_project_id,
+           ticktick_etag=excluded.ticktick_etag,
+           ticktick_dirty=excluded.ticktick_dirty,
+           ticktick_all_day=excluded.ticktick_all_day",
+        params![
+            task.id,
+            task.list_id,
+            task.title.trim(),
+            task.done as i64,
+            task.start,
+            task.end,
+            range,
+            task.sort,
+            repeat_sql(task.repeat),
+            remind_json,
+            task.notes,
+            task.ticktick_task_id,
+            task.ticktick_project_id,
+            task.ticktick_etag,
+            task.ticktick_dirty,
+            task.ticktick_all_day as i64,
+        ],
+    )
+    .map_err(map_rusqlite)?;
+    Ok(())
+}
+
+pub fn new_task_id() -> String {
+    let mut buf = [0u8; 16];
+    getrandom::getrandom(&mut buf).expect("rng");
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn next_list_sort(conn: &Connection, list_id: &str) -> Result<i64, DbOpError> {
+    let max: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(sort) FROM tasks WHERE list_id = ?1",
+            params![list_id],
+            |r| r.get(0),
+        )
+        .map_err(map_rusqlite)?;
+    Ok(max.unwrap_or(-1) + 1)
+}
+
+pub fn load_ticktick_projects(
+    conn: &Connection,
+) -> Result<Vec<gamelife_core::ticktick_sync::RemoteProject>, DbOpError> {
+    let Some(raw) = meta_get(conn, "ticktick_projects_json")? else {
+        return Ok(Vec::new());
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    Ok(gamelife_core::ticktick_sync::parse_projects(&value))
+}
+
 pub(crate) fn parse_repeat(raw: &str) -> RepeatRule {
     match raw {
         "daily" => RepeatRule::Daily,
