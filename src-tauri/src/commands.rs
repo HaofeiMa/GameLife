@@ -2019,14 +2019,16 @@ fn load_ticktick_projects(conn: &Connection) -> Result<Vec<gamelife_core::tickti
     Ok(parse_projects(&value))
 }
 
-/// Linked tasks may only move onto a preset list that has a write target.
-/// Missing project cache counts as no write target. Unlinked tasks always pass.
+/// Linked tasks moving onto a non-preset list are allowed (local move + dirty;
+/// later push DELETEs). Moving onto a preset without a write target is rejected
+/// with `ticktick_no_list`. Missing project cache counts as no write target.
+/// Unlinked tasks always pass.
 fn ensure_linked_move_ok(conn: &Connection, task: &Task, new_list_id: &str) -> Result<(), DbOpError> {
     if task.ticktick_task_id.is_none() {
         return Ok(());
     }
     if !PRESET_LIST_IDS.contains(&new_list_id) {
-        return Err(DbOpError::Rejected("ticktick_no_list".into()));
+        return Ok(());
     }
     let lists = load_task_lists(conn)?;
     let Some(list) = lists.iter().find(|l| l.id == new_list_id) else {
@@ -3086,6 +3088,27 @@ mod tests {
             .find(|t| t.id == "t")
             .unwrap();
         assert_eq!(row.list_id, "list-mainline");
+    }
+
+    #[test]
+    fn linked_move_onto_custom_list_marks_dirty() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        // migrate already seeds preset lists; insert only a custom list + linked task.
+        conn.execute_batch(
+            "INSERT INTO task_lists (id, name, sort, role) VALUES ('list-custom','自定义',10,'custom');
+             INSERT INTO tasks (id, list_id, title, done, start, end, repeat, notes, ticktick_task_id, ticktick_project_id, ticktick_dirty)
+             VALUES ('t','list-mainline','写稿',0,10,20,'none','', 'tt','p',0);",
+        )
+        .unwrap();
+        move_task_in(&conn, "t", "list-custom".into()).unwrap();
+        let row = load_tasks(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "t")
+            .unwrap();
+        assert_eq!(row.list_id, "list-custom");
+        assert_eq!(row.ticktick_dirty, 1);
     }
 
     fn sample_view(id: &str, title: &str) -> TaskView {
