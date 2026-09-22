@@ -355,7 +355,7 @@ pub fn reconcile(input: &ReconcileInput) -> Vec<ReconcileAction> {
 
     let mut actions = Vec::new();
 
-    // dirty == 2: exact title/start/end link on the write-target list
+    // dirty == 2: exact title/mapped-times/all_day link on the write-target list
     for row in input.local.iter().filter(|r| r.ticktick_dirty == 2) {
         let Some(role) = role_for_list_id(&row.list_id) else {
             continue;
@@ -369,10 +369,20 @@ pub fn reconcile(input: &ReconcileInput) -> Vec<ReconcileAction> {
             .filter(|f| f.ok && f.project_id == target.id)
             .flat_map(|f| f.open.iter())
             .filter(|t| {
+                if claimed.contains(&t.id) {
+                    return false;
+                }
+                let (start, end, all_day) = map_times(
+                    t.all_day,
+                    t.start,
+                    t.end,
+                    input.day_start,
+                    input.next_day_start,
+                );
                 t.title == row.title
-                    && t.start == row.start
-                    && t.end == row.end
-                    && !claimed.contains(&t.id)
+                    && start == row.start
+                    && end == row.end
+                    && all_day == row.ticktick_all_day
             })
             .collect();
         if candidates.len() == 1 {
@@ -384,6 +394,11 @@ pub fn reconcile(input: &ReconcileInput) -> Vec<ReconcileAction> {
                 ticktick_project_id: remote.project_id.clone(),
                 etag: remote.etag.clone(),
             });
+        } else if candidates.len() > 1 {
+            // Ambiguous: do not Link, but claim so Insert does not duplicate.
+            for remote in &candidates {
+                claimed.insert(remote.id.clone());
+            }
         }
     }
 
@@ -828,6 +843,44 @@ mod tests {
         });
         assert!(actions.iter().any(|a| matches!(a, ReconcileAction::Link { local_id, ticktick_task_id, .. }
             if local_id == "L1" && ticktick_task_id == "t1")));
+    }
+
+    #[test]
+    fn dirty_two_links_all_day_via_map_times() {
+        let projects = vec![proj("p", 1)];
+        let mut roles = BTreeMap::new();
+        roles.insert("p".into(), "mainline".into());
+        let mut local = mirror("L1", None, "p", 2);
+        local.ticktick_project_id = None;
+        local.ticktick_etag.clear();
+        local.ticktick_all_day = true;
+        local.start = Some(0);
+        local.end = Some(86_400);
+        let mut remote = open("t1", "p", "写稿", "etag");
+        remote.all_day = true;
+        remote.start = Some(100);
+        remote.end = Some(200);
+        let fetches = vec![ProjectFetch {
+            project_id: "p".into(),
+            ok: true,
+            open: vec![remote],
+        }];
+        let actions = reconcile(&ReconcileInput {
+            local: &[local],
+            projects: &projects,
+            roles: &roles,
+            fetches: &fetches,
+            completed_ids: &[],
+            completed_ok: true,
+            first_sync: false,
+            day_start: 0,
+            next_day_start: 86_400,
+        });
+        assert!(actions.iter().any(|a| matches!(a, ReconcileAction::Link { local_id, ticktick_task_id, .. }
+            if local_id == "L1" && ticktick_task_id == "t1")));
+        assert!(actions
+            .iter()
+            .all(|a| !matches!(a, ReconcileAction::Insert(_))));
     }
 
     #[test]
