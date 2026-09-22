@@ -2,32 +2,45 @@
 //! Real HTTP is behind `TickTickApi`; tests use `FakeApi`.
 
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use chrono::{TimeZone, Utc};
 use gamelife_core::task::{
     ListRole, RepeatRule, Task, PRESET_CHORE_ID, PRESET_LONGTERM_ID, PRESET_MAINLINE_ID,
     PRESET_SIDE_ID,
 };
 use gamelife_core::ticktick_sync::{
-    parse_completed_ids, parse_open_tasks, parse_role, push_op, reconcile, write_target,
-    LocalMirror, ProjectFetch, PushKind, PushOp, ReconcileAction, ReconcileInput, RemoteProject,
+    parse_completed_ids, parse_open_tasks, parse_projects, parse_role, push_op, reconcile,
+    stamp_missing_roles, write_target, LocalMirror, ProjectFetch, PushKind, PushOp,
+    ReconcileAction, ReconcileInput, RemoteProject,
 };
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
-use crate::config::load_settings;
+use crate::config::{load_settings, save_settings as write_settings_file};
 use crate::db::{
     app_db_path, load_tasks, load_ticktick_projects, meta_get, meta_set, migrate, new_task_id,
     next_list_sort, open, persist_task,
 };
 use crate::db_error::DbOpError;
 use crate::keychain::{
-    get_ticktick_secret, set_ticktick_secret, TICKTICK_ACCESS_TOKEN, TICKTICK_CLIENT_SECRET,
-    TICKTICK_REFRESH_TOKEN,
+    delete_ticktick_secret, get_ticktick_secret, set_ticktick_secret, TICKTICK_ACCESS_TOKEN,
+    TICKTICK_CLIENT_SECRET, TICKTICK_REFRESH_TOKEN,
 };
 use crate::scheduler::{day_str_for_ts, end_of_local_day, start_of_named_day};
 
 const API_BASE: &str = "https://api.ticktick.com/open/v1";
 const OAUTH_TOKEN_URL: &str = "https://ticktick.com/oauth/token";
+const OAUTH_AUTHORIZE: &str = "https://ticktick.com/oauth/authorize";
+const HOURLY_SECS: i64 = 3600;
+const OAUTH_TIMEOUT_SECS: u64 = 180;
 
 #[derive(Debug, Clone)]
 pub struct TickTickResponse {
@@ -714,6 +727,426 @@ pub fn run_pull(now: i64) -> Result<(), String> {
     run_pull_body(now, &mut api, &conn)
 }
 
+/// Background pull used when the settings switch flips on.
+pub fn spawn_pull() {
+    std::thread::spawn(|| {
+        let _ = run_pull(crate::sync::now_secs());
+    });
+}
+
+/// True when `last` is missing or at least an hour behind `now`.
+pub(crate) fn ticktick_due(last: Option<i64>, now: i64) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.saturating_sub(t) >= HOURLY_SECS,
+    }
+}
+
+/// Sampler hourly check: spawn `run_pull` when due. Does not POST dirty-2 rows.
+pub fn maybe_spawn_sync(conn: &Connection, now: i64) {
+    let settings = load_settings();
+    if !settings.ticktick_enabled {
+        return;
+    }
+    if get_ticktick_secret(TICKTICK_ACCESS_TOKEN).is_err() {
+        return;
+    }
+    let last = meta_get(conn, "ticktick_last_sync_at")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<i64>().ok());
+    if !ticktick_due(last, now) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = run_pull(now);
+    });
+}
+
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Build the TickTick authorize URL (PKCE S256, scope tasks:write).
+pub fn authorize_url(client_id: &str, redirect: &str, state: &str, challenge: &str) -> String {
+    format!(
+        "{OAUTH_AUTHORIZE}?client_id={}&redirect_uri={}&response_type=code&scope=tasks%3Awrite&code_challenge={}&code_challenge_method=S256&state={}",
+        percent_encode(client_id),
+        percent_encode(redirect),
+        percent_encode(challenge),
+        percent_encode(state),
+    )
+}
+
+fn random_base64url(nbytes: usize) -> String {
+    let mut buf = vec![0u8; nbytes];
+    getrandom::getrandom(&mut buf).expect("rng");
+    URL_SAFE_NO_PAD.encode(&buf)
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    let hash = Sha256::digest(verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(hash)
+}
+
+fn role_key(role: ListRole) -> Option<&'static str> {
+    match role {
+        ListRole::Mainline => Some("mainline"),
+        ListRole::Side => Some("side"),
+        ListRole::Longterm => Some("longterm"),
+        ListRole::Chore => Some("chore"),
+        ListRole::Custom => None,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickTickProjectView {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickTickStatus {
+    pub enabled: bool,
+    pub connected: bool,
+    pub client_id: String,
+    pub projects: Vec<TickTickProjectView>,
+    pub write_targets: BTreeMap<String, String>,
+    pub last_sync_at: Option<i64>,
+    pub last_result: String,
+}
+
+fn access_token_present() -> bool {
+    get_ticktick_secret(TICKTICK_ACCESS_TOKEN).is_ok()
+}
+
+fn build_status(conn: &Connection) -> Result<TickTickStatus, String> {
+    let settings = load_settings();
+    let projects = load_ticktick_projects(conn).map_err(|e| format!("{e:?}"))?;
+    let views: Vec<TickTickProjectView> = projects
+        .iter()
+        .map(|p| TickTickProjectView {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            sort_order: p.sort_order,
+            role: settings
+                .ticktick_project_roles
+                .get(&p.id)
+                .cloned()
+                .unwrap_or_else(|| "ignore".into()),
+        })
+        .collect();
+    let mut write_targets = BTreeMap::new();
+    for role in [
+        ListRole::Mainline,
+        ListRole::Side,
+        ListRole::Longterm,
+        ListRole::Chore,
+    ] {
+        let Some(key) = role_key(role) else {
+            continue;
+        };
+        if let Some(p) = write_target(&projects, &settings.ticktick_project_roles, role) {
+            write_targets.insert(key.to_string(), p.name.clone());
+        }
+    }
+    let last_sync_at = meta_get(conn, "ticktick_last_sync_at")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<i64>().ok());
+    let last_result = meta_get(conn, "ticktick_last_result")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    Ok(TickTickStatus {
+        enabled: settings.ticktick_enabled,
+        connected: access_token_present(),
+        client_id: settings.ticktick_client_id,
+        projects: views,
+        write_targets,
+        last_sync_at,
+        last_result,
+    })
+}
+
+fn status_blocking() -> Result<TickTickStatus, String> {
+    let conn = open_app_db()?;
+    build_status(&conn)
+}
+
+/// Confirm dirty-2 rows with one Create each. Hourly sync never calls this.
+fn push_ambiguous_creates(conn: &Connection, api: &mut dyn TickTickApi) -> Result<(), String> {
+    let settings = load_settings();
+    let projects = load_ticktick_projects(conn).map_err(|e| format!("{e:?}"))?;
+    let roles = &settings.ticktick_project_roles;
+    let tasks = load_tasks(conn).map_err(|e| format!("{e:?}"))?;
+    let mut need_manual = false;
+    for mut task in tasks.into_iter().filter(|t| t.ticktick_dirty == 2) {
+        let mut for_push = task.clone();
+        for_push.ticktick_dirty = 1;
+        let result = push_one(api, &for_push, &projects, roles);
+        match &result {
+            PushResult::Synced { .. } => {
+                apply_push_result(&mut task, &result);
+                persist_task(conn, &task).map_err(|e| format!("{e:?}"))?;
+            }
+            PushResult::Ambiguous => {
+                need_manual = true;
+            }
+            PushResult::Failed(_) | PushResult::Unchanged | PushResult::Cleared => {
+                if task.ticktick_task_id.is_none() {
+                    need_manual = true;
+                }
+            }
+        }
+    }
+    if need_manual {
+        set_last_result(conn, "有任务需要手动确认");
+    }
+    Ok(())
+}
+
+fn refresh_projects_blocking() -> Result<TickTickStatus, String> {
+    if !access_token_present() {
+        return Err("尚未连接".into());
+    }
+    let conn = open_app_db()?;
+    let mut api = LiveApi::from_settings()?;
+    let resp = api
+        .request("GET", "/project", None)
+        .map_err(|e| match e {
+            TickTickError::Transport => "同步失败".to_string(),
+            TickTickError::Http(msg) => msg,
+        })?;
+    if !(200..300).contains(&resp.status) {
+        return Err(format!("http {}", resp.status));
+    }
+    let projects = parse_projects(&resp.body);
+    let mut settings = load_settings();
+    stamp_missing_roles(&projects, &mut settings.ticktick_project_roles);
+    write_settings_file(&settings)?;
+    let raw = serde_json::to_string(&resp.body).map_err(|e| e.to_string())?;
+    meta_set(&conn, "ticktick_projects_json", &raw).map_err(|e| format!("{e:?}"))?;
+    build_status(&conn)
+}
+
+fn sync_now_blocking() -> Result<TickTickStatus, String> {
+    let settings = load_settings();
+    if !settings.ticktick_enabled {
+        return Err("同步到任务板已关闭".into());
+    }
+    if !access_token_present() {
+        return Err("尚未连接".into());
+    }
+    let now = crate::sync::now_secs();
+    run_pull(now)?;
+    let conn = open_app_db()?;
+    let mut api = LiveApi::from_settings()?;
+    push_ambiguous_creates(&conn, &mut api)?;
+    build_status(&conn)
+}
+
+fn query_param(req: &str, key: &str) -> Option<String> {
+    let line = req.lines().next()?;
+    let path = line.split_whitespace().nth(1)?;
+    let query = path.split('?').nth(1)?;
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let k = parts.next()?;
+        let v = parts.next().unwrap_or("");
+        if k == key {
+            return Some(query_percent_decode(v));
+        }
+    }
+    None
+}
+
+fn query_percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push((h * 16 + l) as u8);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn exchange_authorization_code(
+    client_id: &str,
+    client_secret: &str,
+    code: &str,
+    redirect: &str,
+    verifier: &str,
+) -> Result<(String, String), String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(OAUTH_TOKEN_URL)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("code", code),
+            ("redirect_uri", redirect),
+            ("code_verifier", verifier),
+        ])
+        .send()
+        .map_err(|_| "授权失败".to_string())?;
+    if !resp.status().is_success() {
+        return Err("授权失败".into());
+    }
+    let body: Value = resp.json().map_err(|_| "授权失败".to_string())?;
+    let access = body
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "授权失败".to_string())?;
+    let refresh = body
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok((access.to_string(), refresh))
+}
+
+fn connect_blocking() -> Result<TickTickStatus, String> {
+    let settings = load_settings();
+    let client_id = settings.ticktick_client_id.trim().to_string();
+    if client_id.is_empty() {
+        return Err("请先填写 Client ID".into());
+    }
+    let client_secret = get_ticktick_secret(TICKTICK_CLIENT_SECRET).unwrap_or_default();
+
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let redirect = format!("http://127.0.0.1:{port}/callback");
+
+    let verifier = random_base64url(64);
+    let challenge = pkce_challenge(&verifier);
+    let state = random_base64url(16);
+    let url = authorize_url(&client_id, &redirect, &state, &challenge);
+    crate::platform::open_url(&url)?;
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(listener.accept());
+    });
+    let (mut stream, _) = match rx.recv_timeout(Duration::from_secs(OAUTH_TIMEOUT_SECS)) {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(_) => return Err("授权超时".into()),
+    };
+
+    let mut buf = [0u8; 8192];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let got_state = query_param(&req, "state");
+    let code = query_param(&req, "code");
+
+    let body = "<html><body>可以关闭此窗口，返回 GameLife。</body></html>";
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+
+    if got_state.as_deref() != Some(state.as_str()) {
+        return Err("授权失败".into());
+    }
+    let Some(code) = code.filter(|c| !c.is_empty()) else {
+        return Err("授权失败".into());
+    };
+
+    let (access, refresh) =
+        exchange_authorization_code(&client_id, &client_secret, &code, &redirect, &verifier)?;
+    set_ticktick_secret(TICKTICK_ACCESS_TOKEN, &access)?;
+    set_ticktick_secret(TICKTICK_REFRESH_TOKEN, &refresh)?;
+
+    let conn = open_app_db()?;
+    build_status(&conn)
+}
+
+#[tauri::command]
+pub async fn ticktick_status() -> Result<TickTickStatus, String> {
+    tauri::async_runtime::spawn_blocking(status_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn ticktick_set_client_secret(secret: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || set_ticktick_secret(TICKTICK_CLIENT_SECRET, &secret))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn ticktick_disconnect() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        delete_ticktick_secret(TICKTICK_ACCESS_TOKEN)?;
+        delete_ticktick_secret(TICKTICK_REFRESH_TOKEN)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn ticktick_refresh_projects() -> Result<TickTickStatus, String> {
+    tauri::async_runtime::spawn_blocking(refresh_projects_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn ticktick_sync_now() -> Result<TickTickStatus, String> {
+    tauri::async_runtime::spawn_blocking(sync_now_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn ticktick_connect() -> Result<TickTickStatus, String> {
+    tauri::async_runtime::spawn_blocking(connect_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Warning copy when a preset list has no TickTick write target.
 pub fn no_write_target_warning(list_id: &str) -> Option<String> {
     let label = match list_id {
@@ -969,6 +1402,24 @@ mod tests {
             .unwrap();
         assert_eq!(row.ticktick_task_id.as_deref(), Some("tt1"));
         assert_eq!(row.ticktick_dirty, 0);
+    }
+
+    #[test]
+    fn authorize_url_asks_for_task_write_and_s256() {
+        let url = authorize_url("cid", "http://127.0.0.1:9/callback", "st", "ch");
+        assert!(url.starts_with("https://ticktick.com/oauth/authorize?"));
+        assert!(url.contains("client_id=cid"));
+        assert!(url.contains("scope=tasks%3Awrite") || url.contains("scope=tasks:write"));
+        assert!(url.contains("code_challenge=ch"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("state=st"));
+    }
+
+    #[test]
+    fn maybe_spawn_guard_is_due_only_after_an_hour() {
+        assert!(!ticktick_due(Some(1_000), 1_000 + 3599));
+        assert!(ticktick_due(Some(1_000), 1_000 + 3600));
+        assert!(ticktick_due(None, 50));
     }
 
     #[test]

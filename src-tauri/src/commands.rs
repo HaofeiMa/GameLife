@@ -2781,6 +2781,9 @@ pub fn save_settings(settings: AppSettings, update_policy: Option<bool>) -> Resu
     if !prev.task_notifications && settings.task_notifications {
         crate::macos::request_authorization();
     }
+    if !prev.ticktick_enabled && settings.ticktick_enabled {
+        crate::ticktick::spawn_pull();
+    }
     crate::macos::apply_login_at_startup(settings.login_at_startup);
     ping_task_notifications();
     if !update_policy.unwrap_or(true) {

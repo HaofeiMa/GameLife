@@ -49,6 +49,10 @@ use commands::{
     sync_set_credentials, sync_status, sync_test_connection, test_vision_provider,
     toggle_task_done, update_wish, upsert_task,
 };
+use ticktick::{
+    ticktick_connect, ticktick_disconnect, ticktick_refresh_projects, ticktick_set_client_secret,
+    ticktick_status, ticktick_sync_now,
+};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -150,6 +154,12 @@ pub fn run() {
             sync_set_credentials,
             sync_list_devices,
             sync_restore,
+            ticktick_status,
+            ticktick_set_client_secret,
+            ticktick_disconnect,
+            ticktick_refresh_projects,
+            ticktick_sync_now,
+            ticktick_connect,
         ])
         .setup(|app| {
             let pause = PauseControl::new();
