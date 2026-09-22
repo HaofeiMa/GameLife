@@ -27,11 +27,18 @@ import {
   syncStatus,
   syncTestConnection,
   testVisionProvider,
+  ticktickConnect,
+  ticktickDisconnect,
+  ticktickRefreshProjects,
+  ticktickSetClientSecret,
+  ticktickStatus,
+  ticktickSyncNow,
   type AppSettings,
   type ProviderKeyStatus,
   type SyncDevice,
   type SyncSettings,
   type SyncStatus,
+  type TickTickStatus,
   type VisionProviderSettings,
 } from "../lib/api";
 import {
@@ -44,6 +51,11 @@ import {
   normalizeSettleGraceHours,
   scopeLabel,
 } from "../lib/cloudSync";
+import {
+  roleForProject,
+  syncNowDisabled,
+  writeTargetHint,
+} from "../lib/ticktickSettings";
 import { GUIDE_PLACEHOLDERS, savedCategoryGuides } from "../lib/guides";
 import {
   policySignature,
@@ -75,6 +87,7 @@ type SettingsTab =
   | "api"
   | "lists"
   | "cloud"
+  | "ticktick"
   | "permissions"
   | "about";
 
@@ -83,9 +96,20 @@ const TABS: { value: SettingsTab; label: string }[] = [
   { value: "api", label: "API" },
   { value: "lists", label: "名单" },
   { value: "cloud", label: "云端" },
+  { value: "ticktick", label: "TickTick" },
   { value: "permissions", label: "权限" },
   { value: "about", label: "关于" },
 ];
+
+const TICKTICK_ROLE_OPTIONS: { value: string; label: string }[] = [
+  { value: "ignore", label: "忽略" },
+  { value: "mainline", label: "主线" },
+  { value: "side", label: "支线" },
+  { value: "longterm", label: "长期" },
+  { value: "chore", label: "杂项" },
+];
+
+const WRITE_TARGET_ROLES = ["mainline", "side", "longterm", "chore"] as const;
 
 /* --------------------------- layout atoms --------------------------- */
 
@@ -608,6 +632,10 @@ export function Settings() {
   const [cloudBusy, setCloudBusy] = useState(false);
   const [cloudNote, setCloudNote] = useState<string | null>(null);
   const [restoreDevice, setRestoreDevice] = useState<SyncDevice | null>(null);
+  const [tickStatus, setTickStatus] = useState<TickTickStatus | null>(null);
+  const [tickSecret, setTickSecret] = useState("");
+  const [tickBusy, setTickBusy] = useState(false);
+  const [tickNote, setTickNote] = useState<string | null>(null);
   const formLocked = saving;
   /** Older config.json may predate the cloud settings; never render undefined. */
   const sync = settings?.sync ?? defaultSyncSettings();
@@ -639,6 +667,24 @@ export function Settings() {
       })
       .catch((e) => {
         if (!cancelled) setCloudNote(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
+  useEffect(() => {
+    if (tab !== "ticktick") return;
+    let cancelled = false;
+    ticktickStatus()
+      .then((s) => {
+        if (!cancelled) {
+          setTickStatus(s);
+          setTickNote(null);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setTickNote(String(e));
       });
     return () => {
       cancelled = true;
@@ -861,6 +907,41 @@ export function Settings() {
       setCloudNote(String(e));
     } finally {
       setCloudBusy(false);
+    }
+  }
+
+  async function runTicktick(
+    action: () => Promise<TickTickStatus | void>,
+  ): Promise<void> {
+    setTickBusy(true);
+    setTickNote(null);
+    try {
+      const next = await action();
+      if (next) {
+        setTickStatus(next);
+      } else {
+        setTickStatus(await ticktickStatus());
+      }
+    } catch (e) {
+      setTickNote(String(e));
+    } finally {
+      setTickBusy(false);
+    }
+  }
+
+  async function handleTickSecretBlur() {
+    const typed = tickSecret.trim();
+    if (!typed) return;
+    setTickBusy(true);
+    setTickNote(null);
+    try {
+      await ticktickSetClientSecret(typed);
+      setTickSecret("");
+      setTickNote("Client Secret 已保存");
+    } catch (e) {
+      setTickNote(String(e));
+    } finally {
+      setTickBusy(false);
     }
   }
 
@@ -1567,6 +1648,166 @@ export function Settings() {
                     ))}
                   </ul>
                 )}
+              </Section>
+            </div>
+          )}
+
+          {tab === "ticktick" && (
+            <div className="flex flex-col gap-3">
+              <Section
+                title="TickTick"
+                caption="把已映射清单里的未完成任务同步到任务板的四个预设分组。"
+              >
+                <ToggleRow
+                  title="同步到任务板"
+                  description="关闭时不同步任务。已导入的任务留在任务板上。"
+                  checked={settings.ticktickEnabled === true}
+                  disabled={formLocked}
+                  onChange={(v) =>
+                    void persistBasic({ ...settings, ticktickEnabled: v })
+                  }
+                />
+                <div className="space-y-1 text-[13px] leading-relaxed text-muted-foreground">
+                  {tickNote ? <p>{tickNote}</p> : null}
+                  {tickStatus?.lastResult ? <p>{tickStatus.lastResult}</p> : null}
+                  {tickStatus?.lastSyncAt != null ? (
+                    <p>
+                      上次同步{" "}
+                      {new Date(tickStatus.lastSyncAt * 1000).toLocaleString()}
+                    </p>
+                  ) : null}
+                </div>
+                <Field
+                  label="Client ID"
+                  hint={
+                    !(settings.ticktickClientId ?? "").trim()
+                      ? "到 TickTick 开发者中心建应用，Redirect URI 填连接时显示的回跳地址。"
+                      : undefined
+                  }
+                >
+                  <Input
+                    value={settings.ticktickClientId ?? ""}
+                    disabled={formLocked || tickBusy}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        ticktickClientId: e.target.value,
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="Client Secret">
+                  <Input
+                    type="password"
+                    value={tickSecret}
+                    disabled={formLocked || tickBusy}
+                    placeholder="已保存则留空"
+                    onChange={(e) => setTickSecret(e.target.value)}
+                    onBlur={() => void handleTickSecretBlur()}
+                  />
+                </Field>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    disabled={formLocked || tickBusy}
+                    onClick={() => void runTicktick(() => ticktickConnect())}
+                  >
+                    连接
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      formLocked || tickBusy || !tickStatus?.connected
+                    }
+                    onClick={() =>
+                      void runTicktick(async () => {
+                        await ticktickDisconnect();
+                      })
+                    }
+                  >
+                    断开
+                  </Button>
+                </div>
+              </Section>
+
+              <Section title="清单映射">
+                {WRITE_TARGET_ROLES.map((role) => {
+                  const name = tickStatus?.writeTargets?.[role] ?? null;
+                  const hint = writeTargetHint(name);
+                  return hint ? (
+                    <p
+                      key={`wt-${role}`}
+                      className="text-[13px] leading-relaxed text-muted-foreground"
+                    >
+                      {hint}
+                    </p>
+                  ) : null;
+                })}
+                {(tickStatus?.projects ?? []).length === 0 ? (
+                  <p className="text-[13px] text-muted-foreground">
+                    {tickStatus?.connected
+                      ? "还没有清单。点「刷新清单」拉取。"
+                      : "连接后可拉取清单。"}
+                  </p>
+                ) : (
+                  (tickStatus?.projects ?? []).map((project) => (
+                    <Field key={project.id} label={project.name}>
+                      <Select
+                        value={roleForProject(
+                          settings.ticktickProjectRoles,
+                          project.id,
+                        )}
+                        disabled={formLocked || tickBusy}
+                        onChange={(e) => {
+                          const next = {
+                            ...(settings.ticktickProjectRoles ?? {}),
+                            [project.id]: e.target.value,
+                          };
+                          void persistBasic({
+                            ...settings,
+                            ticktickProjectRoles: next,
+                          });
+                        }}
+                      >
+                        {TICKTICK_ROLE_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  ))
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      formLocked || tickBusy || !tickStatus?.connected
+                    }
+                    onClick={() =>
+                      void runTicktick(() => ticktickRefreshProjects())
+                    }
+                  >
+                    刷新清单
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      formLocked ||
+                      tickBusy ||
+                      syncNowDisabled(
+                        settings.ticktickEnabled === true,
+                        tickStatus?.connected === true,
+                      )
+                    }
+                    onClick={() => void runTicktick(() => ticktickSyncNow())}
+                  >
+                    立即同步
+                  </Button>
+                </div>
               </Section>
             </div>
           )}

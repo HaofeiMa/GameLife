@@ -11,12 +11,14 @@ export function TaskDateCard({
   onClose,
   onSaved,
   onError,
+  onWarning,
   className,
 }: {
   task: TaskView;
   onClose: () => void;
   onSaved: () => Promise<void> | void;
   onError: (message: string) => void;
+  onWarning?: (text: string) => void;
   className?: string;
 }) {
   const [form, setForm] = useState(() => formFromTask(task, Date.now() / 1000));
@@ -37,13 +39,14 @@ export function TaskDateCard({
         unixAt(form.startDay, form.startHm),
         unixAt(form.endDay, form.endHm),
       );
-      await upsertTask({
+      const result = await upsertTask({
         ...task,
         start: range.start,
         end: range.end,
         repeat: form.repeat,
         remindOffsets: form.remindOffsets,
       });
+      if (result.warning) onWarning?.(result.warning);
       onClose();
       void onSaved();
     } catch (e) {

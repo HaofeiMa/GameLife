@@ -527,13 +527,14 @@ export function Tasks() {
       const sort = nextListSort(tasks, listId);
       void (async () => {
         try {
-          await upsertTask({
+          const result = await upsertTask({
             ...parsed,
             id,
             listId,
             done: false,
             sort: 0,
           });
+          if (result.warning) addToast(result.warning);
           await reorderTask(id, listId, sort);
           await refresh();
         } catch (e) {
@@ -864,7 +865,7 @@ export function Tasks() {
     }
     const scheduled = Boolean(parsed?.parseOk && parsed.start != null && parsed.end != null);
     try {
-      await upsertTask({
+      const result = await upsertTask({
         id: crypto.randomUUID(),
         listId,
         title,
@@ -877,6 +878,7 @@ export function Tasks() {
         remindOffsets: [],
         notes: "",
       });
+      if (result.warning) addToast(result.warning);
       await refresh();
       setLine("");
       setParsed(null);
@@ -996,6 +998,7 @@ export function Tasks() {
         onClose={() => setDateTask(null)}
         onSaved={refresh}
         onError={addToast}
+        onWarning={addToast}
       />
       <TaskDetailDialog
         task={detailTask}
@@ -1003,6 +1006,7 @@ export function Tasks() {
         onClose={() => setDetailTask(null)}
         onSaved={refresh}
         onError={addToast}
+        onWarning={addToast}
         onAbandon={(task) => {
           setDetailTask(null);
           setAbandonIds([task.id]);
@@ -1122,7 +1126,8 @@ export function Tasks() {
         onDuplicate={(task) => {
           setMenu(null);
           void run(async () => {
-            await duplicateTask(task.id);
+            const result = await duplicateTask(task.id);
+            if (result.warning) addToast(result.warning);
           });
         }}
         onAbandon={(task) => {

@@ -18,6 +18,7 @@ import { Input } from "../components/ui/input";
 import { Progress } from "../components/ui/progress";
 import { Select } from "../components/ui/select";
 import { SkeletonPanel } from "../components/ui/skeleton";
+import { Toaster, type ToastItem } from "../components/ui/toaster";
 import {
   deleteTask,
   duplicateTask,
@@ -935,8 +936,18 @@ export function Today() {
     x: number;
     y: number;
   } | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const toastIdRef = useRef(0);
   const timelineSplit = useTimelineSplit();
   const timelineRef = useRef<HTMLDivElement | null>(null);
+
+  const addToast = useCallback((text: string) => {
+    const id = ++toastIdRef.current;
+    setToasts((prev) => [...prev, { id, text }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((item) => item.id !== id));
+    }, 3000);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -1052,20 +1063,21 @@ export function Today() {
       const id = crypto.randomUUID();
       const sort = nextListSort(board?.tasks ?? tasks, listId);
       runTask(async () => {
-        await upsertTask({
+        const result = await upsertTask({
           ...parsed,
           id,
           listId,
           done: false,
           sort: 0,
         });
+        if (result.warning) addToast(result.warning);
         await reorderTask(id, listId, sort);
       });
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [board, dayView, runTask]);
+  }, [addToast, board, dayView, runTask]);
 
   async function handleEndToday() {
     setBusy(true);
@@ -1209,6 +1221,7 @@ export function Today() {
   return (
     <>
       {header}
+      <Toaster toasts={toasts} />
       <div className="flex-1 overflow-y-auto">
         <div className="flex flex-col gap-3 px-[22px] pb-4">
           <PermissionBanner />
@@ -1549,6 +1562,7 @@ export function Today() {
         onClose={() => setDateTask(null)}
         onSaved={refresh}
         onError={(message) => setError(message)}
+        onWarning={addToast}
       />
       <TaskDetailDialog
         task={detailTask}
@@ -1556,6 +1570,7 @@ export function Today() {
         onClose={() => setDetailTask(null)}
         onSaved={refresh}
         onError={(message) => setError(message)}
+        onWarning={addToast}
         onAbandon={(task) => {
           setDetailTask(null);
           setAbandonTarget(task);
@@ -1615,7 +1630,8 @@ export function Today() {
         onDuplicate={(task) => {
           setMenu(null);
           runTask(async () => {
-            await duplicateTask(task.id);
+            const result = await duplicateTask(task.id);
+            if (result.warning) addToast(result.warning);
           });
         }}
         onAbandon={(task) => {

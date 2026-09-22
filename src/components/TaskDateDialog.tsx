@@ -7,11 +7,13 @@ export function TaskDateDialog({
   onClose,
   onSaved,
   onError,
+  onWarning,
 }: {
   task: TaskView | null;
   onClose: () => void;
   onSaved: () => Promise<void> | void;
   onError: (message: string) => void;
+  onWarning?: (text: string) => void;
 }) {
   if (!task) {
     return <Dialog open={false} onClose={onClose} title="更改日期" chrome="float" />;
@@ -24,6 +26,7 @@ export function TaskDateDialog({
         onClose={onClose}
         onSaved={onSaved}
         onError={onError}
+        onWarning={onWarning}
       />
     </Dialog>
   );

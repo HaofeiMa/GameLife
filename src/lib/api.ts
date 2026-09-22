@@ -329,6 +329,11 @@ export interface AppSettings {
   /** Unused by the UI; kept so old config.json still loads. */
   todayTimelineMode: string;
   sync: SyncSettings;
+  /** Pull unfinished TickTick tasks into the four preset board lists. Default off. */
+  ticktickEnabled: boolean;
+  ticktickClientId: string;
+  /** projectId → ignore | mainline | side | longterm | chore */
+  ticktickProjectRoles: Record<string, string>;
 }
 
 export interface ProviderKeyStatus {
@@ -407,7 +412,12 @@ export function listTaskBoard(): Promise<TaskBoardView> {
   return invoke("list_task_board");
 }
 
-export function upsertTask(task: TaskView): Promise<void> {
+export interface TaskWriteResult {
+  task: TaskView | null;
+  warning: string | null;
+}
+
+export function upsertTask(task: TaskView): Promise<TaskWriteResult> {
   return invoke("upsert_task", { task });
 }
 
@@ -423,7 +433,7 @@ export function reorderList(id: string, sort: number): Promise<void> {
   return invoke("reorder_list", { id, sort });
 }
 
-export function duplicateTask(id: string): Promise<TaskView> {
+export function duplicateTask(id: string): Promise<TaskWriteResult> {
   return invoke("duplicate_task", { id });
 }
 
@@ -618,4 +628,41 @@ export function syncListDevices(): Promise<SyncDevice[]> {
 /** Stages the restored database next to the live one; returns its path. */
 export function syncRestore(deviceId: string): Promise<string> {
   return invoke("sync_restore", { deviceId });
+}
+
+export interface TickTickProject {
+  id: string;
+  name: string;
+  sortOrder: number;
+  role: string;
+}
+
+export interface TickTickStatus {
+  enabled: boolean;
+  connected: boolean;
+  clientId: string;
+  projects: TickTickProject[];
+  writeTargets: Record<string, string>;
+  lastSyncAt: number | null;
+  lastResult: string;
+}
+
+export function ticktickStatus(): Promise<TickTickStatus> {
+  return invoke("ticktick_status");
+}
+export function ticktickSetClientSecret(secret: string): Promise<void> {
+  return invoke("ticktick_set_client_secret", { secret });
+}
+export function ticktickConnect(): Promise<TickTickStatus> {
+  return invoke("ticktick_connect");
+}
+/** Live command returns unit; reload with `ticktickStatus()` after success. */
+export function ticktickDisconnect(): Promise<void> {
+  return invoke("ticktick_disconnect");
+}
+export function ticktickRefreshProjects(): Promise<TickTickStatus> {
+  return invoke("ticktick_refresh_projects");
+}
+export function ticktickSyncNow(): Promise<TickTickStatus> {
+  return invoke("ticktick_sync_now");
 }

@@ -17,6 +17,7 @@ import type {
   RhythmStartHour,
   SlotActivityMinutes,
   SyncStatus,
+  TickTickStatus,
   TodaySlot,
   TodayView,
   TaskBoardView,
@@ -637,6 +638,9 @@ export const PREVIEW_SETTINGS: AppSettings = {
   },
   theme: "light",
   colorTheme: "default",
+  ticktickEnabled: false,
+  ticktickClientId: "",
+  ticktickProjectRoles: {},
   sync: {
     enabled: true,
     target: "webdav",
@@ -678,6 +682,16 @@ export const PREVIEW_SYNC_STATUS: SyncStatus = {
       lastSeen: 1789365000,
     },
   ],
+};
+
+export const PREVIEW_TICKTICK_STATUS: TickTickStatus = {
+  enabled: false,
+  connected: false,
+  clientId: "",
+  projects: [],
+  writeTargets: {},
+  lastSyncAt: null,
+  lastResult: "",
 };
 
 export const PREVIEW_KEY_STATUS: ProviderKeyStatus = {

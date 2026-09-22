@@ -5,6 +5,7 @@ import {
   PREVIEW_PERMISSIONS,
   PREVIEW_SETTINGS,
   PREVIEW_SYNC_STATUS,
+  PREVIEW_TICKTICK_STATUS,
   PREVIEW_TODAY,
   PREVIEW_WEEK,
   previewDayView,
@@ -131,7 +132,7 @@ export async function previewInvoke<T>(
         if (i >= 0) PREVIEW_TASK_BOARD.tasks[i] = row;
         else PREVIEW_TASK_BOARD.tasks.push(row);
       }
-      return undefined as T;
+      return { task: null, warning: null } as T;
     }
     case "toggle_task_done": {
       const id = String(args?.id ?? "");
@@ -218,7 +219,7 @@ export async function previewInvoke<T>(
       const src = PREVIEW_TASK_BOARD.tasks.find(
         (row) => row.id === String(args?.id ?? ""),
       );
-      if (!src) return undefined as T;
+      if (!src) return { task: null, warning: null } as T;
       const copy = {
         ...src,
         id: `task-preview-${Date.now()}`,
@@ -226,8 +227,16 @@ export async function previewInvoke<T>(
         sort: Math.max(0, ...PREVIEW_TASK_BOARD.tasks.map((t) => t.sort)) + 1,
       };
       PREVIEW_TASK_BOARD.tasks.push(copy);
-      return copy as T;
+      return { task: copy, warning: null } as T;
     }
+    case "ticktick_status":
+    case "ticktick_connect":
+    case "ticktick_refresh_projects":
+    case "ticktick_sync_now":
+      return PREVIEW_TICKTICK_STATUS as T;
+    case "ticktick_set_client_secret":
+    case "ticktick_disconnect":
+      return null as T;
     default:
       console.warn(`[preview] unhandled invoke: ${cmd}`);
       return undefined as T;

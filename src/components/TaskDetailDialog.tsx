@@ -44,6 +44,7 @@ export function TaskDetailDialog({
   onClose,
   onSaved,
   onError,
+  onWarning,
   onAbandon,
 }: {
   task: TaskView | null;
@@ -51,6 +52,7 @@ export function TaskDetailDialog({
   onClose: () => void;
   onSaved: () => Promise<void> | void;
   onError: (message: string) => void;
+  onWarning?: (text: string) => void;
   onAbandon: (task: TaskView) => void;
 }) {
   if (!task) {
@@ -64,6 +66,7 @@ export function TaskDetailDialog({
       onClose={onClose}
       onSaved={onSaved}
       onError={onError}
+      onWarning={onWarning}
       onAbandon={onAbandon}
     />
   );
@@ -75,6 +78,7 @@ function TaskDetailDialogBody({
   onClose,
   onSaved,
   onError,
+  onWarning,
   onAbandon,
 }: {
   task: TaskView;
@@ -82,6 +86,7 @@ function TaskDetailDialogBody({
   onClose: () => void;
   onSaved: () => Promise<void> | void;
   onError: (message: string) => void;
+  onWarning?: (text: string) => void;
   onAbandon: (task: TaskView) => void;
 }) {
   const role = lists.find((list) => list.id === task.listId)?.role ?? "side";
@@ -109,7 +114,8 @@ function TaskDetailDialogBody({
   }, []);
 
   async function savePatch(patch: Partial<TaskView>) {
-    await upsertTask({ ...snapshot.current, ...patch });
+    const result = await upsertTask({ ...snapshot.current, ...patch });
+    if (result.warning) onWarning?.(result.warning);
     void onSaved();
   }
 
@@ -211,6 +217,7 @@ function TaskDetailDialogBody({
               onClose={() => setDateOpen(false)}
               onSaved={onSaved}
               onError={onError}
+              onWarning={onWarning}
             />
           ) : null
         }
@@ -322,7 +329,8 @@ function TaskDetailDialogBody({
           setMore(null);
           void (async () => {
             try {
-              await duplicateTask(task.id);
+              const result = await duplicateTask(task.id);
+              if (result.warning) onWarning?.(result.warning);
               void onSaved();
             } catch (e) {
               onError(taskCommandError(e));
