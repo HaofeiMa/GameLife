@@ -108,9 +108,10 @@ TickTick 里的安排进不了任务板。本地勾完的任务也不会回到 T
 
 开关下面，关闭时仍可编辑：
 
-- Client ID。未填写时说明：到 TickTick 开发者中心建应用，Redirect URI 填连接时显示的回跳地址。
+- Client ID。未填写时说明：到 TickTick 开发者中心创建应用，把 Client ID 填在这里。
+- Redirect URL。必须与开发者中心登记的 OAuth redirect URL 完全一致，包括端口和路径。连接时监听这个地址，不再使用临时端口。只接受 `http://127.0.0.1` 或 `http://localhost`。
 - Client Secret。只写入 `secrets.json`，页面不回显已存密钥。
-- 连接 / 断开。系统浏览器，OAuth PKCE，回跳 `http://127.0.0.1:<临时端口>/callback`。授权范围 `tasks:write`。以前的只读令牌需要重新连接。
+- 连接 / 断开。系统浏览器，OAuth PKCE，回跳地址用设置里填写的 Redirect URL。授权范围 `tasks:write`。以前的只读令牌需要重新连接。
 - 断开后停止同步。已导入任务和链接都留着。再次连上后按任务 id 对齐。若连的是另一个账号，旧链接在一次全量成功拉取里按「远端已不存在」删掉。
 
 已连接后列出缓存的清单。每个清单一个下拉：忽略、主线、支线、长期、杂项。缓存里第一次出现的清单默认忽略，并立即把这个默认写进 `ticktick_project_roles`，避免下一轮把整份清单灌进来。

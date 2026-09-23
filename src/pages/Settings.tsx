@@ -1681,7 +1681,7 @@ export function Settings() {
                   label="Client ID"
                   hint={
                     !(settings.ticktickClientId ?? "").trim()
-                      ? "到 TickTick 开发者中心建应用，Redirect URI 填连接时显示的回跳地址。"
+                      ? "到 TickTick 开发者中心创建应用，把 Client ID 填在这里。"
                       : undefined
                   }
                 >
@@ -1692,6 +1692,22 @@ export function Settings() {
                       setSettings({
                         ...settings,
                         ticktickClientId: e.target.value,
+                      })
+                    }
+                  />
+                </Field>
+                <Field
+                  label="Redirect URL"
+                  hint="必须与 TickTick 开发者中心的 OAuth redirect URL 完全一致，包括端口。"
+                >
+                  <Input
+                    value={settings.ticktickRedirectUri ?? ""}
+                    disabled={formLocked || tickBusy}
+                    placeholder="http://127.0.0.1:18789/callback"
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        ticktickRedirectUri: e.target.value,
                       })
                     }
                   />
@@ -1710,7 +1726,15 @@ export function Settings() {
                   <Button
                     size="sm"
                     disabled={formLocked || tickBusy}
-                    onClick={() => void runTicktick(() => ticktickConnect())}
+                    onClick={() =>
+                      void runTicktick(async () => {
+                        if (settings) {
+                          await persistSettings(settings, false);
+                          notifySettingsChanged();
+                        }
+                        return ticktickConnect();
+                      })
+                    }
                   >
                     连接
                   </Button>

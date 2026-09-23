@@ -133,6 +133,9 @@ pub struct AppSettings {
     pub ticktick_enabled: bool,
     #[serde(default)]
     pub ticktick_client_id: String,
+    /// Exact OAuth redirect registered in the TickTick developer console.
+    #[serde(default)]
+    pub ticktick_redirect_uri: String,
     #[serde(default)]
     pub ticktick_project_roles: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing, skip_deserializing)]
@@ -333,6 +336,7 @@ pub fn default_settings() -> AppSettings {
         category_guides: CategoryGuides::default(),
         ticktick_enabled: false,
         ticktick_client_id: String::new(),
+        ticktick_redirect_uri: String::new(),
         ticktick_project_roles: std::collections::BTreeMap::new(),
         ticktick_column_roles: std::collections::BTreeMap::new(),
         theme: default_theme(),
@@ -505,6 +509,7 @@ mod tests {
         assert!(!parsed.task_notifications);
         assert!(parsed.admin_apps.is_empty());
         assert!(parsed.ticktick_client_id.is_empty());
+        assert!(parsed.ticktick_redirect_uri.is_empty());
         assert!(!parsed.ticktick_enabled);
     }
 
@@ -536,6 +541,7 @@ mod tests {
         let mut b = default_settings();
         b.ticktick_enabled = true;
         b.ticktick_client_id = "cid".into();
+        b.ticktick_redirect_uri = "http://127.0.0.1:18789/callback".into();
         b.ticktick_project_roles.insert("p".into(), "mainline".into());
         assert_eq!(policy_snapshot_json(&a), policy_snapshot_json(&b));
     }

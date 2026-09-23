@@ -640,6 +640,7 @@ export const PREVIEW_SETTINGS: AppSettings = {
   colorTheme: "default",
   ticktickEnabled: false,
   ticktickClientId: "",
+  ticktickRedirectUri: "",
   ticktickProjectRoles: {},
   sync: {
     enabled: true,

@@ -332,6 +332,8 @@ export interface AppSettings {
   /** Pull unfinished TickTick tasks into the four preset board lists. Default off. */
   ticktickEnabled: boolean;
   ticktickClientId: string;
+  /** Exact OAuth redirect registered in the TickTick developer console. */
+  ticktickRedirectUri: string;
   /** projectId → ignore | mainline | side | longterm | chore */
   ticktickProjectRoles: Record<string, string>;
 }

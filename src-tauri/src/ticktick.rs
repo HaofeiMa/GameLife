@@ -854,6 +854,40 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
+/// The redirect string TickTick must see, plus the loopback port to bind.
+/// The returned string is the trimmed input, so it can match a registered URL exactly.
+pub(crate) fn loopback_redirect(raw: &str) -> Result<(String, u16), String> {
+    let redirect = raw.trim();
+    if redirect.is_empty() {
+        return Err(
+            "请先填写 Redirect URL，并与 TickTick 开发者中心登记的地址完全一致。".into(),
+        );
+    }
+    let rest = redirect.strip_prefix("http://").ok_or(
+        "Redirect URL 需要是 http://127.0.0.1:端口/路径，例如 http://127.0.0.1:18789/callback",
+    )?;
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.contains('@') {
+        return Err(
+            "Redirect URL 需要是 http://127.0.0.1:端口/路径，例如 http://127.0.0.1:18789/callback"
+                .into(),
+        );
+    }
+    let (host, port_str) = authority.rsplit_once(':').ok_or(
+        "Redirect URL 需要写明端口，例如 http://127.0.0.1:18789/callback",
+    )?;
+    if host != "127.0.0.1" && host != "localhost" {
+        return Err("Redirect URL 只能使用 127.0.0.1 或 localhost".into());
+    }
+    let port: u16 = port_str
+        .parse()
+        .map_err(|_| "Redirect URL 的端口无效".to_string())?;
+    if port == 0 {
+        return Err("Redirect URL 的端口无效".into());
+    }
+    Ok((redirect.to_string(), port))
+}
+
 /// Build the TickTick authorize URL (PKCE S256, scope tasks:write).
 pub fn authorize_url(client_id: &str, redirect: &str, state: &str, challenge: &str) -> String {
     format!(
@@ -1219,9 +1253,10 @@ fn connect_blocking() -> Result<TickTickStatus, String> {
     }
     let client_secret = get_ticktick_secret(TICKTICK_CLIENT_SECRET).unwrap_or_default();
 
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let redirect = format!("http://127.0.0.1:{port}/callback");
+    let (redirect, port) = loopback_redirect(&settings.ticktick_redirect_uri)?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|_| {
+        format!("端口 {port} 已被占用。请关掉占用它的程序，或在 TickTick 和这里改成同一个新地址。")
+    })?;
 
     let verifier = random_base64url(64);
     let challenge = pkce_challenge(&verifier);
@@ -1779,6 +1814,22 @@ mod tests {
             meta_get(&conn, "ticktick_last_result").unwrap().as_deref(),
             Some("写回被拒绝")
         );
+    }
+
+    #[test]
+    fn loopback_redirect_keeps_the_registered_url_and_port() {
+        let (redirect, port) =
+            loopback_redirect("  http://127.0.0.1:18789/callback  ").unwrap();
+        assert_eq!(redirect, "http://127.0.0.1:18789/callback");
+        assert_eq!(port, 18789);
+        let (local, local_port) =
+            loopback_redirect("http://localhost:18789/callback").unwrap();
+        assert_eq!(local, "http://localhost:18789/callback");
+        assert_eq!(local_port, 18789);
+        assert!(loopback_redirect("").is_err());
+        assert!(loopback_redirect("http://127.0.0.1/callback").is_err());
+        assert!(loopback_redirect("https://127.0.0.1:18789/callback").is_err());
+        assert!(loopback_redirect("http://example.com:18789/callback").is_err());
     }
 
     #[test]
