@@ -3,6 +3,7 @@ import {
   columnRoleChoice,
   columnRolePatch,
   EMPTY_COLUMNS_COPY,
+  mergeTicktickRolesFromDisk,
   roleForProject,
   sortedColumns,
   syncNowDisabled,
@@ -54,5 +55,25 @@ describe("ticktick settings", () => {
         { id: "c", sortOrder: 0 },
       ]).map((column) => column.id),
     ).toEqual(["c", "a", "b"]);
+  });
+
+  it("drops a pruned column role and keeps an unsaved redirect", () => {
+    const form = {
+      ticktickColumnRoles: { "col-gone": "mainline", "col-kept": "side" },
+      ticktickProjectRoles: { "proj-kept": "mainline" },
+      ticktickRedirectUri: "http://127.0.0.1:1420/unsaved",
+      ticktickClientId: "unsaved-client",
+    };
+    const disk = {
+      ticktickColumnRoles: { "col-kept": "side" },
+      ticktickProjectRoles: { "proj-kept": "chore" },
+      ticktickRedirectUri: "http://127.0.0.1:1420/saved",
+    };
+    const merged = mergeTicktickRolesFromDisk(form, disk);
+    expect(merged.ticktickColumnRoles).toEqual({ "col-kept": "side" });
+    expect(merged.ticktickColumnRoles).not.toHaveProperty("col-gone");
+    expect(merged.ticktickProjectRoles).toEqual({ "proj-kept": "chore" });
+    expect(merged.ticktickRedirectUri).toBe("http://127.0.0.1:1420/unsaved");
+    expect(merged.ticktickClientId).toBe("unsaved-client");
   });
 });

@@ -55,6 +55,7 @@ import {
   columnRoleChoice,
   columnRolePatch,
   EMPTY_COLUMNS_COPY,
+  mergeTicktickRolesFromDisk,
   roleForProject,
   sortedColumns,
   syncNowDisabled,
@@ -1879,7 +1880,16 @@ export function Settings() {
                       formLocked || tickBusy || !tickStatus?.connected
                     }
                     onClick={() =>
-                      void runTicktick(() => ticktickRefreshProjects())
+                      void runTicktick(async () => {
+                        const status = await ticktickRefreshProjects();
+                        const disk = await getSettings();
+                        setSettings((current) =>
+                          current
+                            ? mergeTicktickRolesFromDisk(current, disk)
+                            : current,
+                        );
+                        return status;
+                      })
                     }
                   >
                     刷新清单

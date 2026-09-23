@@ -63,6 +63,23 @@ export function columnRolePatch(
   return next;
 }
 
+type TicktickRoleMaps = {
+  ticktickProjectRoles: Record<string, string>;
+  ticktickColumnRoles: Record<string, string>;
+};
+
+/** Copy disk role maps onto the open form. Other fields stay as the user left them. */
+export function mergeTicktickRolesFromDisk<T extends TicktickRoleMaps>(
+  form: T,
+  disk: TicktickRoleMaps,
+): T {
+  return {
+    ...form,
+    ticktickProjectRoles: { ...disk.ticktickProjectRoles },
+    ticktickColumnRoles: { ...disk.ticktickColumnRoles },
+  };
+}
+
 export function sortedColumns<T extends { id: string; sortOrder: number }>(
   columns: T[],
 ): T[] {
