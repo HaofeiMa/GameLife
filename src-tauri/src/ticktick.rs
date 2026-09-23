@@ -718,8 +718,43 @@ pub(crate) fn run_pull_body_with(
     column_roles: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let mut push_fail_reason: Option<String> = None;
+
+    let last_sync_at = meta_get(conn, "ticktick_last_sync_at")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<i64>().ok());
+    let first_sync = last_sync_at.is_none();
+    let day = day_str_for_ts(now);
+    let day_start = start_of_named_day(&day).unwrap_or(0);
+    let next_day_start = end_of_local_day(day_start);
+
     let tasks = load_tasks(conn).map_err(|e| format!("{e:?}"))?;
+    let round = pull_round(
+        api,
+        &tasks,
+        projects,
+        roles,
+        column_roles,
+        first_sync,
+        now,
+        last_sync_at,
+        day_start,
+        next_day_start,
+    );
+
+    let dropped: BTreeSet<&str> = round
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ReconcileAction::DropIgnored { local_id } => Some(local_id.as_str()),
+            _ => None,
+        })
+        .collect();
+
     for mut task in tasks.into_iter().filter(|t| t.ticktick_dirty == 1) {
+        if dropped.contains(task.id.as_str()) {
+            continue;
+        }
         let result = push_one(api, &task, projects, roles);
         if matches!(&result, PushResult::Failed(msg) if msg == "需要重新连接") {
             set_last_result(conn, "需要重新连接");
@@ -734,29 +769,6 @@ pub(crate) fn run_pull_body_with(
             return Ok(());
         }
     }
-
-    let last_sync_at = meta_get(conn, "ticktick_last_sync_at")
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse::<i64>().ok());
-    let first_sync = last_sync_at.is_none();
-    let day = day_str_for_ts(now);
-    let day_start = start_of_named_day(&day).unwrap_or(0);
-    let next_day_start = end_of_local_day(day_start);
-
-    let local = load_tasks(conn).map_err(|e| format!("{e:?}"))?;
-    let round = pull_round(
-        api,
-        &local,
-        projects,
-        roles,
-        column_roles,
-        first_sync,
-        now,
-        last_sync_at,
-        day_start,
-        next_day_start,
-    );
 
     if let Err(e) = apply_reconcile_actions(conn, &round.actions) {
         set_last_result(conn, &e);
@@ -1951,15 +1963,15 @@ mod tests {
         task.ticktick_project_id = Some("p".into());
         persist_task(&conn, &task).unwrap();
         let (projects, roles) = mainline_roles();
-        // Push (Reopen) fails 400, then first-sync pull GETs open list successfully.
+        // First-sync pull GETs the open list, then the write-back 400.
         let mut api = FakeApi::with_script(vec![
-            Ok(TickTickResponse {
-                status: 400,
-                body: json!({}),
-            }),
             Ok(TickTickResponse {
                 status: 200,
                 body: json!({ "tasks": [] }),
+            }),
+            Ok(TickTickResponse {
+                status: 400,
+                body: json!({}),
             }),
         ]);
         run_pull_body_with(1_000, &mut api, &conn, &projects, &roles, &BTreeMap::new()).unwrap();
@@ -1973,6 +1985,123 @@ mod tests {
             meta_get(&conn, "ticktick_last_result").unwrap().as_deref(),
             Some("写回被拒绝")
         );
+    }
+
+    #[test]
+    fn create_body_omits_column_id() {
+        let op = PushOp {
+            kind: PushKind::Create,
+            local_id: "L".into(),
+            task_id: None,
+            project_id: "p".into(),
+            to_project_id: None,
+            title: "写稿".into(),
+            start: Some(10),
+            end: Some(20),
+            all_day: false,
+        };
+        let body = task_body(&op);
+        assert!(body.get("columnId").is_none());
+    }
+
+    #[test]
+    fn full_sync_drops_ignored_column_locally_and_does_not_delete_remote() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        meta_set(&conn, "ticktick_last_sync_at", "1000").unwrap();
+        let mut task = linked_task_without_remote_id();
+        task.ticktick_task_id = Some("tt1".into());
+        task.ticktick_project_id = Some("p".into());
+        task.ticktick_dirty = 1;
+        persist_task(&conn, &task).unwrap();
+        let project = RemoteProject {
+            id: "p".into(),
+            name: "甲".into(),
+            sort_order: 1,
+            columns: vec![gamelife_core::ticktick_sync::RemoteColumn {
+                id: "c-ignore".into(),
+                name: "忽略组".into(),
+                sort_order: 1,
+                project_id: "p".into(),
+            }],
+        };
+        let projects = vec![project];
+        let mut roles = BTreeMap::new();
+        roles.insert("p".into(), "mainline".into());
+        let mut column_roles = BTreeMap::new();
+        column_roles.insert("c-ignore".into(), "ignore".into());
+        let mut api = FakeApi::with_script(vec![
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!({
+                    "tasks": [{
+                        "id": "tt1",
+                        "title": "写稿",
+                        "status": 0,
+                        "columnId": "c-ignore",
+                        "etag": "e",
+                        "startDate": "1970-01-01T00:00:10+0000",
+                        "dueDate": "1970-01-01T00:00:20+0000",
+                        "isAllDay": false
+                    }]
+                }),
+            }),
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!({ "tasks": [] }),
+            }),
+        ]);
+        run_pull_body_with(2_000, &mut api, &conn, &projects, &roles, &column_roles).unwrap();
+        assert!(load_tasks(&conn).unwrap().is_empty());
+        assert!(api.calls.iter().all(|(method, path)| method != "DELETE" && path != "/task/tt1"));
+        assert_eq!(meta_get(&conn, "ticktick_last_sync_at").unwrap().as_deref(), Some("2000"));
+    }
+
+    #[test]
+    fn partial_sync_keeps_ignored_column_task_and_sync_clock() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        meta_set(&conn, "ticktick_last_sync_at", "1000").unwrap();
+        let mut task = linked_task_without_remote_id();
+        task.ticktick_task_id = Some("tt1".into());
+        task.ticktick_project_id = Some("p".into());
+        task.ticktick_dirty = 0;
+        persist_task(&conn, &task).unwrap();
+        let projects = vec![
+            RemoteProject {
+                id: "p".into(),
+                name: "甲".into(),
+                sort_order: 1,
+                columns: vec![gamelife_core::ticktick_sync::RemoteColumn {
+                    id: "c-ignore".into(),
+                    name: "忽略组".into(),
+                    sort_order: 1,
+                    project_id: "p".into(),
+                }],
+            },
+            RemoteProject {
+                id: "q".into(),
+                name: "乙".into(),
+                sort_order: 2,
+                columns: Vec::new(),
+            },
+        ];
+        let mut roles = BTreeMap::new();
+        roles.insert("p".into(), "mainline".into());
+        roles.insert("q".into(), "side".into());
+        let mut column_roles = BTreeMap::new();
+        column_roles.insert("c-ignore".into(), "ignore".into());
+        let mut api = FakeApi::with_script(vec![
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!({"tasks": [{"id": "tt1", "title": "写稿", "status": 0, "columnId": "c-ignore", "etag": "e"}]}),
+            }),
+            Ok(TickTickResponse { status: 500, body: json!({}) }),
+        ]);
+        run_pull_body_with(2_000, &mut api, &conn, &projects, &roles, &column_roles).unwrap();
+        assert_eq!(load_tasks(&conn).unwrap().len(), 1);
+        assert_eq!(meta_get(&conn, "ticktick_last_sync_at").unwrap().as_deref(), Some("1000"));
+        assert!(api.calls.iter().all(|(method, _)| method != "DELETE"));
     }
 
     #[test]
