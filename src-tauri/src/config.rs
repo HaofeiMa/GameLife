@@ -138,7 +138,7 @@ pub struct AppSettings {
     pub ticktick_redirect_uri: String,
     #[serde(default)]
     pub ticktick_project_roles: std::collections::BTreeMap<String, String>,
-    #[serde(default, skip_serializing, skip_deserializing)]
+    #[serde(default)]
     pub ticktick_column_roles: std::collections::BTreeMap<String, String>,
     /// UI appearance: system | light | dark. Normalised on the frontend by
     /// `normalizeThemePreference` in src/lib/theme.ts.
@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn ticktick_switch_and_roles_roundtrip_and_column_roles_are_dropped() {
+    fn ticktick_column_roles_roundtrip_and_stay_out_of_policy() {
         let raw = r#"{
             "screenshotRetention":"none","sampleKeepDays":7,"loginAtStartup":true,
             "trustedApps":[],"distractionRules":[],"sideProjectRules":[],
@@ -525,24 +525,24 @@ mod tests {
             "ticktickColumnRoles": {"c":"side"}
         }"#;
         let parsed: AppSettings = serde_json::from_str(raw).unwrap();
-        assert!(parsed.ticktick_enabled);
-        assert_eq!(parsed.ticktick_client_id, "cid");
         assert_eq!(
-            parsed.ticktick_project_roles.get("p").map(String::as_str),
-            Some("mainline")
+            parsed.ticktick_column_roles.get("c").map(String::as_str),
+            Some("side")
         );
         let out = serde_json::to_value(&parsed).unwrap();
         assert_eq!(
-            out.get("ticktickEnabled").and_then(|v| v.as_bool()),
-            Some(true)
+            out.get("ticktickColumnRoles")
+                .and_then(|v| v.get("c"))
+                .and_then(|v| v.as_str()),
+            Some("side")
         );
-        assert!(out.get("ticktickColumnRoles").is_none());
         let a = default_settings();
         let mut b = default_settings();
         b.ticktick_enabled = true;
         b.ticktick_client_id = "cid".into();
         b.ticktick_redirect_uri = "http://127.0.0.1:18789/callback".into();
         b.ticktick_project_roles.insert("p".into(), "mainline".into());
+        b.ticktick_column_roles.insert("c".into(), "side".into());
         assert_eq!(policy_snapshot_json(&a), policy_snapshot_json(&b));
     }
 

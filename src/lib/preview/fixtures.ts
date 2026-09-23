@@ -642,6 +642,7 @@ export const PREVIEW_SETTINGS: AppSettings = {
   ticktickClientId: "",
   ticktickRedirectUri: "",
   ticktickProjectRoles: {},
+  ticktickColumnRoles: {},
   sync: {
     enabled: true,
     target: "webdav",

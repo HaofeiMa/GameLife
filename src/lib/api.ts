@@ -336,6 +336,8 @@ export interface AppSettings {
   ticktickRedirectUri: string;
   /** projectId → ignore | mainline | side | longterm | chore */
   ticktickProjectRoles: Record<string, string>;
+  /** columnId → ignore | mainline | side | longterm | chore. Missing key follows the list. */
+  ticktickColumnRoles: Record<string, string>;
 }
 
 export interface ProviderKeyStatus {
