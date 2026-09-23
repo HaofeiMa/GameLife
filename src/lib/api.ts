@@ -634,11 +634,18 @@ export function syncRestore(deviceId: string): Promise<string> {
   return invoke("sync_restore", { deviceId });
 }
 
+export interface TickTickColumn {
+  id: string;
+  name: string;
+  sortOrder: number;
+}
+
 export interface TickTickProject {
   id: string;
   name: string;
   sortOrder: number;
   role: string;
+  columns: TickTickColumn[];
 }
 
 export interface TickTickStatus {

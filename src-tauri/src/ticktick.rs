@@ -15,16 +15,17 @@ use gamelife_core::task::{
     PRESET_SIDE_ID,
 };
 use gamelife_core::ticktick_sync::{
-    map_times, parse_completed_ids, parse_open_tasks, parse_projects, projects_to_fetch, push_op,
-    reconcile, stamp_missing_roles, write_target, LocalMirror, ProjectFetch, PushKind, PushOp,
-    ReconcileAction, ReconcileInput, RemoteProject, RemoteTask,
+    kept_column_ids, map_times, parse_completed_ids, parse_open_tasks, parse_projects,
+    projects_to_fetch, prune_column_roles, push_op, reconcile, sort_columns, stamp_missing_roles,
+    write_target, LocalMirror, ProjectFetch, PushKind, PushOp, ReconcileAction, ReconcileInput,
+    RemoteProject, RemoteTask,
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::config::{load_settings, save_settings as write_settings_file};
+use crate::config::{load_settings, save_settings as write_settings_file, AppSettings};
 use crate::db::{
     app_db_path, load_tasks, load_ticktick_projects, meta_get, meta_set, migrate, new_task_id,
     next_list_sort, open, persist_task,
@@ -41,6 +42,8 @@ const OAUTH_TOKEN_URL: &str = "https://ticktick.com/oauth/token";
 const OAUTH_AUTHORIZE: &str = "https://ticktick.com/oauth/authorize";
 const HOURLY_SECS: i64 = 3600;
 const OAUTH_TIMEOUT_SECS: u64 = 180;
+const PARTIAL_REFRESH: &str = "有清单没能刷新，这些清单仍显示上次的分组。";
+const SCOPE_REFRESH: &str = "TickTick 授权不足以读取清单，请重新连接。";
 
 #[derive(Debug, Clone)]
 pub struct TickTickResponse {
@@ -900,10 +903,11 @@ pub(crate) fn loopback_redirect(raw: &str) -> Result<(String, u16), String> {
     Ok((redirect.to_string(), port))
 }
 
-/// Build the TickTick authorize URL (PKCE S256, scope tasks:write).
+/// Build the TickTick authorize URL (PKCE S256, scope tasks:read tasks:write).
 pub fn authorize_url(client_id: &str, redirect: &str, state: &str, challenge: &str) -> String {
+    let scope = percent_encode("tasks:read tasks:write");
     format!(
-        "{OAUTH_AUTHORIZE}?client_id={}&redirect_uri={}&response_type=code&scope=tasks%3Awrite&code_challenge={}&code_challenge_method=S256&state={}",
+        "{OAUTH_AUTHORIZE}?client_id={}&redirect_uri={}&response_type=code&scope={scope}&code_challenge={}&code_challenge_method=S256&state={}",
         percent_encode(client_id),
         percent_encode(redirect),
         percent_encode(challenge),
@@ -934,11 +938,20 @@ fn role_key(role: ListRole) -> Option<&'static str> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TickTickColumnView {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TickTickProjectView {
     pub id: String,
     pub name: String,
     pub sort_order: i64,
     pub role: String,
+    pub columns: Vec<TickTickColumnView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -962,15 +975,27 @@ fn build_status(conn: &Connection) -> Result<TickTickStatus, String> {
     let projects = load_ticktick_projects(conn).map_err(|e| format!("{e:?}"))?;
     let views: Vec<TickTickProjectView> = projects
         .iter()
-        .map(|p| TickTickProjectView {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            sort_order: p.sort_order,
-            role: settings
-                .ticktick_project_roles
-                .get(&p.id)
-                .cloned()
-                .unwrap_or_else(|| "ignore".into()),
+        .map(|p| {
+            let mut columns = p.columns.clone();
+            sort_columns(&mut columns);
+            TickTickProjectView {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                sort_order: p.sort_order,
+                role: settings
+                    .ticktick_project_roles
+                    .get(&p.id)
+                    .cloned()
+                    .unwrap_or_else(|| "ignore".into()),
+                columns: columns
+                    .into_iter()
+                    .map(|column| TickTickColumnView {
+                        id: column.id,
+                        name: column.name,
+                        sort_order: column.sort_order,
+                    })
+                    .collect(),
+            }
         })
         .collect();
     let mut write_targets = BTreeMap::new();
@@ -1121,27 +1146,146 @@ pub(crate) fn push_ambiguous_creates(
     Ok(())
 }
 
+fn insufficient_scope(status: u16, body: &Value) -> bool {
+    if status == 403 {
+        return true;
+    }
+    body.to_string()
+        .to_ascii_lowercase()
+        .contains("insufficient scope")
+}
+
+struct PlannedRefresh {
+    settings: AppSettings,
+    projects_json: String,
+    partial: bool,
+}
+
+fn cached_project(previous: &Value, id: &str) -> Option<Value> {
+    previous.as_array().and_then(|projects| {
+        projects
+            .iter()
+            .find(|project| project.get("id").and_then(|value| value.as_str()) == Some(id))
+            .cloned()
+    })
+}
+
+fn project_with_columns(list_item: &Value, columns: Value) -> Value {
+    let mut object = list_item.as_object().cloned().unwrap_or_default();
+    object.insert("columns".into(), columns);
+    Value::Object(object)
+}
+
+fn failed_project(list_item: &Value, id: &str, previous: &Value) -> Value {
+    if let Some(cached) = cached_project(previous, id) {
+        cached
+    } else {
+        project_with_columns(list_item, json!([]))
+    }
+}
+
+fn plan_refresh(
+    api: &mut dyn TickTickApi,
+    previous: &Value,
+    settings: &AppSettings,
+) -> Result<PlannedRefresh, String> {
+    let resp = api.request("GET", "/project", None).map_err(|e| match e {
+        TickTickError::Transport => "同步失败".to_string(),
+        TickTickError::Http(msg) => msg,
+    })?;
+    if !(200..300).contains(&resp.status) {
+        if insufficient_scope(resp.status, &resp.body) {
+            return Err(SCOPE_REFRESH.into());
+        }
+        return Err(format!("http {}", resp.status));
+    }
+
+    let listed = resp.body.as_array().cloned().unwrap_or_default();
+    let mut merged = Vec::new();
+    let mut partial = false;
+    for list_item in listed {
+        let Some(id) = list_item
+            .get("id")
+            .and_then(|value| value.as_str())
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let path = format!("/project/{id}/data");
+        let data = match api.request("GET", &path, None) {
+            Ok(data) => data,
+            Err(_) => {
+                partial = true;
+                merged.push(failed_project(&list_item, &id, previous));
+                continue;
+            }
+        };
+        if !(200..300).contains(&data.status) {
+            if insufficient_scope(data.status, &data.body) {
+                return Err(SCOPE_REFRESH.into());
+            }
+            partial = true;
+            merged.push(failed_project(&list_item, &id, previous));
+            continue;
+        }
+        let columns = data
+            .body
+            .get("columns")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        merged.push(project_with_columns(&list_item, columns));
+    }
+
+    let projects_value = Value::Array(merged);
+    let parsed = parse_projects(&projects_value);
+    let mut next = settings.clone();
+    stamp_missing_roles(&parsed, &mut next.ticktick_project_roles);
+    prune_column_roles(&kept_column_ids(&parsed), &mut next.ticktick_column_roles);
+    let projects_json = serde_json::to_string(&projects_value).map_err(|e| e.to_string())?;
+    Ok(PlannedRefresh {
+        settings: next,
+        projects_json,
+        partial,
+    })
+}
+
+fn apply_refresh(
+    api: &mut dyn TickTickApi,
+    conn: &Connection,
+    settings: &mut AppSettings,
+) -> Result<(), String> {
+    let previous = meta_get(conn, "ticktick_projects_json")
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or(Value::Null);
+    let planned = plan_refresh(api, &previous, settings)?;
+    meta_set(conn, "ticktick_projects_json", &planned.projects_json)
+        .map_err(|e| format!("{e:?}"))?;
+    if planned.partial {
+        meta_set(conn, "ticktick_last_result", PARTIAL_REFRESH).map_err(|e| format!("{e:?}"))?;
+    } else if meta_get(conn, "ticktick_last_result")
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some(PARTIAL_REFRESH)
+    {
+        meta_set(conn, "ticktick_last_result", "").map_err(|e| format!("{e:?}"))?;
+    }
+    *settings = planned.settings;
+    Ok(())
+}
+
 fn refresh_projects_blocking() -> Result<TickTickStatus, String> {
     if !access_token_present() {
         return Err("尚未连接".into());
     }
     let conn = open_app_db()?;
     let mut api = LiveApi::from_settings()?;
-    let resp = api
-        .request("GET", "/project", None)
-        .map_err(|e| match e {
-            TickTickError::Transport => "同步失败".to_string(),
-            TickTickError::Http(msg) => msg,
-        })?;
-    if !(200..300).contains(&resp.status) {
-        return Err(format!("http {}", resp.status));
-    }
-    let projects = parse_projects(&resp.body);
     let mut settings = load_settings();
-    stamp_missing_roles(&projects, &mut settings.ticktick_project_roles);
+    apply_refresh(&mut api, &conn, &mut settings)?;
     write_settings_file(&settings)?;
-    let raw = serde_json::to_string(&resp.body).map_err(|e| e.to_string())?;
-    meta_set(&conn, "ticktick_projects_json", &raw).map_err(|e| format!("{e:?}"))?;
     build_status(&conn)
 }
 
@@ -1847,15 +1991,136 @@ mod tests {
         assert!(loopback_redirect("http://example.com:18789/callback").is_err());
     }
 
+    const PARTIAL_REFRESH: &str = "有清单没能刷新，这些清单仍显示上次的分组。";
+    const SCOPE_REFRESH: &str = "TickTick 授权不足以读取清单，请重新连接。";
+
     #[test]
-    fn authorize_url_asks_for_task_write_and_s256() {
+    fn authorize_url_asks_for_task_read_and_write() {
         let url = authorize_url("cid", "http://127.0.0.1:9/callback", "st", "ch");
-        assert!(url.starts_with("https://ticktick.com/oauth/authorize?"));
-        assert!(url.contains("client_id=cid"));
-        assert!(url.contains("scope=tasks%3Awrite") || url.contains("scope=tasks:write"));
-        assert!(url.contains("code_challenge=ch"));
+        assert!(url.contains("scope=tasks%3Aread%20tasks%3Awrite"));
+        assert!(!url.contains("scope=tasks%3Awrite&"));
         assert!(url.contains("code_challenge_method=S256"));
-        assert!(url.contains("state=st"));
+    }
+
+    #[test]
+    fn refresh_keeps_failed_project_columns_and_does_not_touch_tasks() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        let task = Task {
+            id: "L1".into(),
+            list_id: PRESET_MAINLINE_ID.into(),
+            title: "写稿".into(),
+            done: false,
+            start: None,
+            end: None,
+            range: None,
+            sort: 0,
+            repeat: Default::default(),
+            remind_offsets: vec![],
+            notes: String::new(),
+            ticktick_task_id: Some("tt1".into()),
+            ticktick_project_id: Some("p2".into()),
+            ticktick_etag: "e".into(),
+            ticktick_dirty: 1,
+            ticktick_all_day: false,
+        };
+        persist_task(&conn, &task).unwrap();
+        meta_set(&conn, "ticktick_last_sync_at", "1000").unwrap();
+        meta_set(
+            &conn,
+            "ticktick_projects_json",
+            r#"[{"id":"p1","name":"甲","sortOrder":1,"columns":[{"id":"old-1","name":"旧甲","sortOrder":1,"projectId":"p1"}]},{"id":"p2","name":"乙","sortOrder":2,"viewMode":"list","columns":[{"id":"old-2","name":"旧乙","sortOrder":1,"projectId":"p2"}]}]"#,
+        )
+        .unwrap();
+        let mut settings = crate::config::default_settings();
+        settings.ticktick_project_roles.insert("p1".into(), "mainline".into());
+        settings.ticktick_column_roles.insert("old-1".into(), "side".into());
+        settings.ticktick_column_roles.insert("old-2".into(), "chore".into());
+        let mut api = FakeApi::with_script(vec![
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!([
+                    {"id": "p1", "name": "甲", "sortOrder": 1, "viewMode": "list"},
+                    {"id": "p2", "name": "乙", "sortOrder": 2, "viewMode": "list"}
+                ]),
+            }),
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!({"columns": [{"id": "new-1", "name": "新甲", "sortOrder": 3, "projectId": "p1"}]}),
+            }),
+            Ok(TickTickResponse {
+                status: 500,
+                body: json!({"errorMessage": "boom"}),
+            }),
+        ]);
+        apply_refresh(&mut api, &conn, &mut settings).unwrap();
+        let raw = meta_get(&conn, "ticktick_projects_json").unwrap().unwrap();
+        let cached: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let p1 = cached.as_array().unwrap().iter().find(|p| p["id"] == "p1").unwrap();
+        let p2 = cached.as_array().unwrap().iter().find(|p| p["id"] == "p2").unwrap();
+        assert_eq!(p1["columns"][0]["id"], "new-1");
+        assert_eq!(p1["columns"][0]["name"], "新甲");
+        assert_eq!(p1["columns"][0]["sortOrder"], 3);
+        assert_eq!(p1["viewMode"], "list");
+        assert_eq!(p2["columns"][0]["id"], "old-2");
+        assert!(settings.ticktick_column_roles.get("old-1").is_none());
+        assert_eq!(settings.ticktick_column_roles.get("old-2").map(String::as_str), Some("chore"));
+        assert!(settings.ticktick_column_roles.get("new-1").is_none());
+        assert_eq!(meta_get(&conn, "ticktick_last_sync_at").unwrap().as_deref(), Some("1000"));
+        assert_eq!(meta_get(&conn, "ticktick_last_result").unwrap().as_deref(), Some(PARTIAL_REFRESH));
+        assert_eq!(load_tasks(&conn).unwrap().len(), 1);
+        assert_eq!(load_tasks(&conn).unwrap()[0].ticktick_dirty, 1);
+    }
+
+    #[test]
+    fn refresh_insufficient_scope_leaves_cache_and_roles() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        meta_set(&conn, "ticktick_projects_json", r#"[{"id":"p","name":"甲","sortOrder":1}]"#).unwrap();
+        meta_set(&conn, "ticktick_last_sync_at", "1000").unwrap();
+        let mut settings = crate::config::default_settings();
+        settings.ticktick_project_roles.insert("p".into(), "mainline".into());
+        settings.ticktick_column_roles.insert("c".into(), "side".into());
+        let mut api = FakeApi::with_script(vec![Ok(TickTickResponse {
+            status: 500,
+            body: json!({"errorCode": "client_exception", "errorMessage": "Insufficient scope for this resource"}),
+        })]);
+        let err = apply_refresh(&mut api, &conn, &mut settings).unwrap_err();
+        assert_eq!(err, SCOPE_REFRESH);
+        assert_eq!(
+            meta_get(&conn, "ticktick_projects_json").unwrap().as_deref(),
+            Some(r#"[{"id":"p","name":"甲","sortOrder":1}]"#)
+        );
+        assert_eq!(settings.ticktick_project_roles.get("p").map(String::as_str), Some("mainline"));
+        assert_eq!(settings.ticktick_column_roles.get("c").map(String::as_str), Some("side"));
+        assert_eq!(meta_get(&conn, "ticktick_last_sync_at").unwrap().as_deref(), Some("1000"));
+    }
+
+    #[test]
+    fn refresh_drops_columns_when_the_project_disappears() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        meta_set(
+            &conn,
+            "ticktick_projects_json",
+            r#"[{"id":"gone","name":"旧","sortOrder":1,"columns":[{"id":"c-gone","name":"组","sortOrder":1,"projectId":"gone"}]}]"#,
+        )
+        .unwrap();
+        let mut settings = crate::config::default_settings();
+        settings.ticktick_column_roles.insert("c-gone".into(), "mainline".into());
+        let mut api = FakeApi::with_script(vec![
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!([{"id": "p", "name": "新", "sortOrder": 1}]),
+            }),
+            Ok(TickTickResponse {
+                status: 200,
+                body: json!({"columns": []}),
+            }),
+        ]);
+        apply_refresh(&mut api, &conn, &mut settings).unwrap();
+        assert!(settings.ticktick_column_roles.get("c-gone").is_none());
+        assert_eq!(settings.ticktick_project_roles.get("p").map(String::as_str), Some("ignore"));
     }
 
     #[test]
