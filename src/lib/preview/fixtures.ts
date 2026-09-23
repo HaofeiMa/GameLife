@@ -642,7 +642,7 @@ export const PREVIEW_SETTINGS: AppSettings = {
   ticktickClientId: "",
   ticktickRedirectUri: "",
   ticktickProjectRoles: {},
-  ticktickColumnRoles: {},
+  ticktickColumnRoles: { "col-wrap": "mainline" },
   sync: {
     enabled: true,
     target: "webdav",
@@ -688,9 +688,27 @@ export const PREVIEW_SYNC_STATUS: SyncStatus = {
 
 export const PREVIEW_TICKTICK_STATUS: TickTickStatus = {
   enabled: false,
-  connected: false,
+  connected: true,
   clientId: "",
-  projects: [],
+  projects: [
+    {
+      id: "list-research",
+      name: "研究",
+      sortOrder: 0,
+      role: "ignore",
+      columns: [
+        { id: "col-wrap", name: "收尾", sortOrder: 2 },
+        { id: "col-open", name: "开题", sortOrder: 0 },
+      ],
+    },
+    {
+      id: "list-inbox",
+      name: "收集箱",
+      sortOrder: 1,
+      role: "ignore",
+      columns: [],
+    },
+  ],
   writeTargets: {},
   lastSyncAt: null,
   lastResult: "",

@@ -52,9 +52,14 @@ import {
   scopeLabel,
 } from "../lib/cloudSync";
 import {
+  columnRoleChoice,
+  columnRolePatch,
+  EMPTY_COLUMNS_COPY,
   roleForProject,
+  sortedColumns,
   syncNowDisabled,
   writeTargetHint,
+  type ColumnRoleChoice,
 } from "../lib/ticktickSettings";
 import { GUIDE_PLACEHOLDERS, savedCategoryGuides } from "../lib/guides";
 import {
@@ -636,6 +641,9 @@ export function Settings() {
   const [tickSecret, setTickSecret] = useState("");
   const [tickBusy, setTickBusy] = useState(false);
   const [tickNote, setTickNote] = useState<string | null>(null);
+  const [columnListsOpen, setColumnListsOpen] = useState<Record<string, boolean>>(
+    {},
+  );
   const formLocked = saving;
   /** Older config.json may predate the cloud settings; never render undefined. */
   const sync = settings?.sync ?? defaultSyncSettings();
@@ -1775,33 +1783,93 @@ export function Settings() {
                       : "连接后可拉取清单。"}
                   </p>
                 ) : (
-                  (tickStatus?.projects ?? []).map((project) => (
-                    <Field key={project.id} label={project.name}>
-                      <Select
-                        value={roleForProject(
-                          settings.ticktickProjectRoles,
-                          project.id,
-                        )}
-                        disabled={formLocked || tickBusy}
-                        onChange={(e) => {
-                          const next = {
-                            ...(settings.ticktickProjectRoles ?? {}),
-                            [project.id]: e.target.value,
-                          };
-                          void persistBasic({
-                            ...settings,
-                            ticktickProjectRoles: next,
-                          });
-                        }}
-                      >
-                        {TICKTICK_ROLE_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
-                  ))
+                  (tickStatus?.projects ?? []).map((project) => {
+                    const open = columnListsOpen[project.id] === true;
+                    const columns = sortedColumns(project.columns ?? []);
+                    return (
+                      <div key={project.id} className="flex flex-col gap-2">
+                        <Field label={project.name}>
+                          <div className="flex items-center gap-2">
+                            <Select
+                              className="min-w-0 flex-1"
+                              value={roleForProject(
+                                settings.ticktickProjectRoles,
+                                project.id,
+                              )}
+                              disabled={formLocked || tickBusy}
+                              onChange={(e) => {
+                                const next = {
+                                  ...(settings.ticktickProjectRoles ?? {}),
+                                  [project.id]: e.target.value,
+                                };
+                                void persistBasic({
+                                  ...settings,
+                                  ticktickProjectRoles: next,
+                                });
+                              }}
+                            >
+                              {TICKTICK_ROLE_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </Select>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                setColumnListsOpen((prev) => ({
+                                  ...prev,
+                                  [project.id]: !prev[project.id],
+                                }))
+                              }
+                            >
+                              {open ? "收起" : "展开"}
+                            </Button>
+                          </div>
+                        </Field>
+                        {open ? (
+                          columns.length === 0 ? (
+                            <p className="text-[13px] text-muted-foreground">
+                              {EMPTY_COLUMNS_COPY}
+                            </p>
+                          ) : (
+                            columns.map((column) => (
+                              <Field key={column.id} label={column.name}>
+                                <Select
+                                  value={columnRoleChoice(
+                                    settings.ticktickColumnRoles,
+                                    column.id,
+                                  )}
+                                  disabled={formLocked || tickBusy}
+                                  onChange={(e) => {
+                                    const choice = e.target
+                                      .value as ColumnRoleChoice;
+                                    void persistBasic({
+                                      ...settings,
+                                      ticktickColumnRoles: columnRolePatch(
+                                        settings.ticktickColumnRoles,
+                                        column.id,
+                                        choice,
+                                      ),
+                                    });
+                                  }}
+                                >
+                                  <option value="inherit">跟随清单</option>
+                                  {TICKTICK_ROLE_OPTIONS.map((opt) => (
+                                    <option key={opt.value} value={opt.value}>
+                                      {opt.label}
+                                    </option>
+                                  ))}
+                                </Select>
+                              </Field>
+                            ))
+                          )
+                        ) : null}
+                      </div>
+                    );
+                  })
                 )}
                 <div className="flex flex-wrap gap-2">
                   <Button
