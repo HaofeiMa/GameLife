@@ -5,10 +5,19 @@ use crate::task::{
     PRESET_SIDE_ID,
 };
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteColumn {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub project_id: String,
+}
+
 pub struct RemoteProject {
     pub id: String,
     pub name: String,
     pub sort_order: i64,
+    pub columns: Vec<RemoteColumn>,
 }
 
 #[derive(Clone, Debug)]
@@ -20,6 +29,7 @@ pub struct RemoteTask {
     pub end: Option<i64>,
     pub all_day: bool,
     pub etag: String,
+    pub column_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +59,7 @@ pub enum ReconcileAction {
     Insert(LocalMirror),
     Update(LocalMirror),
     Delete { local_id: String },
+    DropIgnored { local_id: String },
     Link {
         local_id: String,
         ticktick_task_id: String,
@@ -61,6 +72,7 @@ pub struct ReconcileInput<'a> {
     pub local: &'a [LocalMirror],
     pub projects: &'a [RemoteProject],
     pub roles: &'a BTreeMap<String, String>,
+    pub column_roles: &'a BTreeMap<String, String>,
     pub fetches: &'a [ProjectFetch],
     pub completed_ids: &'a [String],
     pub completed_ok: bool,
@@ -103,6 +115,104 @@ pub fn parse_role(raw: &str) -> Option<ListRole> {
         "chore" => Some(ListRole::Chore),
         _ => None,
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoredRole {
+    Ignore,
+    Role(ListRole),
+}
+
+pub fn parse_stored_role(raw: &str) -> Option<StoredRole> {
+    match raw {
+        "ignore" => Some(StoredRole::Ignore),
+        "mainline" => Some(StoredRole::Role(ListRole::Mainline)),
+        "side" => Some(StoredRole::Role(ListRole::Side)),
+        "longterm" => Some(StoredRole::Role(ListRole::Longterm)),
+        "chore" => Some(StoredRole::Role(ListRole::Chore)),
+        _ => None,
+    }
+}
+
+pub fn effective_role(
+    project_roles: &BTreeMap<String, String>,
+    column_roles: &BTreeMap<String, String>,
+    project_id: &str,
+    column_id: Option<&str>,
+) -> Option<ListRole> {
+    if let Some(cid) = column_id.filter(|s| !s.is_empty()) {
+        if let Some(stored) = column_roles.get(cid).and_then(|raw| parse_stored_role(raw)) {
+            return match stored {
+                StoredRole::Ignore => None,
+                StoredRole::Role(role) => Some(role),
+            };
+        }
+    }
+    project_roles
+        .get(project_id)
+        .and_then(|raw| parse_role(raw))
+}
+
+pub fn projects_to_fetch<'a>(
+    projects: &'a [RemoteProject],
+    project_roles: &BTreeMap<String, String>,
+    column_roles: &BTreeMap<String, String>,
+) -> Vec<&'a RemoteProject> {
+    projects
+        .iter()
+        .filter(|project| {
+            let list_mapped = project_roles
+                .get(&project.id)
+                .and_then(|raw| parse_role(raw))
+                .is_some();
+            if list_mapped {
+                return true;
+            }
+            project.columns.iter().any(|column| {
+                column_roles
+                    .get(&column.id)
+                    .and_then(|raw| parse_role(raw))
+                    .is_some()
+            })
+        })
+        .collect()
+}
+
+pub fn sort_columns(columns: &mut [RemoteColumn]) {
+    columns.sort_by(|left, right| (left.sort_order, &left.id).cmp(&(right.sort_order, &right.id)));
+}
+
+pub fn parse_columns(project_id: &str, value: &serde_json::Value) -> Vec<RemoteColumn> {
+    let Some(arr) = value.get("columns").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| {
+            let obj = item.as_object()?;
+            let id = json_string_field(obj, "id")?;
+            let name = json_string_field(obj, "name").unwrap_or_default();
+            let sort_order = json_i64_field(obj, "sortOrder").unwrap_or(0);
+            let project_id =
+                json_string_field(obj, "projectId").unwrap_or_else(|| project_id.to_string());
+            Some(RemoteColumn {
+                id,
+                name,
+                sort_order,
+                project_id,
+            })
+        })
+        .collect()
+}
+
+pub fn kept_column_ids(projects: &[RemoteProject]) -> BTreeSet<String> {
+    projects
+        .iter()
+        .flat_map(|project| project.columns.iter().map(|column| column.id.clone()))
+        .collect()
+}
+
+pub fn prune_column_roles(kept: &BTreeSet<String>, column_roles: &mut BTreeMap<String, String>) {
+    column_roles.retain(|id, _| kept.contains(id));
 }
 
 pub fn list_id_for_role(role: ListRole) -> Option<&'static str> {
@@ -218,10 +328,12 @@ pub fn parse_projects(value: &serde_json::Value) -> Vec<RemoteProject> {
             let id = json_string_field(obj, "id")?;
             let name = json_string_field(obj, "name").unwrap_or_default();
             let sort_order = json_i64_field(obj, "sortOrder").unwrap_or(0);
+            let columns = parse_columns(&id, item);
             Some(RemoteProject {
                 id,
                 name,
                 sort_order,
+                columns,
             })
         })
         .collect()
@@ -241,6 +353,7 @@ pub fn parse_open_tasks(project_id: &str, value: &serde_json::Value) -> Vec<Remo
             let id = json_string_field(obj, "id")?;
             let title = json_string_field(obj, "title").unwrap_or_default();
             let etag = json_string_field(obj, "etag").unwrap_or_default();
+            let column_id = json_string_field(obj, "columnId").filter(|s| !s.is_empty());
             let all_day = obj
                 .get("isAllDay")
                 .and_then(|v| v.as_bool())
@@ -261,6 +374,7 @@ pub fn parse_open_tasks(project_id: &str, value: &serde_json::Value) -> Vec<Remo
                 end,
                 all_day,
                 etag,
+                column_id,
             })
         })
         .collect()
@@ -285,6 +399,7 @@ fn apply_remote_fields(
     local: &LocalMirror,
     remote: &RemoteTask,
     roles: &BTreeMap<String, String>,
+    column_roles: &BTreeMap<String, String>,
     day_start: i64,
     next_day_start: i64,
     done: bool,
@@ -296,10 +411,15 @@ fn apply_remote_fields(
         day_start,
         next_day_start,
     );
-    let list_id = role_for_project(roles, &remote.project_id)
-        .and_then(list_id_for_role)
-        .map(str::to_string)
-        .unwrap_or_else(|| local.list_id.clone());
+    let list_id = effective_role(
+        roles,
+        column_roles,
+        &remote.project_id,
+        remote.column_id.as_deref(),
+    )
+    .and_then(list_id_for_role)
+    .map(str::to_string)
+    .unwrap_or_else(|| local.list_id.clone());
     LocalMirror {
         local_id: local.local_id.clone(),
         list_id,
@@ -316,10 +436,9 @@ fn apply_remote_fields(
 }
 
 pub fn reconcile(input: &ReconcileInput) -> Vec<ReconcileAction> {
-    let mapped: BTreeSet<&str> = input
-        .roles
-        .iter()
-        .filter_map(|(id, raw)| parse_role(raw).map(|_| id.as_str()))
+    let mapped: BTreeSet<&str> = projects_to_fetch(input.projects, input.roles, input.column_roles)
+        .into_iter()
+        .map(|project| project.id.as_str())
         .collect();
 
     let ok_fetches: BTreeSet<&str> = input
@@ -372,6 +491,16 @@ pub fn reconcile(input: &ReconcileInput) -> Vec<ReconcileAction> {
                 if claimed.contains(&t.id) {
                     return false;
                 }
+                if effective_role(
+                    input.roles,
+                    input.column_roles,
+                    &t.project_id,
+                    t.column_id.as_deref(),
+                )
+                .is_none()
+                {
+                    return false;
+                }
                 let (start, end, all_day) = map_times(
                     t.all_day,
                     t.start,
@@ -402,12 +531,29 @@ pub fn reconcile(input: &ReconcileInput) -> Vec<ReconcileAction> {
         }
     }
 
-    // clean linked rows: update / complete / reopen / delete
-    for row in input.local.iter().filter(|r| r.ticktick_dirty == 0) {
+    // Linked rows, including dirty ones, when the remote task is still open.
+    for row in input.local.iter().filter(|r| r.ticktick_task_id.is_some()) {
         let Some(tid) = row.ticktick_task_id.as_deref() else {
             continue;
         };
         if let Some(remote) = open_by_id.get(tid) {
+            let role = effective_role(
+                input.roles,
+                input.column_roles,
+                &remote.project_id,
+                remote.column_id.as_deref(),
+            );
+            if role.is_none() {
+                if allow_delete {
+                    actions.push(ReconcileAction::DropIgnored {
+                        local_id: row.local_id.clone(),
+                    });
+                }
+                continue;
+            }
+            if row.ticktick_dirty != 0 {
+                continue;
+            }
             let (start, end, all_day) = map_times(
                 remote.all_day,
                 remote.start,
@@ -415,22 +561,38 @@ pub fn reconcile(input: &ReconcileInput) -> Vec<ReconcileAction> {
                 input.day_start,
                 input.next_day_start,
             );
-            let project_changed = row.ticktick_project_id.as_deref() != Some(remote.project_id.as_str());
+            let project_changed =
+                row.ticktick_project_id.as_deref() != Some(remote.project_id.as_str());
             let etag_changed = row.ticktick_etag != remote.etag;
             let title_changed = row.title != remote.title;
             let times_changed =
                 row.start != start || row.end != end || row.ticktick_all_day != all_day;
             let done_changed = row.done; // remote open ⇒ should be false
-            if project_changed || etag_changed || title_changed || times_changed || done_changed {
-                actions.push(ReconcileAction::Update(apply_remote_fields(
-                    row,
-                    remote,
-                    input.roles,
-                    input.day_start,
-                    input.next_day_start,
-                    false,
-                )));
+            let mut updated = apply_remote_fields(
+                row,
+                remote,
+                input.roles,
+                input.column_roles,
+                input.day_start,
+                input.next_day_start,
+                false,
+            );
+            if !allow_delete {
+                updated.list_id = row.list_id.clone();
             }
+            let list_changed = updated.list_id != row.list_id;
+            if list_changed
+                || project_changed
+                || etag_changed
+                || title_changed
+                || times_changed
+                || done_changed
+            {
+                actions.push(ReconcileAction::Update(updated));
+            }
+            continue;
+        }
+        if row.ticktick_dirty != 0 {
             continue;
         }
         if completed.contains(tid) {
@@ -455,7 +617,12 @@ pub fn reconcile(input: &ReconcileInput) -> Vec<ReconcileAction> {
         if claimed.contains(&remote.id) {
             continue;
         }
-        let Some(role) = role_for_project(input.roles, &remote.project_id) else {
+        let Some(role) = effective_role(
+            input.roles,
+            input.column_roles,
+            &remote.project_id,
+            remote.column_id.as_deref(),
+        ) else {
             continue;
         };
         let Some(list_id) = list_id_for_role(role) else {
@@ -561,13 +728,23 @@ pub fn push_op(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn proj(id: &str, sort_order: i64) -> RemoteProject {
         RemoteProject {
             id: id.into(),
             name: id.into(),
             sort_order,
+            columns: Vec::new(),
+        }
+    }
+
+    fn column(id: &str, project: &str, sort_order: i64) -> RemoteColumn {
+        RemoteColumn {
+            id: id.into(),
+            name: id.into(),
+            sort_order,
+            project_id: project.into(),
         }
     }
 
@@ -587,7 +764,13 @@ mod tests {
         }
     }
 
-    fn open(id: &str, project: &str, title: &str, etag: &str) -> RemoteTask {
+    fn open_column(
+        id: &str,
+        project: &str,
+        title: &str,
+        etag: &str,
+        column_id: Option<&str>,
+    ) -> RemoteTask {
         RemoteTask {
             id: id.into(),
             project_id: project.into(),
@@ -596,7 +779,12 @@ mod tests {
             end: Some(20),
             all_day: false,
             etag: etag.into(),
+            column_id: column_id.map(str::to_string),
         }
+    }
+
+    fn open(id: &str, project: &str, title: &str, etag: &str) -> RemoteTask {
+        open_column(id, project, title, etag, None)
     }
 
     #[test]
@@ -613,6 +801,7 @@ mod tests {
             local: &[],
             projects: &projects,
             roles: &roles,
+            column_roles: &BTreeMap::new(),
             fetches: &fetches,
             completed_ids: &[],
             completed_ok: true,
@@ -646,6 +835,7 @@ mod tests {
             local: &local,
             projects: &projects,
             roles: &roles,
+            column_roles: &BTreeMap::new(),
             fetches: &fetches,
             completed_ids: &[],
             completed_ok: true,
@@ -684,6 +874,7 @@ mod tests {
             local: &local,
             projects: &projects,
             roles: &roles,
+            column_roles: &BTreeMap::new(),
             fetches: &fetches,
             completed_ids: &[],
             completed_ok: true,
@@ -711,6 +902,7 @@ mod tests {
             local: &local,
             projects: &projects,
             roles: &roles,
+            column_roles: &BTreeMap::new(),
             fetches: &fetches,
             completed_ids: &[],
             completed_ok: true,
@@ -738,6 +930,7 @@ mod tests {
             local: &local,
             projects: &projects,
             roles: &roles,
+            column_roles: &BTreeMap::new(),
             fetches: &fetches,
             completed_ids: &["t1".into(), "historical".into()],
             completed_ok: true,
@@ -768,6 +961,7 @@ mod tests {
             local: &local,
             projects: &projects,
             roles: &roles,
+            column_roles: &BTreeMap::new(),
             fetches: &fetches,
             completed_ids: &[],
             completed_ok: false,
@@ -803,6 +997,7 @@ mod tests {
             local: &local,
             projects: &projects,
             roles: &roles,
+            column_roles: &BTreeMap::new(),
             fetches: &fetches,
             completed_ids: &[],
             completed_ok: true,
@@ -834,6 +1029,7 @@ mod tests {
             local: &[local],
             projects: &projects,
             roles: &roles,
+            column_roles: &BTreeMap::new(),
             fetches: &fetches,
             completed_ids: &[],
             completed_ok: true,
@@ -869,6 +1065,7 @@ mod tests {
             local: &[local],
             projects: &projects,
             roles: &roles,
+            column_roles: &BTreeMap::new(),
             fetches: &fetches,
             completed_ids: &[],
             completed_ok: true,
@@ -999,5 +1196,265 @@ mod tests {
         assert_eq!(list_id_for_role(ListRole::Custom), None);
         assert_eq!(parse_role("ignore"), None);
         assert_eq!(parse_role("longterm"), Some(ListRole::Longterm));
+    }
+
+    #[test]
+    fn effective_role_column_overrides_list_including_ignore() {
+        let mut lists = BTreeMap::new();
+        lists.insert("p".into(), "mainline".into());
+        let mut columns = BTreeMap::new();
+        columns.insert("c-ignore".into(), "ignore".into());
+        columns.insert("c-side".into(), "side".into());
+        assert_eq!(
+            effective_role(&lists, &columns, "p", Some("c-ignore")),
+            None
+        );
+        assert_eq!(
+            effective_role(&lists, &columns, "p", Some("c-side")),
+            Some(ListRole::Side)
+        );
+        assert_eq!(
+            effective_role(&lists, &columns, "p", Some("c-new")),
+            Some(ListRole::Mainline)
+        );
+        assert_eq!(
+            effective_role(&lists, &columns, "p", None),
+            Some(ListRole::Mainline)
+        );
+        columns.insert("c-side".into(), "inherit".into());
+        assert_eq!(
+            effective_role(&lists, &columns, "p", Some("c-side")),
+            Some(ListRole::Mainline)
+        );
+    }
+
+    #[test]
+    fn effective_role_ignored_list_imports_explicit_column() {
+        let mut lists = BTreeMap::new();
+        lists.insert("p".into(), "ignore".into());
+        let columns = BTreeMap::new();
+        assert_eq!(effective_role(&lists, &columns, "p", Some("c-new")), None);
+        let mut columns = BTreeMap::new();
+        columns.insert("c-main".into(), "mainline".into());
+        assert_eq!(
+            effective_role(&lists, &columns, "p", Some("c-main")),
+            Some(ListRole::Mainline)
+        );
+    }
+
+    #[test]
+    fn projects_to_fetch_includes_ignore_list_only_for_mapped_column() {
+        let mut project = proj("p", 1);
+        project.columns = vec![column("c1", "p", 1), column("c2", "p", 2)];
+        let projects = vec![project, proj("q", 2)];
+        let mut lists = BTreeMap::new();
+        lists.insert("p".into(), "ignore".into());
+        lists.insert("q".into(), "side".into());
+        let mut columns = BTreeMap::new();
+        columns.insert("c1".into(), "ignore".into());
+        assert_eq!(
+            projects_to_fetch(&projects, &lists, &columns)
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["q"]
+        );
+        columns.insert("c2".into(), "mainline".into());
+        assert_eq!(
+            projects_to_fetch(&projects, &lists, &columns)
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["p", "q"]
+        );
+    }
+
+    #[test]
+    fn write_target_ignores_column_roles() {
+        let mut later = proj("b", 5);
+        later.columns = vec![column("c-main", "b", 0)];
+        let projects = vec![proj("a", 1), later];
+        let mut lists = BTreeMap::new();
+        lists.insert("a".into(), "mainline".into());
+        lists.insert("b".into(), "side".into());
+        let target = write_target(&projects, &lists, ListRole::Mainline).unwrap();
+        assert_eq!(target.id, "a");
+    }
+
+    #[test]
+    fn parse_columns_and_task_column_id() {
+        let data = serde_json::json!({
+            "columns": [
+                {"id": "c2", "name": "后", "sortOrder": 2, "projectId": "p"},
+                {"id": "c1", "name": "先", "sortOrder": 1, "projectId": "p"}
+            ],
+            "tasks": [{
+                "id": "t1",
+                "title": "写稿",
+                "status": 0,
+                "columnId": "c1",
+                "etag": "e"
+            }]
+        });
+        let mut columns = parse_columns("p", &data);
+        sort_columns(&mut columns);
+        assert_eq!(columns[0].id, "c1");
+        assert_eq!(columns[0].name, "先");
+        assert_eq!(columns[0].sort_order, 1);
+        assert_eq!(columns[1].id, "c2");
+        let tasks = parse_open_tasks("p", &data);
+        assert_eq!(tasks[0].column_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn prune_column_roles_drops_ids_that_are_not_kept() {
+        let mut roles = BTreeMap::new();
+        roles.insert("keep".into(), "side".into());
+        roles.insert("gone".into(), "mainline".into());
+        let mut kept = BTreeSet::new();
+        kept.insert("keep".into());
+        prune_column_roles(&kept, &mut roles);
+        assert_eq!(roles.get("keep").map(String::as_str), Some("side"));
+        assert!(roles.get("gone").is_none());
+    }
+
+    #[test]
+    fn reconcile_drops_ignored_column_without_inserting_it() {
+        let mut project = proj("p", 1);
+        project.columns = vec![column("c-ignore", "p", 1), column("c-main", "p", 2)];
+        let projects = vec![project];
+        let mut lists = BTreeMap::new();
+        lists.insert("p".into(), "mainline".into());
+        let mut columns = BTreeMap::new();
+        columns.insert("c-ignore".into(), "ignore".into());
+        let local = mirror("L1", Some("t-ignore"), "p", 1);
+        let fetches = vec![ProjectFetch {
+            project_id: "p".into(),
+            ok: true,
+            open: vec![
+                open_column("t-ignore", "p", "写稿", "e1", Some("c-ignore")),
+                open_column("t-skip", "p", "不导入", "e3", Some("c-ignore")),
+                open_column("t-new", "p", "新任务", "e2", Some("c-main")),
+            ],
+        }];
+        let actions = reconcile(&ReconcileInput {
+            local: &[local],
+            projects: &projects,
+            roles: &lists,
+            column_roles: &columns,
+            fetches: &fetches,
+            completed_ids: &[],
+            completed_ok: true,
+            first_sync: false,
+            day_start: 0,
+            next_day_start: 86_400,
+        });
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            ReconcileAction::DropIgnored { local_id } if local_id == "L1"
+        )));
+        assert!(actions.iter().all(|a| !matches!(a, ReconcileAction::Delete { .. })));
+        assert!(actions.iter().all(|a| !matches!(
+            a,
+            ReconcileAction::Insert(row) if row.ticktick_task_id.as_deref() == Some("t-skip")
+        )));
+        let inserted = actions.iter().find_map(|a| match a {
+            ReconcileAction::Insert(row) => Some(row),
+            _ => None,
+        });
+        assert_eq!(inserted.unwrap().list_id, PRESET_MAINLINE_ID);
+        assert_eq!(inserted.unwrap().ticktick_task_id.as_deref(), Some("t-new"));
+    }
+
+    #[test]
+    fn reconcile_ignored_list_inserts_explicit_mainline_column() {
+        let mut project = proj("p", 1);
+        project.columns = vec![column("c-main", "p", 1)];
+        let projects = vec![project];
+        let mut lists = BTreeMap::new();
+        lists.insert("p".into(), "ignore".into());
+        let mut columns = BTreeMap::new();
+        columns.insert("c-main".into(), "mainline".into());
+        let fetches = vec![ProjectFetch {
+            project_id: "p".into(),
+            ok: true,
+            open: vec![open_column("t1", "p", "写稿", "e", Some("c-main"))],
+        }];
+        let actions = reconcile(&ReconcileInput {
+            local: &[],
+            projects: &projects,
+            roles: &lists,
+            column_roles: &columns,
+            fetches: &fetches,
+            completed_ids: &[],
+            completed_ok: true,
+            first_sync: false,
+            day_start: 0,
+            next_day_start: 86_400,
+        });
+        match &actions[0] {
+            ReconcileAction::Insert(row) => assert_eq!(row.list_id, PRESET_MAINLINE_ID),
+            other => panic!("expected insert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconcile_moves_list_only_when_the_round_fully_succeeds() {
+        let mut project = proj("p", 1);
+        project.columns = vec![column("c-side", "p", 1)];
+        let other = proj("q", 2);
+        let projects = vec![project, other];
+        let mut lists = BTreeMap::new();
+        lists.insert("p".into(), "mainline".into());
+        lists.insert("q".into(), "side".into());
+        let mut columns = BTreeMap::new();
+        columns.insert("c-side".into(), "side".into());
+        let local = mirror("L1", Some("t1"), "p", 0);
+        let open = vec![open_column("t1", "p", "改标题", "e2", Some("c-side"))];
+        let full = reconcile(&ReconcileInput {
+            local: &[local.clone()],
+            projects: &projects,
+            roles: &lists,
+            column_roles: &columns,
+            fetches: &[
+                ProjectFetch { project_id: "p".into(), ok: true, open: open.clone() },
+                ProjectFetch { project_id: "q".into(), ok: true, open: vec![] },
+            ],
+            completed_ids: &[],
+            completed_ok: true,
+            first_sync: false,
+            day_start: 0,
+            next_day_start: 86_400,
+        });
+        match &full[0] {
+            ReconcileAction::Update(row) => {
+                assert_eq!(row.list_id, PRESET_SIDE_ID);
+                assert_eq!(row.title, "改标题");
+            }
+            other => panic!("expected update, got {other:?}"),
+        }
+        let partial = reconcile(&ReconcileInput {
+            local: &[local],
+            projects: &projects,
+            roles: &lists,
+            column_roles: &columns,
+            fetches: &[
+                ProjectFetch { project_id: "p".into(), ok: true, open },
+                ProjectFetch { project_id: "q".into(), ok: false, open: vec![] },
+            ],
+            completed_ids: &[],
+            completed_ok: false,
+            first_sync: false,
+            day_start: 0,
+            next_day_start: 86_400,
+        });
+        assert!(partial.iter().all(|a| !matches!(a, ReconcileAction::DropIgnored { .. })));
+        match &partial[0] {
+            ReconcileAction::Update(row) => {
+                assert_eq!(row.list_id, PRESET_MAINLINE_ID);
+                assert_eq!(row.title, "改标题");
+            }
+            other => panic!("expected title update, got {other:?}"),
+        }
     }
 }

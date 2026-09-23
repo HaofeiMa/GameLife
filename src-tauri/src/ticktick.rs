@@ -15,7 +15,7 @@ use gamelife_core::task::{
     PRESET_SIDE_ID,
 };
 use gamelife_core::ticktick_sync::{
-    map_times, parse_completed_ids, parse_open_tasks, parse_projects, parse_role, push_op,
+    map_times, parse_completed_ids, parse_open_tasks, parse_projects, projects_to_fetch, push_op,
     reconcile, stamp_missing_roles, write_target, LocalMirror, ProjectFetch, PushKind, PushOp,
     ReconcileAction, ReconcileInput, RemoteProject, RemoteTask,
 };
@@ -293,26 +293,22 @@ pub fn apply_push_result(task: &mut Task, result: &PushResult) {
     }
 }
 
-fn mapped_project_ids(projects: &[RemoteProject], roles: &BTreeMap<String, String>) -> Vec<String> {
-    projects
-        .iter()
-        .filter(|p| roles.get(&p.id).and_then(|r| parse_role(r)).is_some())
-        .map(|p| p.id.clone())
-        .collect()
-}
-
 pub fn pull_round(
     api: &mut dyn TickTickApi,
     local: &[Task],
     projects: &[RemoteProject],
     roles: &BTreeMap<String, String>,
+    column_roles: &BTreeMap<String, String>,
     first_sync: bool,
     now: i64,
     last_sync_at: Option<i64>,
     day_start: i64,
     next_day_start: i64,
 ) -> PullRound {
-    let mapped = mapped_project_ids(projects, roles);
+    let mapped: Vec<String> = projects_to_fetch(projects, roles, column_roles)
+        .into_iter()
+        .map(|project| project.id.clone())
+        .collect();
     if mapped.is_empty() {
         return PullRound {
             actions: Vec::new(),
@@ -372,6 +368,7 @@ pub fn pull_round(
         local: &mirrors,
         projects,
         roles,
+        column_roles,
         fetches: &fetches,
         completed_ids: &completed_ids,
         completed_ok,
@@ -475,6 +472,12 @@ fn apply_reconcile_actions(conn: &Connection, actions: &[ReconcileAction]) -> Re
                     continue;
                 };
                 if task.ticktick_dirty != 0 {
+                    continue;
+                }
+                delete_task_row(&tx, local_id).map_err(|e| format!("{e:?}"))?;
+            }
+            ReconcileAction::DropIgnored { local_id } => {
+                if tasks.iter().all(|t| t.id != *local_id) {
                     continue;
                 }
                 delete_task_row(&tx, local_id).map_err(|e| format!("{e:?}"))?;
@@ -692,7 +695,14 @@ pub(crate) fn run_pull_body(
 ) -> Result<(), String> {
     let settings = load_settings();
     let projects = load_ticktick_projects(conn).map_err(|e| format!("{e:?}"))?;
-    run_pull_body_with(now, api, conn, &projects, &settings.ticktick_project_roles)
+    run_pull_body_with(
+        now,
+        api,
+        conn,
+        &projects,
+        &settings.ticktick_project_roles,
+        &settings.ticktick_column_roles,
+    )
 }
 
 /// Testable pull body with explicit projects/roles (avoids real config.json).
@@ -702,6 +712,7 @@ pub(crate) fn run_pull_body_with(
     conn: &Connection,
     projects: &[RemoteProject],
     roles: &BTreeMap<String, String>,
+    column_roles: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let mut push_fail_reason: Option<String> = None;
     let tasks = load_tasks(conn).map_err(|e| format!("{e:?}"))?;
@@ -736,6 +747,7 @@ pub(crate) fn run_pull_body_with(
         &local,
         projects,
         roles,
+        column_roles,
         first_sync,
         now,
         last_sync_at,
@@ -1477,6 +1489,7 @@ mod tests {
             id: "p".into(),
             name: "主线".into(),
             sort_order: 1,
+            columns: Vec::new(),
         }];
         let mut roles = BTreeMap::new();
         roles.insert("p".into(), "mainline".into());
@@ -1498,6 +1511,7 @@ mod tests {
             &mut api,
             &[],
             &[],
+            &BTreeMap::new(),
             &BTreeMap::new(),
             true,
             1_000,
@@ -1637,6 +1651,7 @@ mod tests {
             id: "p".into(),
             name: "主线".into(),
             sort_order: 1,
+            columns: Vec::new(),
         }];
         let mut roles = BTreeMap::new();
         roles.insert("p".into(), "mainline".into());
@@ -1803,7 +1818,7 @@ mod tests {
                 body: json!({ "tasks": [] }),
             }),
         ]);
-        run_pull_body_with(1_000, &mut api, &conn, &projects, &roles).unwrap();
+        run_pull_body_with(1_000, &mut api, &conn, &projects, &roles, &BTreeMap::new()).unwrap();
         let row = load_tasks(&conn)
             .unwrap()
             .into_iter()
@@ -1889,11 +1904,13 @@ mod tests {
                 id: "p1".into(),
                 name: "主线".into(),
                 sort_order: 1,
+                columns: Vec::new(),
             },
             RemoteProject {
                 id: "p2".into(),
                 name: "支线".into(),
                 sort_order: 2,
+                columns: Vec::new(),
             },
         ];
         let mut roles = BTreeMap::new();
@@ -1904,6 +1921,7 @@ mod tests {
             &[local],
             &projects,
             &roles,
+            &BTreeMap::new(),
             false,
             2_000,
             Some(1_000),
