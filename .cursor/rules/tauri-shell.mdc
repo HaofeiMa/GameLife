@@ -7,7 +7,7 @@ alwaysApply: false
 # src-tauri
 
 - Gate: `cargo test --offline -p gamelife` must **run**. `--no-run` is not enough. Build with Homebrew cargo; rustup is only for `tools/platform-check`.
-- Secrets live in `secrets.json` via `keychain.rs` (mode 0600). Never write API keys or sync passwords into `config.json`. TickTick OAuth tokens live there too. With the Settings TickTick switch off, the TickTick module does not fetch or write back.
+- Secrets live in `secrets.json` via `keychain.rs` (mode 0600). Never write API keys or sync passwords into `config.json`. TickTick OAuth tokens live there too. With the Settings TickTick switch off, the TickTick module does not fetch or write back. 分组角色在 `config.json` 的 `ticktickColumnRoles`；刷新清单会读取每份清单的 `columns`。
 - `capture_context()` runs once, inside `tick_capture_impl`, immediately before `capture_window` — not on the 15s sample loop.
 - Network commands are `async`: `test_vision_provider`, `sync_now_cmd`, `sync_test_connection`, `sync_list_devices`, `sync_restore`. Opening 设置 reads `sync_status`.
 - `resolve_slot` writes `slots` + `app_day_stats` / `host_day_stats` in one transaction. Ledger rows only in `Immediate` mode. A `final` slot must not lack its rollup.

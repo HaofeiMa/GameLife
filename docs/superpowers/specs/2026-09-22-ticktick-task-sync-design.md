@@ -4,6 +4,8 @@
 状态：已确认，待实现  
 范围：设置页恢复 TickTick 标签，顶部总开关默认关闭。打开后，已映射清单中的未完成任务导入四个预设分组；每小时拉取一次；预设分组上的新建、改标题、改时段、完成、取消完成、删除立刻写回 TickTick。产品仍是活动监测器。计划本仍是本地任务板。TickTick 是这四组任务的外部镜像，不是判定输入。
 
+分组角色、刷新时读取分组，以及授权 scope，以后续的 `2026-09-23-ticktick-column-roles-design.md` 为准。
+
 本文覆盖并取代：
 
 - `2026-09-15-local-tasks-design.md` §11：恢复设置页 TickTick 标签、OAuth、清单角色和同步命令；重新读取 `secrets.json` 里的 TickTick Client Secret 与令牌。计划来源仍是 `task_lists` / `tasks`。不恢复用 `ticktick_cache` 钉槽快照，槽开始也不再刷新该表。

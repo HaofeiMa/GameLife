@@ -147,6 +147,7 @@ Later specs override earlier ones only where they say so; read the "本文覆盖
 - `2026-09-15-tasks-interaction-design.md` — task-board UX (alignment, context submenu, drag reorder, date dialog, calendar resize, activity ribbon, Today plan column, copy) plus match-based judgment. Slot snapshots pin **all unfinished** tasks; AI prompt cap 20; auto-Core is matched-mainline `strong_core` only; repeat is complete-then-spawn; `user_version` 4; Settings 「任务通知」. Calendar ribbon, native checkbox, and `user_version` 4 are superseded by the next spec where it says so.
 - `2026-09-16-task-detail-and-board-ux-design.md` — notes + shared detail dialog, list Shift/⌘ multi-select, circle checkbox, calendar hour wash. `user_version` 5. Notes never enter judgment.
 - `2026-09-22-ticktick-task-sync-design.md` — Settings TickTick switch; mapped lists import into the four preset groups; bidirectional sync of title, time, completion, and deletion. Overrides 2026-09-15 §11's removal of TickTick and 2026-09-13 §7's read-only restriction. `user_version` 6. `ticktick_cache` is not read; judgment still uses local unfinished tasks.
+- `2026-09-23-ticktick-column-roles-design.md` — 清单内分组的显式角色覆盖整份清单。刷新清单还会读 `GET /project/{id}/data`。授权 scope 为 `tasks:read tasks:write`。`user_version` 仍是 6。
 
 ## Stale documents
 

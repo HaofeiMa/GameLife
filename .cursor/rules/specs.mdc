@@ -23,5 +23,6 @@ Later specs override earlier ones **only** where they say so. Read the 「本文
 - `2026-09-16-task-detail-and-board-ux-design.md` — task notes + shared detail dialog; list Shift/⌘ multi-select; role-colored circle checkbox; calendar hour wash + column gap instead of the 96-cell ribbon. `user_version` 5. Notes never enter judgment (`TaskSnapshot` stays id/title/role).
 - `2026-09-16-task-board-polish-design.md` — list drag gap + floating card; sticky calendar header; block inset 2px/6px; detail/date dialogs as background + cards; task header stats and wallet; add-group on list blank context menu.
 - `2026-09-22-ticktick-task-sync-design.md` — Settings TickTick switch; mapped lists import into the four preset groups; bidirectional sync of title, time, completion, and deletion. Overrides 2026-09-15 §11's removal of TickTick and 2026-09-13 §7's read-only restriction. `user_version` 6. `ticktick_cache` is not read; judgment still uses local unfinished tasks.
+- `2026-09-23-ticktick-column-roles-design.md` — 清单内分组的显式角色覆盖整份清单。刷新清单还会读 `GET /project/{id}/data`。授权 scope 为 `tasks:read tasks:write`。`user_version` 仍是 6。
 
 UI copy and spec/plan prose stay Chinese. Task CRUD and the drawn calendar live on 任务 (`Tasks.tsx`); do not put FullCalendar or dnd-kit in.
