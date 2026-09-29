@@ -2261,18 +2261,23 @@ mod tests {
             compat("https://c.test/v1"),
         ];
         let ev = empty_evidence(900);
+        let tasks = [TaskSnapshot {
+            id: "chore".into(),
+            title: "杂项".into(),
+            role: gamelife_core::ListRole::Chore,
+        }];
         let out = settle_gray_text_from_bodies(
             pending_output(900),
             &ev,
-            &[],
+            &tasks,
             &chain,
             |ep| {
                 if ep.base_url.contains("a.test") {
                     Err(vision::VisionCallError::Client)
                 } else if ep.base_url.contains("b.test") {
-                    Ok(r#"{"category":"admin","confidence":0.4}"#.into())
+                    Ok(r#"{"task_id":"chore","confidence":0.4}"#.into())
                 } else {
-                    Ok(r#"{"category":"admin","confidence":0.9}"#.into())
+                    Ok(r#"{"task_id":"chore","confidence":0.9}"#.into())
                 }
             },
         );

@@ -74,6 +74,7 @@ pub fn apply_task_match(mut output: JudgeOutput, ev: &SlotEvidence, m: &TaskMatc
             output.credited_core_seconds = 0;
             output.credited_side_seconds = base;
             output.credited_chore_seconds = 0;
+            output.activity.side = output.activity.side.max(base);
             output.dominant = Dominant::SideProject;
             output.pending = false;
         }
@@ -81,121 +82,10 @@ pub fn apply_task_match(mut output: JudgeOutput, ev: &SlotEvidence, m: &TaskMatc
             output.credited_core_seconds = 0;
             output.credited_side_seconds = 0;
             output.credited_chore_seconds = base;
-            output.dominant = Dominant::Admin;
-            output.pending = false;
-        }
-    }
-    output
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct CategoryMatch {
-    pub dominant: Dominant,
-    pub confidence: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CategoryMatchError {
-    InvalidJson,
-    BadConfidence,
-    BadCategory,
-}
-
-pub fn parse_category_match_json(json: &str) -> Result<Option<CategoryMatch>, CategoryMatchError> {
-    let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|_| CategoryMatchError::InvalidJson)?;
-    let obj = value.as_object().ok_or(CategoryMatchError::InvalidJson)?;
-
-    let confidence = match obj.get("confidence") {
-        Some(serde_json::Value::Number(n)) => {
-            n.as_f64().ok_or(CategoryMatchError::BadConfidence)?
-        }
-        _ => return Err(CategoryMatchError::BadConfidence),
-    };
-    if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
-        return Err(CategoryMatchError::BadConfidence);
-    }
-
-    match obj.get("category") {
-        Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::String(cat)) => {
-            let dominant = match cat.as_str() {
-                "core_research" => Dominant::CoreResearch,
-                "research_support" => Dominant::ResearchSupport,
-                "side_project" => Dominant::SideProject,
-                "admin" => Dominant::Admin,
-                "distraction" => Dominant::Distraction,
-                _ => return Err(CategoryMatchError::BadCategory),
-            };
-            Ok(Some(CategoryMatch {
-                dominant,
-                confidence,
-            }))
-        }
-        _ => Err(CategoryMatchError::InvalidJson),
-    }
-}
-
-pub fn apply_category_match(
-    mut output: JudgeOutput,
-    ev: &SlotEvidence,
-    m: &CategoryMatch,
-) -> JudgeOutput {
-    if m.confidence < TASK_MATCH_MIN {
-        return output;
-    }
-    let base = payout_base_seconds(ev);
-    match m.dominant {
-        Dominant::CoreResearch if ev.strong_core_seconds == 0 => {
-            output.pending = true;
-            output.credited_core_seconds = 0;
-            output.credited_side_seconds = 0;
-            output.credited_chore_seconds = 0;
-            output.dominant = Dominant::PendingReview;
-        }
-        Dominant::CoreResearch => {
-            output.credited_core_seconds = if output.credited_core_seconds == 0 {
-                base
-            } else {
-                output.credited_core_seconds.min(base)
-            };
-            output.activity.core = output.activity.core.max(output.credited_core_seconds);
-            output.dominant = Dominant::CoreResearch;
-            output.pending = false;
-        }
-        Dominant::ResearchSupport => {
-            output.credited_core_seconds = 0;
-            output.credited_side_seconds = 0;
-            output.credited_chore_seconds = 0;
-            output.activity.support = output.activity.support.max(base);
-            output.dominant = Dominant::ResearchSupport;
-            output.pending = false;
-        }
-        Dominant::SideProject => {
-            output.credited_core_seconds = 0;
-            output.credited_side_seconds = base;
-            output.credited_chore_seconds = 0;
-            output.activity.side = output.activity.side.max(base);
-            output.dominant = Dominant::SideProject;
-            output.pending = false;
-        }
-        Dominant::Admin => {
-            output.credited_core_seconds = 0;
-            output.credited_side_seconds = 0;
-            output.credited_chore_seconds = base;
             output.activity.admin = output.activity.admin.max(base);
             output.dominant = Dominant::Admin;
             output.pending = false;
         }
-        Dominant::Distraction => {
-            output.credited_core_seconds = 0;
-            output.credited_side_seconds = 0;
-            output.credited_chore_seconds = 0;
-            output.activity.distraction = output.activity.distraction.max(base);
-            output.dominant = Dominant::Distraction;
-            output.pending = false;
-        }
-        _ => {}
     }
     output
 }
@@ -207,13 +97,8 @@ pub fn settle_from_text_ai(
     tasks: &[TaskSnapshot],
     raw: &str,
 ) -> Option<JudgeOutput> {
-    let next = if tasks.is_empty() {
-        let m = parse_category_match_json(raw).ok()??;
-        apply_category_match(output, ev, &m)
-    } else {
-        let m = parse_task_match_json(raw, tasks).ok()??;
-        apply_task_match(output, ev, &m)
-    };
+    let matched = parse_task_match_json(raw, tasks).ok()??;
+    let next = apply_task_match(output, ev, &matched);
     if next.pending {
         None
     } else {
@@ -305,132 +190,78 @@ mod tests {
     }
 
     #[test]
-    fn category_null_is_none() {
-        assert_eq!(
-            parse_category_match_json(r#"{"category":null,"confidence":0.9}"#),
-            Ok(None)
-        );
-    }
-
-    #[test]
-    fn core_without_strong_core_is_pending() {
+    fn apply_side_and_chore_fill_activity_buckets() {
         let ev = empty_evidence(900);
-        let out = apply_category_match(
+        let side = apply_task_match(
             empty_output(900),
             &ev,
-            &CategoryMatch {
-                dominant: Dominant::CoreResearch,
+            &TaskMatch {
+                task_id: "s".into(),
                 confidence: 0.9,
+                role: ListRole::Side,
             },
         );
-        assert!(out.pending);
-        assert_eq!(out.credited_core_seconds, 0);
-    }
-
-    #[test]
-    fn support_does_not_pay() {
-        let mut ev = empty_evidence(900);
-        ev.activity.away = 0;
-        ev.activity.distraction = 0;
-        let out = apply_category_match(
-            empty_output(900),
-            &ev,
-            &CategoryMatch {
-                dominant: Dominant::ResearchSupport,
-                confidence: 0.9,
-            },
-        );
-        assert_eq!(out.credited_core_seconds, 0);
-        assert_eq!(out.dominant, Dominant::ResearchSupport);
-        assert!(!out.pending);
-    }
-
-    #[test]
-    fn category_side_admin_distraction_fill_activity_buckets() {
-        let ev = empty_evidence(900);
-        let side = apply_category_match(
-            empty_output(900),
-            &ev,
-            &CategoryMatch {
-                dominant: Dominant::SideProject,
-                confidence: 0.9,
-            },
-        );
-        assert_eq!(side.activity.side, 900);
-        assert_eq!(side.credited_side_seconds, 900);
         assert_eq!(side.dominant, Dominant::SideProject);
+        assert_eq!(side.credited_side_seconds, 900);
+        assert_eq!(side.activity.side, 900);
+        assert!(!side.pending);
+        for role in [ListRole::Longterm, ListRole::Custom] {
+            let out = apply_task_match(
+                empty_output(900),
+                &ev,
+                &TaskMatch {
+                    task_id: "x".into(),
+                    confidence: 0.9,
+                    role,
+                },
+            );
+            assert_eq!(out.dominant, Dominant::SideProject);
+            assert_eq!(out.activity.side, 900);
+            assert_eq!(out.credited_side_seconds, 900);
+        }
 
-        let admin = apply_category_match(
+        let chore = apply_task_match(
             empty_output(900),
             &ev,
-            &CategoryMatch {
-                dominant: Dominant::Admin,
+            &TaskMatch {
+                task_id: "c".into(),
                 confidence: 0.9,
+                role: ListRole::Chore,
             },
         );
-        assert_eq!(admin.activity.admin, 900);
-        assert_eq!(admin.credited_chore_seconds, 900);
-        assert_eq!(admin.dominant, Dominant::Admin);
-
-        let dist = apply_category_match(
-            empty_output(900),
-            &ev,
-            &CategoryMatch {
-                dominant: Dominant::Distraction,
-                confidence: 0.9,
-            },
-        );
-        assert_eq!(dist.activity.distraction, 900);
-        assert_eq!(dist.credited_core_seconds, 0);
-        assert_eq!(dist.credited_side_seconds, 0);
-        assert_eq!(dist.credited_chore_seconds, 0);
-        assert_eq!(dist.dominant, Dominant::Distraction);
-        assert!(!dist.pending);
+        assert_eq!(chore.dominant, Dominant::Admin);
+        assert_eq!(chore.credited_chore_seconds, 900);
+        assert_eq!(chore.activity.admin, 900);
+        assert!(!chore.pending);
     }
 
     #[test]
-    fn text_ai_low_confidence_or_null_does_not_settle() {
-        let ev = empty_evidence(900);
-        let pending = empty_output(900);
-        assert!(settle_from_text_ai(
-            pending.clone(),
+    fn apply_task_match_with_zero_payable_seconds_still_closes() {
+        let mut ev = empty_evidence(900);
+        ev.activity.away = 900;
+        let out = apply_task_match(
+            empty_output(900),
             &ev,
-            &[],
-            r#"{"category":"admin","confidence":0.4}"#,
-        )
-        .is_none());
-        assert!(settle_from_text_ai(
-            pending.clone(),
-            &ev,
-            &[],
-            r#"{"category":null,"confidence":0.9}"#,
-        )
-        .is_none());
-        assert!(settle_from_text_ai(pending, &ev, &[], "not-json").is_none());
+            &TaskMatch {
+                task_id: "c".into(),
+                confidence: 0.9,
+                role: ListRole::Chore,
+            },
+        );
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::Admin);
+        assert_eq!(out.credited_chore_seconds, 0);
+        assert_eq!(out.activity.admin, 0);
     }
 
     #[test]
-    fn text_ai_confident_admin_settles_empty_board() {
+    fn category_json_does_not_settle_even_when_no_tasks() {
         let ev = empty_evidence(900);
-        let out = settle_from_text_ai(
+        assert!(settle_from_text_ai(
             empty_output(900),
             &ev,
             &[],
             r#"{"category":"admin","confidence":0.9}"#,
-        )
-        .expect("should settle");
-        assert!(!out.pending);
-        assert_eq!(out.dominant, Dominant::Admin);
-    }
-
-    #[test]
-    fn text_ai_core_without_strong_core_does_not_settle() {
-        let ev = empty_evidence(900);
-        assert!(settle_from_text_ai(
-            empty_output(900),
-            &ev,
-            &[],
-            r#"{"category":"core_research","confidence":0.95}"#,
         )
         .is_none());
     }

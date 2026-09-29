@@ -82,8 +82,7 @@ pub use task::{
     PRESET_LONGTERM_ID, PRESET_MAINLINE_ID, PRESET_SIDE_ID, UNSCHEDULED_DROP_SECS,
 };
 pub use task_ai::{
-    apply_category_match, apply_task_match, parse_category_match_json, parse_task_match_json,
-    payout_base_seconds, settle_from_text_ai, CategoryMatch, CategoryMatchError, TaskMatch,
+    apply_task_match, parse_task_match_json, payout_base_seconds, settle_from_text_ai, TaskMatch,
     TaskMatchError, TASK_MATCH_MIN,
 };
 pub use task_parse::{parse_task_line, ParseContext, ParseSpan, ParsedTask};
