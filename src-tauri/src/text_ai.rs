@@ -1,6 +1,5 @@
 use gamelife_core::{
-    nonempty_guides, select_prompt_snapshots, truncate_guide, CategoryGuides, ListRole, Policy,
-    TaskSnapshot, MAX_JUDGMENT_TASKS,
+    build_task_match_prompt, CategoryGuides, Policy, TaskSnapshot,
 };
 
 use crate::vision::{complete_json, VisionCallError, VisionEndpoint, VISION_TIMEOUT_SECS};
@@ -21,16 +20,6 @@ pub enum TextAiError {
     Client,
     Parse,
     EmptySummary,
-}
-
-fn role_name(role: ListRole) -> &'static str {
-    match role {
-        ListRole::Mainline => "mainline",
-        ListRole::Side => "side",
-        ListRole::Longterm => "longterm",
-        ListRole::Chore => "chore",
-        ListRole::Custom => "custom",
-    }
 }
 
 pub fn sample_summary_lines(lines: &[SampleLine]) -> String {
@@ -70,47 +59,13 @@ pub fn policy_names_blurb(policy: &Policy) -> String {
     )
 }
 
-fn guides_section(guides: &CategoryGuides) -> String {
-    let body = nonempty_guides(guides)
-        .into_iter()
-        .map(|(key, text)| format!("{key}: {}", truncate_guide(&text)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if body.is_empty() {
-        String::new()
-    } else {
-        format!("{body}\n")
-    }
-}
-
 pub fn build_text_ai_prompt(
     snapshots: &[TaskSnapshot],
     guides: &CategoryGuides,
     policy: &Policy,
     sample_summary: &str,
 ) -> String {
-    let owned = if snapshots.len() > MAX_JUDGMENT_TASKS {
-        select_prompt_snapshots(snapshots, &[sample_summary])
-    } else {
-        snapshots.to_vec()
-    };
-    let snapshots = owned.as_slice();
-    let names = policy_names_blurb(policy);
-    let guides = guides_section(guides);
-    if snapshots.is_empty() {
-        format!(
-            "Classify the observed windows into one activity category. Reply JSON {{\"category\": string|null, \"confidence\": number}}.\n{guides}{names}\nWindows:\n{sample_summary}"
-        )
-    } else {
-        let tasks = snapshots
-            .iter()
-            .map(|s| format!("id={} title={} role={}", s.id, s.title, role_name(s.role)))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!(
-            "Match the observed windows to at most one timed task. Reply JSON {{\"task_id\": string|null, \"confidence\": number}}.\nTasks:\n{tasks}\nWindows:\n{sample_summary}\n{guides}{names}"
-        )
-    }
+    build_task_match_prompt(snapshots, guides, policy, sample_summary).text
 }
 
 pub fn call_text_json(endpoint: &VisionEndpoint, prompt: &str) -> Result<String, TextAiError> {
@@ -201,8 +156,8 @@ mod tests {
             "app=Cursor title=x url= document_path= idle=1",
         );
         assert!(!prompt.contains("主线："));
-        assert!(prompt.contains("category"));
-        assert!(!prompt.contains("task_id"));
+        assert!(prompt.contains("task_id"));
+        assert!(!prompt.contains("{\"category\""));
     }
 
     #[test]

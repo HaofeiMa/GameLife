@@ -1,7 +1,103 @@
 use crate::judge::{Dominant, JudgeOutput, SlotEvidence};
-use crate::task::{ListRole, TaskSnapshot};
+use crate::policy::{nonempty_guides, truncate_guide, CategoryGuides, Policy};
+use crate::task::{select_prompt_snapshots, ListRole, TaskSnapshot, MAX_JUDGMENT_TASKS};
 
 pub const TASK_MATCH_MIN: f64 = 0.7;
+
+const TASK_MATCH_INTRO: &str = "Match the observed windows to at most one unfinished task. Category guides and app lists are evidence for which task fits; they are not categories to return. If none fits, task_id is null. Reply JSON {\"task_id\": string|null, \"confidence\": number}.";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskMatchPrompt {
+    pub text: String,
+    pub shown: Vec<TaskSnapshot>,
+}
+
+fn task_match_role_name(role: ListRole) -> &'static str {
+    match role {
+        ListRole::Mainline => "mainline",
+        ListRole::Side => "side",
+        ListRole::Longterm => "longterm",
+        ListRole::Chore => "chore",
+        ListRole::Custom => "custom",
+    }
+}
+
+fn join_capped(names: &[String]) -> String {
+    names
+        .iter()
+        .take(20)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn policy_list_lines(policy: &Policy) -> String {
+    let mut lines = Vec::new();
+    if !policy.trusted_apps.is_empty() {
+        lines.push(format!("主线应用: {}", join_capped(&policy.trusted_apps)));
+    }
+    if !policy.side_project_rules.is_empty() {
+        lines.push(format!("支线: {}", join_capped(&policy.side_project_rules)));
+    }
+    if !policy.admin_apps.is_empty() {
+        lines.push(format!("杂项: {}", join_capped(&policy.admin_apps)));
+    }
+    if !policy.distraction_rules.is_empty() {
+        lines.push(format!("娱乐: {}", join_capped(&policy.distraction_rules)));
+    }
+    lines.join("\n")
+}
+
+pub fn build_task_match_prompt(
+    snapshots: &[TaskSnapshot],
+    guides: &CategoryGuides,
+    policy: &Policy,
+    windows: &str,
+) -> TaskMatchPrompt {
+    let shown = if snapshots.len() <= MAX_JUDGMENT_TASKS {
+        snapshots.to_vec()
+    } else {
+        select_prompt_snapshots(snapshots, &[windows])
+    };
+
+    let tasks = shown
+        .iter()
+        .map(|s| {
+            format!(
+                "id={} title={} role={}",
+                s.id,
+                s.title,
+                task_match_role_name(s.role)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let guide_lines = nonempty_guides(guides)
+        .into_iter()
+        .map(|(key, text)| format!("{key}: {}", truncate_guide(&text)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let list_lines = policy_list_lines(policy);
+
+    let mut body = format!("{TASK_MATCH_INTRO}\nTasks:\n{tasks}");
+    if !guide_lines.is_empty() {
+        body.push('\n');
+        body.push_str(&guide_lines);
+    }
+    if !list_lines.is_empty() {
+        body.push('\n');
+        body.push_str(&list_lines);
+    }
+    body.push_str("\nWindows:\n");
+    body.push_str(windows);
+
+    TaskMatchPrompt {
+        text: body,
+        shown,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TaskMatch {
@@ -281,6 +377,62 @@ mod tests {
             r#"{"task_id":null,"confidence":0.9}"#,
         )
         .is_none());
+    }
+
+    #[test]
+    fn prompt_includes_guides_and_skips_empty_lists() {
+        use crate::policy::{default_v01, CategoryGuides};
+
+        let snaps = [TaskSnapshot {
+            id: "t1".into(),
+            title: "微信".into(),
+            role: ListRole::Chore,
+        }];
+        let guides = CategoryGuides {
+            admin: "聊天工具".into(),
+            ..CategoryGuides::default()
+        };
+        let mut policy = default_v01();
+        policy.admin_apps = vec!["微信".into()];
+        policy.side_project_rules.clear();
+        policy.distraction_rules.clear();
+        policy.trusted_apps.clear();
+        let built = build_task_match_prompt(
+            &snaps,
+            &guides,
+            &policy,
+            "app=微信 title=微信 url= document_path= idle=0",
+        );
+        assert!(built.text.contains("task_id"));
+        assert!(built.text.contains("id=t1 title=微信 role=chore"));
+        assert!(built.text.contains("admin: 聊天工具"));
+        assert!(built.text.contains("杂项: 微信"));
+        assert!(!built.text.contains("支线:"));
+        assert!(!built.text.contains("娱乐:"));
+        assert!(!built.text.contains("主线应用:"));
+        assert!(!built.text.contains("{\"category\""));
+        assert_eq!(built.shown.len(), 1);
+    }
+
+    #[test]
+    fn prompt_shown_slice_is_capped_at_20() {
+        use crate::policy::{default_v01, CategoryGuides};
+
+        let snaps: Vec<TaskSnapshot> = (0..25)
+            .map(|i| TaskSnapshot {
+                id: format!("t{i}"),
+                title: format!("Task{i:02}"),
+                role: ListRole::Mainline,
+            })
+            .collect();
+        let built = build_task_match_prompt(
+            &snaps,
+            &CategoryGuides::default(),
+            &default_v01(),
+            "app=Cursor title=x url= document_path= idle=1",
+        );
+        assert_eq!(built.shown.len(), 20);
+        assert!(!built.text.contains("id=t20 "));
     }
 
     #[test]
