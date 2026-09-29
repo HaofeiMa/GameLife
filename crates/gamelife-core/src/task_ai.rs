@@ -683,6 +683,27 @@ mod tests {
     }
 
     #[test]
+    fn missing_share_key_does_not_settle() {
+        let ev = empty_evidence(900);
+        let raw = r#"{"mainline":0.5,"side":0.5,"entertainment":0}"#;
+        assert!(settle_from_category_shares(empty_output(900), &ev, raw).is_none());
+    }
+
+    #[test]
+    fn hard_rule_entertainment_seconds_count_before_cover_and_can_win() {
+        let mut ev = empty_evidence(900);
+        ev.activity.distraction = 600;
+        let raw = r#"{"mainline":1,"side":0,"admin":0,"entertainment":0}"#;
+        let out = settle_from_category_shares(empty_output(900), &ev, raw).expect("settles");
+        assert_eq!(out.dominant, Dominant::Distraction);
+        assert_eq!(out.activity.distraction, 900);
+        assert_eq!(out.activity.core, 0);
+        assert_eq!(out.credited_core_seconds, 0);
+        assert_eq!(out.credited_side_seconds, 0);
+        assert_eq!(out.credited_chore_seconds, 0);
+    }
+
+    #[test]
     fn zero_votes_stay_pending() {
         let ev = empty_evidence(0);
         let out = apply_category_shares(empty_output(0), &ev, None);
