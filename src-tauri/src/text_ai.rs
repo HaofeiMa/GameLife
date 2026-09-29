@@ -156,8 +156,9 @@ mod tests {
             "app=Cursor title=x url= document_path= idle=1",
         );
         assert!(!prompt.contains("主线："));
-        assert!(prompt.contains("task_id"));
-        assert!(!prompt.contains("{\"category\""));
+        assert!(prompt.contains("四个数相加为 1"));
+        assert!(prompt.contains("\"mainline\": number"));
+        assert!(!prompt.contains("task_id"));
     }
 
     #[test]
@@ -180,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_with_snapshot_asks_for_task_id() {
+    fn prompt_with_snapshot_asks_for_category_shares() {
         let snaps = [TaskSnapshot {
             id: "tt-1".into(),
             title: "HDP".into(),
@@ -194,9 +195,11 @@ mod tests {
             &default_v01(),
             "app=Cursor title=HDP url= document_path=/p/HDP/a.py idle=1",
         );
-        assert!(prompt.contains("task_id"));
+        assert!(prompt.contains("四个数相加为 1"));
+        assert!(prompt.contains("\"mainline\": number"));
+        assert!(!prompt.contains("task_id"));
         assert!(prompt.contains("写论文"));
-        assert!(prompt.contains("tt-1"));
+        assert!(prompt.contains("id=tt-1"));
     }
 
     #[test]

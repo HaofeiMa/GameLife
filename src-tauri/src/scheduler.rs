@@ -8,16 +8,16 @@ use serde::Deserialize;
 
 use gamelife_core::judge::{Dominant, JudgeOutput};
 use gamelife_core::{
-    activity_summary_for_vision, analyze_slot_evidence, build_task_match_prompt,
-    builtin_never_capture, builtin_side_project_rules, can_use_freeze, capture_on_resume,
-    compose_vision_prompt, credited_core_spans, default_distraction_rules, default_v01,
-    deltas_from_slot, early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved,
-    hint_sample, is_weekday, judge_slot, matches_app_identity, new_milestones, normalize_quest_list,
-    parse_quest_versions_json, parse_task_snapshot_json, recompute_streak, schedule_capture,
-    settle_from_text_ai, settle_outcome, slot_end_exclusive, slot_start, spans_for_slot,
-    vision_quest_label, ActivitySeconds, CaptureContext, CaptureStatus, CategoryGuides, DayOutcome,
-    Hint, JudgeInput, Policy, Quest, QuestDraft, QuestListError, Sample, SlotEvidence, TaskSnapshot,
-    VisionContext, CHEST_SECS,
+    activity_summary_for_vision, analyze_slot_evidence, apply_category_shares,
+    build_task_match_prompt, builtin_never_capture, builtin_side_project_rules, can_use_freeze,
+    capture_on_resume, compose_vision_prompt, credited_core_spans, default_distraction_rules,
+    default_v01, deltas_from_slot, early_start_anchor, early_start_coins_for_local_secs,
+    heartbeat_unobserved, hint_sample, is_weekday, judge_slot, matches_app_identity, new_milestones,
+    normalize_quest_list, parse_quest_versions_json, parse_task_snapshot_json, payout_base_seconds,
+    recompute_streak, schedule_capture, settle_from_category_shares, settle_outcome,
+    slot_end_exclusive, slot_start, spans_for_slot, vision_quest_label, ActivitySeconds,
+    CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, Hint, JudgeInput, Policy, Quest,
+    QuestDraft, QuestListError, Sample, SlotEvidence, TaskSnapshot, VisionContext, CHEST_SECS,
 };
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
@@ -233,16 +233,15 @@ pub fn maybe_vision_for_gray_zone(
     .ok()
 }
 
-fn settle_gray_text_from_bodies(
+fn settle_gray_text_from_shares(
     output: JudgeOutput,
     evidence: &SlotEvidence,
-    tasks: &[TaskSnapshot],
     chain: &[vision::VisionEndpoint],
     mut body_for: impl FnMut(&vision::VisionEndpoint) -> Result<String, vision::VisionCallError>,
 ) -> JudgeOutput {
     match vision::try_provider_chain(chain, |ep| {
         let raw = body_for(ep)?;
-        settle_from_text_ai(output.clone(), evidence, tasks, &raw)
+        settle_from_category_shares(output.clone(), evidence, &raw)
             .ok_or(vision::VisionCallError::Parse)
     }) {
         Ok(next) => next,
@@ -252,14 +251,13 @@ fn settle_gray_text_from_bodies(
 
 fn settle_gray_vision_task(
     chain: &[vision::VisionEndpoint],
-    shown: &[TaskSnapshot],
     evidence: &SlotEvidence,
     output: JudgeOutput,
     mut body_for: impl FnMut(&vision::VisionEndpoint) -> Result<String, vision::VisionCallError>,
 ) -> Option<JudgeOutput> {
     vision::try_provider_chain(chain, |ep| {
         let raw = body_for(ep)?;
-        let mut next = settle_from_text_ai(output.clone(), evidence, shown, &raw)
+        let mut next = settle_from_category_shares(output.clone(), evidence, &raw)
             .ok_or(vision::VisionCallError::Parse)?;
         next.used_vision = true;
         Ok(next)
@@ -1624,13 +1622,19 @@ fn finalize_slot_end_in(
     let gray =
         output.pending || matches!(output.dominant, Dominant::PendingReview | Dominant::Unknown);
     let prepared = build_task_match_prompt(&tasks, &policy.category_guides, &policy, &summary);
-    if gray && !prepared.shown.is_empty() && !summary.is_empty() {
-        output = settle_gray_text_from_bodies(output, &evidence, &prepared.shown, &chain, |ep| {
+    let undecided = payout_base_seconds(&evidence);
+    if gray && undecided == 0 {
+        let covered = apply_category_shares(output.clone(), &evidence, None);
+        if !covered.pending {
+            output = covered;
+        }
+    } else if gray && undecided > 0 && !summary.is_empty() {
+        output = settle_gray_text_from_shares(output, &evidence, &chain, |ep| {
             vision::complete_json(ep, &prepared.text, None)
         });
     }
 
-    if output.pending && gray && !prepared.shown.is_empty() {
+    if output.pending && gray && undecided > 0 {
         let vision_out = match (screenshot_path.as_ref(), capture_ctx) {
             (Some(path), Some(capture_ctx))
                 if !decidable && capture == CaptureStatus::Captured =>
@@ -1645,13 +1649,9 @@ fn finalize_slot_end_in(
                 match vision::prepare_screenshot_request(Path::new(path), ctx, &never) {
                     Ok((jpeg, sanitized, _match_context)) => {
                         let prompt = compose_vision_prompt(&prepared.text, &sanitized);
-                        settle_gray_vision_task(
-                            &chain,
-                            &prepared.shown,
-                            &evidence,
-                            output.clone(),
-                            |ep| vision::complete_json(ep, &prompt, Some(&jpeg)),
-                        )
+                        settle_gray_vision_task(&chain, &evidence, output.clone(), |ep| {
+                            vision::complete_json(ep, &prompt, Some(&jpeg))
+                        })
                     }
                     Err(()) => None,
                 }
@@ -2256,55 +2256,38 @@ mod tests {
             compat("https://c.test/v1"),
         ];
         let ev = empty_evidence(900);
-        let tasks = [TaskSnapshot {
-            id: "chore".into(),
-            title: "杂项".into(),
-            role: gamelife_core::ListRole::Chore,
-        }];
-        let out = settle_gray_text_from_bodies(
-            pending_output(900),
-            &ev,
-            &tasks,
-            &chain,
-            |ep| {
-                if ep.base_url.contains("a.test") {
-                    Err(vision::VisionCallError::Client)
-                } else if ep.base_url.contains("b.test") {
-                    Ok(r#"{"task_id":"chore","confidence":0.4}"#.into())
-                } else {
-                    Ok(r#"{"task_id":"chore","confidence":0.9}"#.into())
-                }
-            },
-        );
+        let out = settle_gray_text_from_shares(pending_output(900), &ev, &chain, |ep| {
+            if ep.base_url.contains("a.test") {
+                Err(vision::VisionCallError::Client)
+            } else if ep.base_url.contains("b.test") {
+                Ok(r#"{"mainline":0.5,"side":0.5,"admin":0.5,"entertainment":0.5}"#.into())
+            } else {
+                Ok(r#"{"mainline":0,"side":0,"admin":1,"entertainment":0}"#.into())
+            }
+        });
         assert!(!out.pending);
         assert_eq!(out.dominant, Dominant::Admin);
+        assert_eq!(out.credited_chore_seconds, 900);
     }
 
     #[test]
     fn gray_vision_task_json_sets_used_vision_and_category_json_does_not() {
-        let snaps = [TaskSnapshot {
-            id: "chore".into(),
-            title: "微信".into(),
-            role: gamelife_core::ListRole::Chore,
-        }];
         let ev = empty_evidence(900);
         let chain = [compat("https://a.test/v1")];
         let missed = settle_gray_vision_task(
             &chain,
-            &snaps,
             &ev,
             pending_output(900),
-            |_| Ok(r#"{"category":"admin","confidence":0.95}"#.into()),
+            |_| Ok(r#"{"mainline":0.5,"side":0.5,"admin":0.5,"entertainment":0.5}"#.into()),
         );
         assert!(missed.is_none());
         let hit = settle_gray_vision_task(
             &chain,
-            &snaps,
             &ev,
             pending_output(900),
-            |_| Ok(r#"{"task_id":"chore","confidence":0.91}"#.into()),
+            |_| Ok(r#"{"mainline":0,"side":0,"admin":1,"entertainment":0}"#.into()),
         )
-        .expect("task id settles");
+        .expect("share json settles");
         assert!(!hit.pending);
         assert_eq!(hit.dominant, Dominant::Admin);
         assert!(hit.used_vision);

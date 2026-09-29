@@ -4,7 +4,7 @@ use crate::task::{select_prompt_snapshots, ListRole, TaskSnapshot, MAX_JUDGMENT_
 
 pub const TASK_MATCH_MIN: f64 = 0.7;
 
-const TASK_MATCH_INTRO: &str = "Match the observed windows to at most one unfinished task. Category guides and app lists are evidence for which task fits; they are not categories to return. If none fits, task_id is null. Reply JSON {\"task_id\": string|null, \"confidence\": number}.";
+const TASK_MATCH_INTRO: &str = "估计尚未被硬规则定性的窗口时间里，主线、支线、杂项、娱乐各占多少。四个数相加为 1。未完成任务、类别说明和应用名单只是估计依据，不是要返回的任务。离开和已经命中娱乐名单的时间不要放进这四个数。只回复 JSON {\"mainline\": number, \"side\": number, \"admin\": number, \"entertainment\": number}。";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskMatchPrompt {
@@ -599,14 +599,14 @@ mod tests {
             &policy,
             "app=微信 title=微信 url= document_path= idle=0",
         );
-        assert!(built.text.contains("task_id"));
+        assert!(built.text.contains("四个数相加为 1"));
         assert!(built.text.contains("id=t1 title=微信 role=chore"));
         assert!(built.text.contains("admin: 聊天工具"));
         assert!(built.text.contains("杂项: 微信"));
         assert!(!built.text.contains("支线:"));
         assert!(!built.text.contains("娱乐:"));
         assert!(!built.text.contains("主线应用:"));
-        assert!(!built.text.contains("{\"category\""));
+        assert!(!built.text.contains("task_id"));
         assert_eq!(built.shown.len(), 1);
     }
 
@@ -687,5 +687,20 @@ mod tests {
         let ev = empty_evidence(0);
         let out = apply_category_shares(empty_output(0), &ev, None);
         assert!(out.pending);
+    }
+
+    #[test]
+    fn prompt_asks_for_category_shares_not_a_task_id() {
+        use crate::policy::{default_v01, CategoryGuides};
+
+        let built = build_task_match_prompt(
+            &[],
+            &CategoryGuides::default(),
+            &default_v01(),
+            "app=微信 title=微信 url= document_path= idle=0",
+        );
+        assert!(built.text.contains("四个数相加为 1"));
+        assert!(built.text.contains("\"mainline\": number"));
+        assert!(!built.text.contains("task_id"));
     }
 }
