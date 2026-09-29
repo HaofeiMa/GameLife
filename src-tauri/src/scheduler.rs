@@ -10,14 +10,14 @@ use gamelife_core::judge::{Dominant, JudgeOutput};
 use gamelife_core::{
     activity_summary_for_vision, analyze_slot_evidence, build_task_match_prompt,
     builtin_never_capture, builtin_side_project_rules, can_use_freeze, capture_on_resume,
-    credited_core_spans, default_distraction_rules, default_v01, deltas_from_slot,
-    early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved, hint_sample,
-    is_weekday, judge_slot, matches_app_identity, new_milestones, normalize_quest_list,
+    compose_vision_prompt, credited_core_spans, default_distraction_rules, default_v01,
+    deltas_from_slot, early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved,
+    hint_sample, is_weekday, judge_slot, matches_app_identity, new_milestones, normalize_quest_list,
     parse_quest_versions_json, parse_task_snapshot_json, recompute_streak, schedule_capture,
-    screenshot_context_block, settle_from_text_ai, settle_outcome, slot_end_exclusive, slot_start,
-    spans_for_slot, vision_quest_label, ActivitySeconds, CaptureContext, CaptureStatus,
-    CategoryGuides, DayOutcome, Hint, JudgeInput, Policy, Quest, QuestDraft, QuestListError,
-    Sample, SlotEvidence, TaskSnapshot, VisionContext, CHEST_SECS,
+    settle_from_text_ai, settle_outcome, slot_end_exclusive, slot_start, spans_for_slot,
+    vision_quest_label, ActivitySeconds, CaptureContext, CaptureStatus, CategoryGuides, DayOutcome,
+    Hint, JudgeInput, Policy, Quest, QuestDraft, QuestListError, Sample, SlotEvidence, TaskSnapshot,
+    VisionContext, CHEST_SECS,
 };
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
@@ -1644,11 +1644,7 @@ fn finalize_slot_end_in(
                 };
                 match vision::prepare_screenshot_request(Path::new(path), ctx, &never) {
                     Ok((jpeg, sanitized, _match_context)) => {
-                        let prompt = format!(
-                            "{}\n\n{}",
-                            prepared.text,
-                            screenshot_context_block(&sanitized)
-                        );
+                        let prompt = compose_vision_prompt(&prepared.text, &sanitized);
                         settle_gray_vision_task(
                             &chain,
                             &prepared.shown,

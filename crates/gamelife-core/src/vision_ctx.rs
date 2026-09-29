@@ -114,15 +114,14 @@ pub fn screenshot_context_block(ctx: &SanitizedVisionContext) -> String {
     out
 }
 
-pub fn build_vision_prompt(
+/// Append per-window seconds, hint seconds, and the screenshot frame to an
+/// already-built task-match body (reuses `prepared.text`, no second slice).
+pub fn compose_vision_prompt(
+    task_match_body: &str,
     sanitized: &SanitizedVisionContext,
-    snapshots: &[crate::task::TaskSnapshot],
-    guides: &crate::policy::CategoryGuides,
-    policy: &crate::policy::Policy,
 ) -> String {
-    let prepared = crate::task_ai::build_task_match_prompt(snapshots, guides, policy, "");
     let ctx = &sanitized.inner;
-    let mut out = prepared.text;
+    let mut out = task_match_body.to_string();
     out.push_str("\n\n");
     out.push_str(
         "Observed activity in this block (do not treat unobserved time as work; credited time is computed separately):\n",
@@ -144,6 +143,16 @@ pub fn build_vision_prompt(
     out.push_str(".\n\n");
     out.push_str(&screenshot_context_block(sanitized));
     out
+}
+
+pub fn build_vision_prompt(
+    sanitized: &SanitizedVisionContext,
+    snapshots: &[crate::task::TaskSnapshot],
+    guides: &crate::policy::CategoryGuides,
+    policy: &crate::policy::Policy,
+) -> String {
+    let prepared = crate::task_ai::build_task_match_prompt(snapshots, guides, policy, "");
+    compose_vision_prompt(&prepared.text, sanitized)
 }
 
 pub fn format_span_secs(secs: i64) -> String {
@@ -330,6 +339,20 @@ mod tests {
         assert!(prompt.contains("微信"));
         assert!(prompt.contains("Screenshot context:"));
         assert!(!prompt.contains("Today's main quests"));
+        assert!(!prompt.contains("category must be one of"));
+    }
+
+    #[test]
+    fn compose_vision_prompt_keeps_task_body_and_activity_context() {
+        let sanitized =
+            sanitize_vision_context(ctx_with_password_and_cursor(), &builtin_never_capture())
+                .unwrap();
+        let body = "id=chore title=微信 role=chore\nMatch the observed windows to at most one unfinished task.";
+        let prompt = compose_vision_prompt(body, &sanitized);
+        assert!(prompt.contains("id=chore"));
+        assert!(prompt.contains("Observed activity"));
+        assert!(prompt.contains("Hint seconds:"));
+        assert!(prompt.contains("Screenshot context:"));
         assert!(!prompt.contains("category must be one of"));
     }
 

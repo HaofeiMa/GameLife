@@ -90,8 +90,9 @@ pub use time::{is_weekday, slot_end_exclusive, slot_start};
 pub use types::{ActivitySeconds, Hint, Quest, Sample};
 pub use url::{host_is_research, optional_stripped_url, strip_url_query_fragment, url_host};
 pub use vision_ctx::{
-    activity_summary_for_vision, build_vision_prompt, format_span_secs, is_protected_frontmost,
-    sanitize_vision_context, screenshot_context_block, ActivitySummary, CaptureContext,
-    HintSeconds, SanitizedVisionContext, VisionContext, VisionPrivacyError, WindowShare,
+    activity_summary_for_vision, build_vision_prompt, compose_vision_prompt, format_span_secs,
+    is_protected_frontmost, sanitize_vision_context, screenshot_context_block, ActivitySummary,
+    CaptureContext, HintSeconds, SanitizedVisionContext, VisionContext, VisionPrivacyError,
+    WindowShare,
 };
 pub use weekly::sum_activity;

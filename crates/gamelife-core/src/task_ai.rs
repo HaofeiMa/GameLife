@@ -155,6 +155,12 @@ pub fn apply_task_match(mut output: JudgeOutput, ev: &SlotEvidence, m: &TaskMatc
         return output;
     }
     let base = payout_base_seconds(ev);
+    // Matched role owns the payable base; clear other work buckets so reporting
+    // does not sum past the slot. Leave away / distraction (already excluded from base).
+    output.activity.core = 0;
+    output.activity.side = 0;
+    output.activity.admin = 0;
+    output.activity.support = 0;
     match m.role {
         ListRole::Mainline => {
             output.credited_core_seconds = if output.credited_core_seconds == 0 {
@@ -162,7 +168,9 @@ pub fn apply_task_match(mut output: JudgeOutput, ev: &SlotEvidence, m: &TaskMatc
             } else {
                 output.credited_core_seconds.min(base)
             };
-            output.activity.core = output.activity.core.max(output.credited_core_seconds);
+            output.credited_side_seconds = 0;
+            output.credited_chore_seconds = 0;
+            output.activity.core = output.credited_core_seconds;
             output.dominant = Dominant::CoreResearch;
             output.pending = false;
         }
@@ -170,7 +178,7 @@ pub fn apply_task_match(mut output: JudgeOutput, ev: &SlotEvidence, m: &TaskMatc
             output.credited_core_seconds = 0;
             output.credited_side_seconds = base;
             output.credited_chore_seconds = 0;
-            output.activity.side = output.activity.side.max(base);
+            output.activity.side = base;
             output.dominant = Dominant::SideProject;
             output.pending = false;
         }
@@ -178,7 +186,7 @@ pub fn apply_task_match(mut output: JudgeOutput, ev: &SlotEvidence, m: &TaskMatc
             output.credited_core_seconds = 0;
             output.credited_side_seconds = 0;
             output.credited_chore_seconds = base;
-            output.activity.admin = output.activity.admin.max(base);
+            output.activity.admin = base;
             output.dominant = Dominant::Admin;
             output.pending = false;
         }
@@ -348,6 +356,36 @@ mod tests {
         assert_eq!(out.dominant, Dominant::Admin);
         assert_eq!(out.credited_chore_seconds, 0);
         assert_eq!(out.activity.admin, 0);
+    }
+
+    #[test]
+    fn apply_chore_match_clears_other_work_buckets() {
+        let ev = empty_evidence(900);
+        let mut draft = empty_output(900);
+        draft.activity.core = 300;
+        draft.activity.side = 100;
+        draft.activity.support = 50;
+        let out = apply_task_match(
+            draft,
+            &ev,
+            &TaskMatch {
+                task_id: "c".into(),
+                confidence: 0.9,
+                role: ListRole::Chore,
+            },
+        );
+        assert_eq!(out.dominant, Dominant::Admin);
+        assert_eq!(out.activity.admin, 900);
+        assert_eq!(out.activity.core, 0);
+        assert_eq!(out.activity.side, 0);
+        assert_eq!(out.activity.support, 0);
+        let work_plus_rest = out.activity.core
+            + out.activity.side
+            + out.activity.admin
+            + out.activity.support
+            + out.activity.away
+            + out.activity.distraction;
+        assert!(work_plus_rest <= ev.observed_seconds);
     }
 
     #[test]
