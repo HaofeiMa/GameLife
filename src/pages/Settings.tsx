@@ -1311,7 +1311,7 @@ export function Settings() {
                 }
               />
 
-              <Section title="类别说明" caption="灰字为样稿，空着保存不会写进判定规则。">
+              <Section title="类别说明" caption="灰字为样稿。空着保存不进提示。写了也只在灰区帮助 AI 从任务里挑选，不直接定类别。">
                 {(
                   [
                     ["mainline", "主线"],
@@ -1944,23 +1944,19 @@ export function Settings() {
                 <ol className="space-y-2 text-xs leading-relaxed text-muted-foreground">
                   <li className="flex gap-2">
                     <span className="font-medium text-foreground">1</span>
-                    硬规则，按顺序：锁屏或暂停 →离开；娱乐名单 →娱乐；杂项名单 →杂项；
-                    支线名单 →支线；阅读应用 →阅读桥接；主线应用 →主线候选；都不命中 →待定。
+                    硬规则：锁屏或暂停 → 离开；娱乐名单 → 娱乐；闲置满 3 分钟 → 离开；GameLife → 支线；未完成任务的标题对上 → 按该任务的角色。对不上 → 待定。杂项名单和支线名单不在这一步定性。
                   </li>
                   <li className="flex gap-2">
                     <span className="font-medium text-foreground">2</span>
-                    元数据够确定就直接结算，不调 AI：落地活跃主线满 13 分钟自动记主线，
-                    支线 / 杂项 / 娱乐合计满 5 分钟且压过主线就自动归到其中之一。
+                    元数据够确定就直接结算，不调 AI：匹配到的主线满 13 分钟，且支线、杂项、娱乐合计不超过 1 分钟 → 主线；这三类合计满 5 分钟且压过主线 → 归到占优的一类；离开满 10 分钟且匹配主线不足 5 分钟 → 离开。
                   </li>
                   <li className="flex gap-2">
                     <span className="font-medium text-foreground">3</span>
-                    剩下的是灰区，交给文本 AI：当天有带时段的本地任务就匹配任务，
-                    没有就按「名单」里那四段类别说明归类。
+                    剩下的是灰区。这一槽没有未完成任务 → 待复核，不调用 AI。有任务则文本判断必须从这些任务里点一条，置信度至少 0.7。类别说明和应用名单只帮助挑选。
                   </li>
                   <li className="flex gap-2">
                     <span className="font-medium text-foreground">4</span>
-                    文本 AI 没给出高置信结论，才用那一槽的截图走视觉判断。
-                    视觉失败或返回非法结果 → 记待复核，绝不猜成已确认。
+                    文本没点中，且这一槽有可用截图：截图判断用同一份材料和同一条回复规则再点一次。点中按该任务的角色结案。没有截图、截图受保护、没点中或回复不合法 → 待复核，不猜类别。
                   </li>
                 </ol>
               </Section>
