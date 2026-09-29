@@ -82,8 +82,9 @@ pub use task::{
     PRESET_LONGTERM_ID, PRESET_MAINLINE_ID, PRESET_SIDE_ID, UNSCHEDULED_DROP_SECS,
 };
 pub use task_ai::{
-    apply_task_match, build_task_match_prompt, parse_task_match_json, payout_base_seconds,
-    settle_from_text_ai, TaskMatch, TaskMatchError, TaskMatchPrompt, TASK_MATCH_MIN,
+    apply_category_shares, apply_task_match, build_task_match_prompt, parse_category_shares,
+    parse_task_match_json, payout_base_seconds, settle_from_category_shares, settle_from_text_ai,
+    CategoryShareError, CategoryShares, TaskMatch, TaskMatchError, TaskMatchPrompt, TASK_MATCH_MIN,
 };
 pub use task_parse::{parse_task_line, ParseContext, ParseSpan, ParsedTask};
 pub use time::{is_weekday, slot_end_exclusive, slot_start};

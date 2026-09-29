@@ -210,6 +210,164 @@ pub fn settle_from_text_ai(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CategoryShares {
+    pub mainline: f64,
+    pub side: f64,
+    pub admin: f64,
+    pub entertainment: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CategoryShareError {
+    InvalidJson,
+    BadShare,
+    BadSum,
+}
+
+fn parse_share_field(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<f64, CategoryShareError> {
+    match obj.get(key) {
+        Some(serde_json::Value::Number(n)) => {
+            let v = n.as_f64().ok_or(CategoryShareError::BadShare)?;
+            if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+                Err(CategoryShareError::BadShare)
+            } else {
+                Ok(v)
+            }
+        }
+        _ => Err(CategoryShareError::BadShare),
+    }
+}
+
+pub fn parse_category_shares(json: &str) -> Result<CategoryShares, CategoryShareError> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| CategoryShareError::InvalidJson)?;
+    let obj = value.as_object().ok_or(CategoryShareError::InvalidJson)?;
+    let mainline = parse_share_field(obj, "mainline")?;
+    let side = parse_share_field(obj, "side")?;
+    let admin = parse_share_field(obj, "admin")?;
+    let entertainment = parse_share_field(obj, "entertainment")?;
+    let sum = mainline + side + admin + entertainment;
+    if (sum - 1.0).abs() > 0.02 {
+        return Err(CategoryShareError::BadSum);
+    }
+    Ok(CategoryShares {
+        mainline,
+        side,
+        admin,
+        entertainment,
+    })
+}
+
+fn round_share(p: f64, secs: i64) -> i64 {
+    if secs > 0 {
+        (p * secs as f64).round() as i64
+    } else {
+        0
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CategoryWinner {
+    Mainline,
+    Side,
+    Admin,
+    Entertainment,
+    Away,
+}
+
+pub fn apply_category_shares(
+    mut output: JudgeOutput,
+    ev: &SlotEvidence,
+    shares: Option<&CategoryShares>,
+) -> JudgeOutput {
+    let undecided = payout_base_seconds(ev);
+    if undecided > 0 && shares.is_none() {
+        return output;
+    }
+
+    let main = round_share(shares.map(|s| s.mainline).unwrap_or(0.0), undecided);
+    let side = round_share(shares.map(|s| s.side).unwrap_or(0.0), undecided);
+    let admin = round_share(shares.map(|s| s.admin).unwrap_or(0.0), undecided);
+    let entertainment = ev.activity.distraction
+        + round_share(
+            shares.map(|s| s.entertainment).unwrap_or(0.0),
+            undecided,
+        );
+    let away = ev.activity.away;
+
+    let votes: [(CategoryWinner, i64); 5] = [
+        (CategoryWinner::Mainline, main),
+        (CategoryWinner::Side, side),
+        (CategoryWinner::Admin, admin),
+        (CategoryWinner::Entertainment, entertainment),
+        (CategoryWinner::Away, away),
+    ];
+    let max = votes.iter().map(|(_, secs)| *secs).max().unwrap_or(0);
+    if max == 0 {
+        return output;
+    }
+    let winner = votes
+        .iter()
+        .find(|(_, secs)| *secs == max)
+        .map(|(w, _)| *w)
+        .expect("max vote exists");
+
+    output.activity.core = 0;
+    output.activity.side = 0;
+    output.activity.admin = 0;
+    output.activity.support = 0;
+    output.activity.distraction = 0;
+    output.activity.away = 0;
+
+    let obs = ev.observed_seconds;
+    output.credited_core_seconds = 0;
+    output.credited_side_seconds = 0;
+    output.credited_chore_seconds = 0;
+
+    match winner {
+        CategoryWinner::Mainline => {
+            output.activity.core = obs;
+            output.credited_core_seconds = obs;
+            output.dominant = Dominant::CoreResearch;
+        }
+        CategoryWinner::Side => {
+            output.activity.side = obs;
+            output.credited_side_seconds = obs;
+            output.dominant = Dominant::SideProject;
+        }
+        CategoryWinner::Admin => {
+            output.activity.admin = obs;
+            output.credited_chore_seconds = obs;
+            output.dominant = Dominant::Admin;
+        }
+        CategoryWinner::Entertainment => {
+            output.activity.distraction = obs;
+            output.dominant = Dominant::Distraction;
+        }
+        CategoryWinner::Away => {
+            output.activity.away = obs;
+            output.dominant = Dominant::BreakAway;
+        }
+    }
+    output.pending = false;
+    output
+}
+
+pub fn settle_from_category_shares(
+    output: JudgeOutput,
+    ev: &SlotEvidence,
+    raw: &str,
+) -> Option<JudgeOutput> {
+    let shares = parse_category_shares(raw).ok()?;
+    let next = apply_category_shares(output, ev, Some(&shares));
+    if next.pending {
+        None
+    } else {
+        Some(next)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,5 +648,44 @@ mod tests {
         .expect("should settle");
         assert!(!out.pending);
         assert_eq!(out.dominant, Dominant::CoreResearch);
+    }
+
+    #[test]
+    fn eight_minutes_mainline_covers_seven_minutes_side() {
+        let ev = empty_evidence(900);
+        let raw = r#"{"mainline":0.5333333333,"side":0.4666666667,"admin":0,"entertainment":0}"#;
+        let out = settle_from_category_shares(empty_output(900), &ev, raw).expect("settles");
+        assert_eq!(out.dominant, Dominant::CoreResearch);
+        assert_eq!(out.credited_core_seconds, 900);
+        assert_eq!(out.activity.core, 900);
+        assert_eq!(out.activity.side, 0);
+        assert!(!out.pending);
+    }
+
+    #[test]
+    fn five_minute_tie_picks_side_before_admin_and_away() {
+        let mut ev = empty_evidence(900);
+        ev.activity.away = 300;
+        let raw = r#"{"mainline":0,"side":0.5,"admin":0.5,"entertainment":0}"#;
+        let out = settle_from_category_shares(empty_output(900), &ev, raw).expect("settles");
+        assert_eq!(out.dominant, Dominant::SideProject);
+        assert_eq!(out.credited_side_seconds, 900);
+        assert_eq!(out.activity.side, 900);
+        assert_eq!(out.activity.admin, 0);
+        assert_eq!(out.activity.away, 0);
+    }
+
+    #[test]
+    fn bad_sum_does_not_settle() {
+        let ev = empty_evidence(900);
+        let raw = r#"{"mainline":0.5,"side":0.5,"admin":0.5,"entertainment":0.5}"#;
+        assert!(settle_from_category_shares(empty_output(900), &ev, raw).is_none());
+    }
+
+    #[test]
+    fn zero_votes_stay_pending() {
+        let ev = empty_evidence(0);
+        let out = apply_category_shares(empty_output(0), &ev, None);
+        assert!(out.pending);
     }
 }
