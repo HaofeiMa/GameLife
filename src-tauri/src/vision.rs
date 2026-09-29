@@ -2,9 +2,10 @@ use std::io::Cursor;
 use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use gamelife_core::judge::{parse_vision_json, VisionMatchContext, VisionResult};
+use gamelife_core::judge::VisionMatchContext;
 use gamelife_core::{
-    build_vision_prompt, sanitize_vision_context, SanitizedVisionContext, VisionContext,
+    build_vision_prompt, sanitize_vision_context, CategoryGuides, Policy, SanitizedVisionContext,
+    TaskSnapshot, VisionContext,
 };
 use image::imageops::FilterType;
 use image::GenericImageView;
@@ -353,11 +354,12 @@ pub fn call_vision_endpoint(
     jpeg_bytes: &[u8],
     endpoint: &VisionEndpoint,
     sanitized: &SanitizedVisionContext,
-    match_context: Option<VisionMatchContext>,
-) -> Result<VisionResult, VisionCallError> {
-    let prompt = build_vision_prompt(sanitized);
-    let content = complete_json(endpoint, &prompt, Some(jpeg_bytes))?;
-    parse_vision_json(&content, match_context).map_err(|_| VisionCallError::Parse)
+    snapshots: &[TaskSnapshot],
+    guides: &CategoryGuides,
+    policy: &Policy,
+) -> Result<String, VisionCallError> {
+    let prompt = build_vision_prompt(sanitized, snapshots, guides, policy);
+    complete_json(endpoint, &prompt, Some(jpeg_bytes))
 }
 
 /// Any endpoint failure tries the next usable one.
@@ -365,10 +367,12 @@ pub fn analyze_with_chain(
     jpeg_bytes: &[u8],
     chain: &[VisionEndpoint],
     sanitized: &SanitizedVisionContext,
-    match_context: Option<VisionMatchContext>,
-) -> Result<VisionResult, ()> {
+    snapshots: &[TaskSnapshot],
+    guides: &CategoryGuides,
+    policy: &Policy,
+) -> Result<String, ()> {
     try_provider_chain(chain, |ep| {
-        call_vision_endpoint(jpeg_bytes, ep, sanitized, match_context.clone())
+        call_vision_endpoint(jpeg_bytes, ep, sanitized, snapshots, guides, policy)
     })
     .map_err(|_| ())
 }
@@ -378,10 +382,12 @@ pub fn analyze_with_fallback(
     primary: Option<&VisionEndpoint>,
     fallback: Option<&VisionEndpoint>,
     sanitized: &SanitizedVisionContext,
-    match_context: Option<VisionMatchContext>,
-) -> Result<VisionResult, ()> {
+    snapshots: &[TaskSnapshot],
+    guides: &CategoryGuides,
+    policy: &Policy,
+) -> Result<String, ()> {
     let chain: Vec<VisionEndpoint> = [primary, fallback].into_iter().flatten().cloned().collect();
-    analyze_with_chain(jpeg_bytes, &chain, sanitized, match_context)
+    analyze_with_chain(jpeg_bytes, &chain, sanitized, snapshots, guides, policy)
 }
 
 /// POST OpenAI-compatible chat completions with a JPEG screenshot; vision failures return `Err`.
@@ -389,8 +395,10 @@ pub fn call_vision_api(
     jpeg_bytes: &[u8],
     api_key: &str,
     sanitized: &SanitizedVisionContext,
-    match_context: Option<VisionMatchContext>,
-) -> Result<VisionResult, ()> {
+    snapshots: &[TaskSnapshot],
+    guides: &CategoryGuides,
+    policy: &Policy,
+) -> Result<String, ()> {
     analyze_with_fallback(
         jpeg_bytes,
         Some(&VisionEndpoint::compat(
@@ -400,7 +408,9 @@ pub fn call_vision_api(
         )),
         None,
         sanitized,
-        match_context,
+        snapshots,
+        guides,
+        policy,
     )
 }
 
@@ -409,7 +419,10 @@ pub fn analyze_screenshot(
     api_key: &str,
     ctx: VisionContext,
     never_capture: &[String],
-) -> Result<VisionResult, ()> {
+    snapshots: &[TaskSnapshot],
+    guides: &CategoryGuides,
+    policy: &Policy,
+) -> Result<String, ()> {
     analyze_screenshot_with_fallback(
         path,
         Some(&VisionEndpoint::compat(
@@ -420,6 +433,9 @@ pub fn analyze_screenshot(
         None,
         ctx,
         never_capture,
+        snapshots,
+        guides,
+        policy,
     )
 }
 
@@ -443,9 +459,12 @@ pub fn analyze_screenshot_with_chain(
     chain: &[VisionEndpoint],
     ctx: VisionContext,
     never_capture: &[String],
-) -> Result<VisionResult, ()> {
-    let (jpeg, sanitized, match_context) = prepare_screenshot_request(path, ctx, never_capture)?;
-    analyze_with_chain(&jpeg, chain, &sanitized, match_context)
+    snapshots: &[TaskSnapshot],
+    guides: &CategoryGuides,
+    policy: &Policy,
+) -> Result<String, ()> {
+    let (jpeg, sanitized, _match_context) = prepare_screenshot_request(path, ctx, never_capture)?;
+    analyze_with_chain(&jpeg, chain, &sanitized, snapshots, guides, policy)
 }
 
 pub fn analyze_screenshot_with_fallback(
@@ -454,14 +473,18 @@ pub fn analyze_screenshot_with_fallback(
     fallback: Option<&VisionEndpoint>,
     ctx: VisionContext,
     never_capture: &[String],
-) -> Result<VisionResult, ()> {
+    snapshots: &[TaskSnapshot],
+    guides: &CategoryGuides,
+    policy: &Policy,
+) -> Result<String, ()> {
     let chain: Vec<VisionEndpoint> = [primary, fallback].into_iter().flatten().cloned().collect();
-    analyze_screenshot_with_chain(path, &chain, ctx, never_capture)
+    analyze_screenshot_with_chain(path, &chain, ctx, never_capture, snapshots, guides, policy)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gamelife_core::judge::parse_vision_json;
 
     #[test]
     fn parse_core_research_maps_to_wants_core() {
@@ -545,6 +568,9 @@ mod tests {
             "sk-test",
             protected_vision_ctx(),
             &gamelife_core::builtin_never_capture(),
+            &[],
+            &gamelife_core::CategoryGuides::default(),
+            &gamelife_core::default_v01(),
         );
         assert!(err.is_err());
     }

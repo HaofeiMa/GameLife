@@ -1,5 +1,3 @@
-use chrono::{Local, TimeZone};
-
 use crate::policy::matches_app_identity;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -99,30 +97,33 @@ pub fn sanitize_vision_context(
     Ok(SanitizedVisionContext { inner: ctx })
 }
 
-pub fn build_vision_prompt(ctx: &SanitizedVisionContext) -> String {
+pub fn screenshot_context_block(ctx: &SanitizedVisionContext) -> String {
     let ctx = &ctx.inner;
-    let range = format!(
-        "{}–{}",
-        format_hhmm(ctx.slot_start),
-        format_hhmm(ctx.slot_end)
-    );
     let mut out = String::new();
-    out.push_str("Classify this macOS screenshot for productivity tracking.\n");
+    out.push_str("Screenshot context:\n");
+    out.push_str(&format!("app: {}\n", ctx.capture.app));
+    out.push_str(&format!("title: {}\n", ctx.capture.title));
     out.push_str(&format!(
-        "Judge this 15-minute block {range}. Return JSON only with keys category, confidence, reason.\n"
+        "document_path: {}\n",
+        optional_field(ctx.capture.document_path.as_deref())
     ));
-    out.push_str(
-        "category must be one of: core_research, research_support, admin, side_project, distraction, break_away.\n\n",
-    );
-    out.push_str("Today's main quests:\n");
-    if ctx.quests.is_empty() {
-        out.push_str("(none)\n");
-    } else {
-        for (i, quest) in ctx.quests.iter().enumerate() {
-            out.push_str(&format!("{}. {quest}\n", i + 1));
-        }
-    }
-    out.push('\n');
+    out.push_str(&format!(
+        "url: {}\n",
+        optional_field(ctx.capture.url.as_deref())
+    ));
+    out
+}
+
+pub fn build_vision_prompt(
+    sanitized: &SanitizedVisionContext,
+    snapshots: &[crate::task::TaskSnapshot],
+    guides: &crate::policy::CategoryGuides,
+    policy: &crate::policy::Policy,
+) -> String {
+    let prepared = crate::task_ai::build_task_match_prompt(snapshots, guides, policy, "");
+    let ctx = &sanitized.inner;
+    let mut out = prepared.text;
+    out.push_str("\n\n");
     out.push_str(
         "Observed activity in this block (do not treat unobserved time as work; credited time is computed separately):\n",
     );
@@ -141,17 +142,7 @@ pub fn build_vision_prompt(ctx: &SanitizedVisionContext) -> String {
     out.push_str("Hint seconds: ");
     out.push_str(&format_hint_seconds(&ctx.activity_summary.hint_seconds));
     out.push_str(".\n\n");
-    out.push_str("Screenshot context:\n");
-    out.push_str(&format!("app: {}\n", ctx.capture.app));
-    out.push_str(&format!("title: {}\n", ctx.capture.title));
-    out.push_str(&format!(
-        "document_path: {}\n",
-        optional_field(ctx.capture.document_path.as_deref())
-    ));
-    out.push_str(&format!(
-        "url: {}\n",
-        optional_field(ctx.capture.url.as_deref())
-    ));
+    out.push_str(&screenshot_context_block(sanitized));
     out
 }
 
@@ -162,15 +153,6 @@ pub fn format_span_secs(secs: i64) -> String {
     } else {
         format!("{}m{:02}s", secs / 60, secs % 60)
     }
-}
-
-fn format_hhmm(ts: i64) -> String {
-    Local
-        .timestamp_opt(ts, 0)
-        .single()
-        .unwrap_or_else(|| Local.timestamp_opt(0, 0).unwrap())
-        .format("%H:%M")
-        .to_string()
 }
 
 fn optional_field(value: Option<&str>) -> &str {
@@ -323,20 +305,42 @@ mod tests {
 
     #[test]
     fn prompt_includes_main_prefix_when_provided() {
-        let mut ctx = ctx_with_password_and_cursor();
-        ctx.quests = vec!["[main] HDP".into(), "notes".into()];
-        let prompt =
-            build_vision_prompt(&sanitize_vision_context(ctx, &builtin_never_capture()).unwrap());
-        assert!(prompt.contains("1. [main] HDP"));
-        assert!(prompt.contains("2. notes"));
+        use crate::policy::default_v01;
+        use crate::task::{ListRole, TaskSnapshot};
+
+        let ctx = ctx_with_password_and_cursor();
+        let snaps = [TaskSnapshot {
+            id: "chore".into(),
+            title: "微信".into(),
+            role: ListRole::Chore,
+        }];
+        let guides = CategoryGuides {
+            admin: "聊天工具".into(),
+            ..CategoryGuides::default()
+        };
+        let mut policy = default_v01();
+        policy.admin_apps = vec!["微信".into()];
+        let prompt = build_vision_prompt(
+            &sanitize_vision_context(ctx, &builtin_never_capture()).unwrap(),
+            &snaps,
+            &guides,
+            &policy,
+        );
+        assert!(prompt.contains("id="));
+        assert!(prompt.contains("微信"));
+        assert!(prompt.contains("Screenshot context:"));
+        assert!(!prompt.contains("Today's main quests"));
+        assert!(!prompt.contains("category must be one of"));
     }
 
     #[test]
     fn history_protected_window_is_redacted_but_cursor_capture_is_ok() {
+        use crate::policy::default_v01;
+
         let ctx = ctx_with_password_and_cursor();
         let never = builtin_never_capture();
         let sanitized = sanitize_vision_context(ctx, &never).unwrap();
-        let prompt = build_vision_prompt(&sanitized);
+        let prompt = build_vision_prompt(&sanitized, &[], &CategoryGuides::default(), &default_v01());
         assert!(prompt.contains("[Protected App]"));
         assert!(prompt.contains("Cursor · train.py — HDP"));
         assert!(!prompt.contains("Bank Account Password"));

@@ -6,25 +6,24 @@ use chrono::{Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 
-use gamelife_core::judge::{Dominant, JudgeOutput, VisionResult};
-use gamelife_core::types::{ActivitySeconds, Hint};
+use gamelife_core::judge::{Dominant, JudgeOutput};
 use gamelife_core::{
-    activity_summary_for_vision, analyze_slot_evidence, builtin_never_capture,
-    builtin_side_project_rules, can_use_freeze, capture_on_resume, credited_core_spans,
-    default_distraction_rules, default_v01, deltas_from_slot, early_start_anchor,
-    early_start_coins_for_local_secs, heartbeat_unobserved, hint_sample, is_weekday, judge_slot,
-    matches_app_identity, new_milestones, normalize_quest_list, parse_quest_versions_json,
-    parse_task_snapshot_json, recompute_streak, schedule_capture, settle_from_text_ai,
-    settle_outcome, slot_end_exclusive, slot_start, spans_for_slot, vision_quest_label,
-    CaptureContext, CaptureStatus, CategoryGuides, DayOutcome, JudgeInput, Policy, Quest,
-    QuestDraft, QuestListError, Sample, SlotEvidence, TaskSnapshot, VisionContext, CHEST_SECS,
-    VISION_CONFIDENCE_MIN,
+    activity_summary_for_vision, analyze_slot_evidence, build_task_match_prompt,
+    builtin_never_capture, builtin_side_project_rules, can_use_freeze, capture_on_resume,
+    credited_core_spans, default_distraction_rules, default_v01, deltas_from_slot,
+    early_start_anchor, early_start_coins_for_local_secs, heartbeat_unobserved, hint_sample,
+    is_weekday, judge_slot, matches_app_identity, new_milestones, normalize_quest_list,
+    parse_quest_versions_json, parse_task_snapshot_json, recompute_streak, schedule_capture,
+    screenshot_context_block, settle_from_text_ai, settle_outcome, slot_end_exclusive, slot_start,
+    spans_for_slot, vision_quest_label, ActivitySeconds, CaptureContext, CaptureStatus,
+    CategoryGuides, DayOutcome, Hint, JudgeInput, Policy, Quest, QuestDraft, QuestListError,
+    Sample, SlotEvidence, TaskSnapshot, VisionContext, CHEST_SECS,
 };
 
 use crate::db::{app_db_path, insert_ledger, migrate, open};
 use crate::db_error::{map_rusqlite, DbOpError};
 use crate::resolve::resolve_slot;
-use crate::text_ai::{build_text_ai_prompt, sample_summary_lines, SampleLine};
+use crate::text_ai::{sample_summary_lines, SampleLine};
 use crate::vision;
 
 const AWAY_DOMINANT_SECS: i64 = 600;
@@ -215,11 +214,23 @@ pub fn maybe_vision_for_gray_zone(
     ctx: VisionContext,
     never: &[String],
     chain: &[vision::VisionEndpoint],
-) -> Option<VisionResult> {
+    snapshots: &[TaskSnapshot],
+    guides: &CategoryGuides,
+    policy: &Policy,
+) -> Option<String> {
     if metadata_decidable || capture != CaptureStatus::Captured {
         return None;
     }
-    vision::analyze_screenshot_with_chain(screenshot_path, chain, ctx, never).ok()
+    vision::analyze_screenshot_with_chain(
+        screenshot_path,
+        chain,
+        ctx,
+        never,
+        snapshots,
+        guides,
+        policy,
+    )
+    .ok()
 }
 
 fn settle_gray_text_from_bodies(
@@ -239,24 +250,19 @@ fn settle_gray_text_from_bodies(
     }
 }
 
-fn settle_gray_vision_from_results(
+fn settle_gray_vision_task(
     chain: &[vision::VisionEndpoint],
-    mut result_for: impl FnMut(
-        &vision::VisionEndpoint,
-    ) -> Result<VisionResult, vision::VisionCallError>,
-    mut judge: impl FnMut(VisionResult) -> JudgeOutput,
+    shown: &[TaskSnapshot],
+    evidence: &SlotEvidence,
+    output: JudgeOutput,
+    mut body_for: impl FnMut(&vision::VisionEndpoint) -> Result<String, vision::VisionCallError>,
 ) -> Option<JudgeOutput> {
     vision::try_provider_chain(chain, |ep| {
-        let v = result_for(ep)?;
-        if v.confidence < VISION_CONFIDENCE_MIN {
-            return Err(vision::VisionCallError::Parse);
-        }
-        let judged = judge(v);
-        if judged.pending {
-            Err(vision::VisionCallError::Parse)
-        } else {
-            Ok(judged)
-        }
+        let raw = body_for(ep)?;
+        let mut next = settle_from_text_ai(output.clone(), evidence, shown, &raw)
+            .ok_or(vision::VisionCallError::Parse)?;
+        next.used_vision = true;
+        Ok(next)
     })
     .ok()
 }
@@ -1411,7 +1417,7 @@ pub fn finalize_ended_open_slots(
         let mut stmt = conn
             .prepare(
                 "SELECT day, slot_start FROM slots
-             WHERE (status IS NULL OR status NOT IN ('final', 'unknown'))
+             WHERE status IS NULL
                AND slot_start + 900 <= ?1
              ORDER BY day, slot_start",
             )
@@ -1531,6 +1537,9 @@ fn finalize_slot_end_in(
     if slot_is_final(conn, day, slot_start)? {
         return Ok(());
     }
+    if slot_status(conn, day, slot_start)?.as_deref() == Some("pending_review") {
+        return Ok(());
+    }
 
     let capture_status_str: Option<String> = conn
         .query_row(
@@ -1614,14 +1623,14 @@ fn finalize_slot_end_in(
     let summary = sample_summary_lines(&lines);
     let gray =
         output.pending || matches!(output.dominant, Dominant::PendingReview | Dominant::Unknown);
-    if gray && !summary.is_empty() {
-        let prompt = build_text_ai_prompt(&tasks, &policy.category_guides, &policy, &summary);
-        output = settle_gray_text_from_bodies(output, &evidence, &tasks, &chain, |ep| {
-            vision::complete_json(ep, &prompt, None)
+    let prepared = build_task_match_prompt(&tasks, &policy.category_guides, &policy, &summary);
+    if gray && !prepared.shown.is_empty() && !summary.is_empty() {
+        output = settle_gray_text_from_bodies(output, &evidence, &prepared.shown, &chain, |ep| {
+            vision::complete_json(ep, &prepared.text, None)
         });
     }
 
-    if output.pending && gray {
+    if output.pending && gray && !prepared.shown.is_empty() {
         let vision_out = match (screenshot_path.as_ref(), capture_ctx) {
             (Some(path), Some(capture_ctx))
                 if !decidable && capture == CaptureStatus::Captured =>
@@ -1634,30 +1643,20 @@ fn finalize_slot_end_in(
                     activity_summary: activity_summary_for_vision(&evidence, &samples),
                 };
                 match vision::prepare_screenshot_request(Path::new(path), ctx, &never) {
-                    Ok((jpeg, sanitized, match_context)) => settle_gray_vision_from_results(
-                        &chain,
-                        |ep| {
-                            vision::call_vision_endpoint(
-                                &jpeg,
-                                ep,
-                                &sanitized,
-                                match_context.clone(),
-                            )
-                        },
-                        |v| {
-                            judge_slot(JudgeInput {
-                                slot_start,
-                                slot_end,
-                                samples: &samples,
-                                quests: &quests,
-                                tasks: &tasks,
-                                policy: &policy,
-                                capture,
-                                vision: Some(v),
-                                manual_core: None,
-                            })
-                        },
-                    ),
+                    Ok((jpeg, sanitized, _match_context)) => {
+                        let prompt = format!(
+                            "{}\n\n{}",
+                            prepared.text,
+                            screenshot_context_block(&sanitized)
+                        );
+                        settle_gray_vision_task(
+                            &chain,
+                            &prepared.shown,
+                            &evidence,
+                            output.clone(),
+                            |ep| vision::complete_json(ep, &prompt, Some(&jpeg)),
+                        )
+                    }
                     Err(()) => None,
                 }
             }
@@ -2286,60 +2285,70 @@ mod tests {
     }
 
     #[test]
-    fn gray_vision_chain_skips_low_confidence_and_still_pending() {
-        let chain = [
-            compat("https://a.test/v1"),
-            compat("https://b.test/v1"),
-            compat("https://c.test/v1"),
-        ];
-        let out = settle_gray_vision_from_results(
+    fn gray_vision_task_json_sets_used_vision_and_category_json_does_not() {
+        let snaps = [TaskSnapshot {
+            id: "chore".into(),
+            title: "微信".into(),
+            role: gamelife_core::ListRole::Chore,
+        }];
+        let ev = empty_evidence(900);
+        let chain = [compat("https://a.test/v1")];
+        let missed = settle_gray_vision_task(
             &chain,
-            |ep| {
-                if ep.base_url.contains("a.test") {
-                    Ok(VisionResult {
-                        wants_core: false,
-                        confidence: 0.4,
-                        match_context: None,
-                        category: "admin".into(),
-                    })
-                } else if ep.base_url.contains("b.test") {
-                    Ok(VisionResult {
-                        wants_core: true,
-                        confidence: 0.95,
-                        match_context: None,
-                        category: "core_research".into(),
-                    })
-                } else {
-                    Ok(VisionResult {
-                        wants_core: false,
-                        confidence: 0.9,
-                        match_context: None,
-                        category: "admin".into(),
-                    })
-                }
-            },
-            |v| {
-                let lands = v.confidence >= 0.7 && v.category == "admin";
-                JudgeOutput {
-                    dominant: if lands {
-                        Dominant::Admin
-                    } else {
-                        Dominant::PendingReview
-                    },
-                    activity: ActivitySeconds::default(),
-                    credited_core_seconds: 0,
-                    credited_side_seconds: 0,
-                    credited_chore_seconds: 0,
-                    observed_seconds: 900,
-                    used_vision: lands,
-                    pending: !lands,
-                }
-            },
+            &snaps,
+            &ev,
+            pending_output(900),
+            |_| Ok(r#"{"category":"admin","confidence":0.95}"#.into()),
+        );
+        assert!(missed.is_none());
+        let hit = settle_gray_vision_task(
+            &chain,
+            &snaps,
+            &ev,
+            pending_output(900),
+            |_| Ok(r#"{"task_id":"chore","confidence":0.91}"#.into()),
         )
-        .expect("third provider should land");
-        assert!(!out.pending);
-        assert_eq!(out.dominant, Dominant::Admin);
-        assert!(out.used_vision);
+        .expect("task id settles");
+        assert!(!hit.pending);
+        assert_eq!(hit.dominant, Dominant::Admin);
+        assert!(hit.used_vision);
+        assert_eq!(hit.activity.admin, 900);
+    }
+
+    #[test]
+    fn pending_review_is_not_reopened_and_null_slot_is() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let day = "2026-09-29";
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, status, category, capture_status)
+             VALUES (?1, 0, 'pending_review', 'pending_review', 'Skipped')",
+            params![day],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO slots (day, slot_start, capture_status)
+             VALUES (?1, 900, 'Skipped')",
+            params![day],
+        )
+        .unwrap();
+        finalize_ended_open_slots(&mut conn, 10_000, ScreenshotRetention::None).unwrap();
+        let pending: String = conn
+            .query_row(
+                "SELECT status FROM slots WHERE day = ?1 AND slot_start = 0",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, "pending_review");
+        let opened: Option<String> = conn
+            .query_row(
+                "SELECT status FROM slots WHERE day = ?1 AND slot_start = 900",
+                params![day],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(opened.is_some(), "null slot must be finalized");
     }
 
     #[test]
