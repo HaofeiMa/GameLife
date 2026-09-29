@@ -144,7 +144,7 @@ pub fn call_text_task_match(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gamelife_core::{default_v01, CategoryGuides};
+    use gamelife_core::{default_v01, CategoryGuides, ListRole};
 
     #[test]
     fn prompt_omits_empty_guides_and_protected_lines_already_filtered() {
