@@ -249,6 +249,56 @@ fn settle_gray_text_from_shares(
     }
 }
 
+/// Whether gray-zone text AI should run. `shown_empty` must not block — an empty
+/// task board still asks for category shares when there are undecided seconds.
+fn gray_zone_should_ask_text(
+    gray: bool,
+    undecided: i64,
+    summary_empty: bool,
+    shown_empty: bool,
+) -> bool {
+    let _ = shown_empty;
+    gray && undecided > 0 && !summary_empty
+}
+
+fn gray_zone_should_cover_hard_rules(gray: bool, undecided: i64) -> bool {
+    gray && undecided == 0
+}
+
+fn gray_zone_should_ask_vision(
+    gray: bool,
+    undecided: i64,
+    still_pending: bool,
+    shown_empty: bool,
+) -> bool {
+    let _ = shown_empty;
+    still_pending && gray && undecided > 0
+}
+
+/// Text / hard-rule settle for a gray slot before vision. Pass `shown_empty`
+/// through so tests fail if an empty-board gate is reintroduced.
+fn settle_gray_zone_before_vision(
+    mut output: JudgeOutput,
+    evidence: &SlotEvidence,
+    summary_empty: bool,
+    shown_empty: bool,
+    chain: &[vision::VisionEndpoint],
+    mut body_for: impl FnMut(&vision::VisionEndpoint) -> Result<String, vision::VisionCallError>,
+) -> JudgeOutput {
+    let gray =
+        output.pending || matches!(output.dominant, Dominant::PendingReview | Dominant::Unknown);
+    let undecided = payout_base_seconds(evidence);
+    if gray_zone_should_cover_hard_rules(gray, undecided) {
+        let covered = apply_category_shares(output.clone(), evidence, None);
+        if !covered.pending {
+            output = covered;
+        }
+    } else if gray_zone_should_ask_text(gray, undecided, summary_empty, shown_empty) {
+        output = settle_gray_text_from_shares(output, evidence, chain, &mut body_for);
+    }
+    output
+}
+
 fn settle_gray_vision_task(
     chain: &[vision::VisionEndpoint],
     evidence: &SlotEvidence,
@@ -1623,18 +1673,17 @@ fn finalize_slot_end_in(
         output.pending || matches!(output.dominant, Dominant::PendingReview | Dominant::Unknown);
     let prepared = build_task_match_prompt(&tasks, &policy.category_guides, &policy, &summary);
     let undecided = payout_base_seconds(&evidence);
-    if gray && undecided == 0 {
-        let covered = apply_category_shares(output.clone(), &evidence, None);
-        if !covered.pending {
-            output = covered;
-        }
-    } else if gray && undecided > 0 && !summary.is_empty() {
-        output = settle_gray_text_from_shares(output, &evidence, &chain, |ep| {
-            vision::complete_json(ep, &prepared.text, None)
-        });
-    }
+    let shown_empty = prepared.shown.is_empty();
+    output = settle_gray_zone_before_vision(
+        output,
+        &evidence,
+        summary.is_empty(),
+        shown_empty,
+        &chain,
+        |ep| vision::complete_json(ep, &prepared.text, None),
+    );
 
-    if output.pending && gray && undecided > 0 {
+    if gray_zone_should_ask_vision(gray, undecided, output.pending, shown_empty) {
         let vision_out = match (screenshot_path.as_ref(), capture_ctx) {
             (Some(path), Some(capture_ctx))
                 if !decidable && capture == CaptureStatus::Captured =>
@@ -2292,6 +2341,76 @@ mod tests {
         assert_eq!(hit.dominant, Dominant::Admin);
         assert!(hit.used_vision);
         assert_eq!(hit.activity.admin, 900);
+    }
+
+    #[test]
+    fn empty_task_board_with_undecided_still_asks_text_ai() {
+        // Regression: putting `!shown.is_empty()` back in the gray text gate
+        // must fail this test — shown_empty is true on purpose.
+        assert!(gray_zone_should_ask_text(
+            /* gray */ true,
+            /* undecided */ 900,
+            /* summary_empty */ false,
+            /* shown_empty */ true,
+        ));
+        assert!(!gray_zone_should_ask_text(true, 900, true, true));
+        assert!(!gray_zone_should_ask_text(true, 0, false, false));
+
+        let ev = empty_evidence(900);
+        let chain = [compat("https://a.test/v1")];
+        let mut calls = 0;
+        let out = settle_gray_zone_before_vision(
+            pending_output(900),
+            &ev,
+            /* summary_empty */ false,
+            /* shown_empty */ true,
+            &chain,
+            |_| {
+                calls += 1;
+                Ok(r#"{"mainline":0,"side":0,"admin":1,"entertainment":0}"#.into())
+            },
+        );
+        assert_eq!(calls, 1, "empty board must still invoke text AI");
+        assert!(!out.pending);
+        assert_eq!(out.dominant, Dominant::Admin);
+        assert_eq!(out.credited_chore_seconds, 900);
+    }
+
+    #[test]
+    fn zero_undecided_covers_hard_rules_without_ai() {
+        assert!(gray_zone_should_cover_hard_rules(true, 0));
+        assert!(!gray_zone_should_cover_hard_rules(true, 1));
+        assert!(!gray_zone_should_ask_text(true, 0, false, false));
+
+        let chain = [compat("https://a.test/v1")];
+        let mut away_ev = empty_evidence(900);
+        away_ev.activity.away = 900;
+        assert_eq!(payout_base_seconds(&away_ev), 0);
+
+        let covered = settle_gray_zone_before_vision(
+            pending_output(900),
+            &away_ev,
+            /* summary_empty */ false,
+            /* shown_empty */ false,
+            &chain,
+            |_| panic!("text AI must not run when undecided == 0"),
+        );
+        assert!(!covered.pending);
+        assert_eq!(covered.dominant, Dominant::BreakAway);
+        assert_eq!(covered.activity.away, 900);
+
+        let zero_ev = empty_evidence(0);
+        assert_eq!(payout_base_seconds(&zero_ev), 0);
+        let pending = settle_gray_zone_before_vision(
+            pending_output(0),
+            &zero_ev,
+            false,
+            true,
+            &chain,
+            |_| panic!("text AI must not run when undecided == 0"),
+        );
+        assert!(pending.pending);
+        assert_eq!(pending.dominant, Dominant::PendingReview);
     }
 
     #[test]
