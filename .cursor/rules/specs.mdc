@@ -24,6 +24,7 @@ Later specs override earlier ones **only** where they say so. Read the 「本文
 - `2026-09-16-task-board-polish-design.md` — list drag gap + floating card; sticky calendar header; block inset 2px/6px; detail/date dialogs as background + cards; task header stats and wallet; add-group on list blank context menu.
 - `2026-09-22-ticktick-task-sync-design.md` — Settings TickTick switch; mapped lists import into the four preset groups; bidirectional sync of title, time, completion, and deletion. Overrides 2026-09-15 §11's removal of TickTick and 2026-09-13 §7's read-only restriction. `user_version` 6. `ticktick_cache` is not read; judgment still uses local unfinished tasks.
 - `2026-09-23-ticktick-column-roles-design.md` — 清单内分组的显式角色覆盖整份清单。刷新清单还会读 `GET /project/{id}/data`。授权 scope 为 `tasks:read tasks:write`。`user_version` 仍是 6。
-- `2026-09-29-ai-task-match-prompt-design.md` — 灰区 AI 必须点中一条任务；空任务板保持 `pending_review`，不再走类别 JSON 结案。覆盖并取代 tasks-interaction §9.3/§9.4 与 activity-monitor §5.3 的空板/类别分支。
+- `2026-09-29-ai-task-match-prompt-design.md` — 灰区 AI 必须点中一条任务；空任务板保持 `pending_review`，不再走类别 JSON 结案。覆盖并取代 tasks-interaction §9.3/§9.4 与 activity-monitor §5.3 的空板/类别分支。已被 `2026-09-29-ai-category-share-design.md` 取代。
+- `2026-09-29-ai-category-share-design.md` — 灰区文本与截图返回四类时间比例；秒数最多的一类（含硬规则离开与娱乐）盖住整段已观测时间；空任务板在仍有未定秒数时仍调 AI；非法回复保持 `pending_review`。覆盖并取代 `2026-09-29-ai-task-match-prompt-design.md` 全文。
 
 UI copy and spec/plan prose stay Chinese. Task CRUD and the drawn calendar live on 任务 (`Tasks.tsx`); do not put FullCalendar or dnd-kit in.
